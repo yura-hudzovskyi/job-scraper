@@ -9,7 +9,6 @@ GET    /api/cv
 POST   /api/cv/analyze
 
 GET    /api/profile
-PATCH  /api/profile
 
 GET    /api/jobs
 GET    /api/jobs/{id}
@@ -36,6 +35,10 @@ PATCH  /api/settings
 POST   /api/integrations/telegram/connect
 POST   /api/integrations/telegram/test
 ```
+
+`/api/profile` is a read-only summary (CVs on file, whether preferences are set) — it's
+derived, not edited. What the candidate *wants* (`UserPreference`) is edited entirely
+through `/api/settings`; see docs/domain-model.md.
 
 ## Frontend pages consuming this API
 
