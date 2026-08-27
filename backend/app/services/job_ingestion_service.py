@@ -1,0 +1,79 @@
+"""Orchestrates the Raw -> Normalized -> Canonical pipeline for one source: discover,
+fetch details for genuinely new jobs only, normalize, dedup, persist.
+
+Already-known jobs are skipped before any detail fetch — see docs/source-adapters.md
+("detail HTML is only fetched for jobs not already seen"). Re-running this for a
+source is always safe: raw_jobs and job_source_records are upserted on
+(source, external_id), so nothing duplicates.
+"""
+
+import uuid
+from dataclasses import dataclass
+
+from app.domain.jobs.deduplication import DeduplicationService
+from app.domain.jobs.models import NormalizedJob, RawJob
+from app.integrations.sources.base import JobSearchCriteria, JobSourceAdapter
+from app.repositories.job_repository import JobRepository
+
+
+@dataclass(frozen=True)
+class IngestionResult:
+    jobs_seen: int
+    jobs_processed: int
+
+
+class JobIngestionService:
+    def __init__(
+        self,
+        job_repository: JobRepository,
+        dedup_service: DeduplicationService | None = None,
+    ):
+        self._job_repository = job_repository
+        self._dedup_service = dedup_service or DeduplicationService()
+
+    async def ingest_source(
+        self, adapter: JobSourceAdapter, search: JobSearchCriteria
+    ) -> IngestionResult:
+        discovery = await adapter.fetch_jobs(search)
+
+        processed = 0
+        for listing in discovery.raw_jobs:
+            if await self._job_repository.raw_job_exists(listing.source, listing.external_id):
+                continue
+
+            detail_raw_job = await adapter.fetch_job_details(listing.external_id, listing.url)
+            await self._ingest_one(adapter, detail_raw_job)
+            processed += 1
+
+        return IngestionResult(jobs_seen=len(discovery.raw_jobs), jobs_processed=processed)
+
+    async def ingest_raw_job(self, adapter: JobSourceAdapter, raw_job: RawJob) -> uuid.UUID:
+        """Normalize + dedup a single already-fetched RawJob. Used by the `normalize`
+        worker task when raw storage and detail-fetching already happened separately."""
+        raw_job_id = await self._job_repository.upsert_raw_job(raw_job)
+        return await self._ingest_one(adapter, raw_job, raw_job_id=raw_job_id)
+
+    async def _ingest_one(
+        self,
+        adapter: JobSourceAdapter,
+        raw_job: RawJob,
+        raw_job_id: uuid.UUID | None = None,
+    ) -> uuid.UUID:
+        if raw_job_id is None:
+            raw_job_id = await self._job_repository.upsert_raw_job(raw_job)
+
+        normalized: NormalizedJob = adapter.normalize(raw_job)
+        canonical_job_id = await self._dedup(normalized)
+        await self._job_repository.save_normalized_job(raw_job_id, normalized, canonical_job_id)
+        return canonical_job_id
+
+    async def _dedup(self, normalized: NormalizedJob) -> uuid.UUID:
+        candidates = await self._job_repository.list_canonical_jobs()
+        match = self._dedup_service.find_canonical_match(normalized, candidates)
+
+        if match is not None:
+            canonical_job_id = uuid.UUID(match.id)
+            await self._job_repository.touch_canonical_job(canonical_job_id)
+            return canonical_job_id
+
+        return await self._job_repository.create_canonical_job(normalized)
