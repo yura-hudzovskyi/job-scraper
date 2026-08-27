@@ -21,11 +21,16 @@ dependencies = [
     "python-docx>=1.1",
 ]
 
-# Not needed until Phase 2 (embeddings / semantic matching) — see docs/roadmap.md.
+# Not needed for the deterministic pipeline (scraping, storage, dedup, hard filters) —
+# see docs/roadmap.md.
 [project.optional-dependencies]
 matching = [
     "pgvector>=0.3",
     "sentence-transformers>=3.1",
+]
+llm = [
+    "anthropic>=0.40",
+    "openai>=1.50",
 ]
 dev = [
     "pytest>=8.3",
