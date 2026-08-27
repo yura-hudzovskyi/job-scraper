@@ -6,6 +6,7 @@ re-normalizing idempotent — upserts, never duplicates.
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -44,7 +45,7 @@ def _canonical_candidate_view(model: CanonicalJobModel) -> NormalizedJob:
     )
 
 
-def _skills_payload(normalized: NormalizedJob) -> list[dict]:
+def _skills_payload(normalized: NormalizedJob) -> list[dict[str, Any]]:
     return [{"name": skill.name, "required": skill.required} for skill in normalized.skills]
 
 
@@ -56,7 +57,7 @@ class JobRepository:
         result = await self._session.execute(
             select(RawJobModel.source, func.count()).group_by(RawJobModel.source)
         )
-        return dict(result.all())
+        return {source: count for source, count in result.all()}
 
     async def raw_job_exists(self, source: str, external_id: str) -> bool:
         result = await self._session.execute(

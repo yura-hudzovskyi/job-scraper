@@ -7,6 +7,7 @@ NormalizedJob or CanonicalJob — never on a source's raw payload shape.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 
 class EmploymentType(StrEnum):
@@ -27,7 +28,7 @@ class RawJob:
     source: str
     external_id: str
     url: str
-    payload: dict
+    payload: dict[str, Any]
     fetched_at: datetime
 
 

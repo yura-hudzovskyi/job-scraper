@@ -45,6 +45,16 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Body"]
 python_version = "3.11"
 strict = true
 
+[[tool.mypy.overrides]]
+# celery ships no py.typed marker; its own decorators are untyped as a result.
+module = "celery.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# @celery_app.task(...) is an untyped decorator factory for the same reason.
+module = "app.workers.tasks.*"
+disable_error_code = ["untyped-decorator"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

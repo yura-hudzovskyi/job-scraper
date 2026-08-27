@@ -7,6 +7,7 @@ docs/source-adapters.md. Tested against fixtures in tests/fixtures/djinni/.
 """
 
 import re
+from typing import Any
 
 from bs4 import BeautifulSoup
 
@@ -16,17 +17,17 @@ _EXPERIENCE_RE = re.compile(r"\d+")
 BASE_URL = "https://djinni.co"
 
 
-def parse_search_results(html: str) -> list[dict]:
+def parse_search_results(html: str) -> list[dict[str, Any]]:
     """Return a list of {external_id, url, title} discovered in a search-results page."""
     soup = BeautifulSoup(html, "lxml")
     results = []
     for item in soup.select("div.job-item[id^='job-item-']"):
-        id_match = _ITEM_ID_RE.search(item.get("id", ""))
+        id_match = _ITEM_ID_RE.search(str(item.get("id", "")))
         link = item.select_one("a.job_item__header-link")
         title_el = item.select_one("h2.job-item__position")
         if not (id_match and link and title_el):
             continue
-        href = link.get("href", "")
+        href = str(link.get("href", ""))
         url = href if href.startswith("http") else f"{BASE_URL}{href}"
         results.append(
             {
@@ -38,7 +39,7 @@ def parse_search_results(html: str) -> list[dict]:
     return results
 
 
-def _classify_sidebar_items(soup: BeautifulSoup) -> dict:
+def _classify_sidebar_items(soup: BeautifulSoup) -> dict[str, Any]:
     experience_text = None
     salary_text = None
     remote = False
@@ -66,7 +67,7 @@ def _classify_sidebar_items(soup: BeautifulSoup) -> dict:
     }
 
 
-def parse_vacancy_page(html: str) -> dict:
+def parse_vacancy_page(html: str) -> dict[str, Any]:
     """Extract the full job payload from a vacancy page."""
     soup = BeautifulSoup(html, "lxml")
 

@@ -21,6 +21,6 @@ async def _run(source_name: str, keywords: list[str]) -> IngestionResult:
 
 
 @celery_app.task(name="scrape.fetch_source")
-def fetch_source(source_name: str, keywords: list[str] | None = None) -> dict:
+def fetch_source(source_name: str, keywords: list[str] | None = None) -> dict[str, int]:
     result = asyncio.run(_run(source_name, keywords or []))
     return {"jobs_seen": result.jobs_seen, "jobs_processed": result.jobs_processed}

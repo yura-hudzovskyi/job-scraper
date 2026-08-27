@@ -30,6 +30,6 @@ async def list_sources(
 
 
 @router.post("/{source_id}/sync")
-async def sync_source(source_id: str) -> dict:
+async def sync_source(source_id: str) -> dict[str, str]:
     fetch_source.delay(source_id)
     return {"status": "queued", "source": source_id}

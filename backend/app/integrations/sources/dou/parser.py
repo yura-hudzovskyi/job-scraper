@@ -7,6 +7,7 @@ Tested against fixtures in tests/fixtures/dou/.
 
 import re
 from email.utils import parsedate_to_datetime
+from typing import Any
 from xml.etree import ElementTree
 
 from bs4 import BeautifulSoup
@@ -14,7 +15,7 @@ from bs4 import BeautifulSoup
 _VACANCY_ID_RE = re.compile(r"/vacancies/(\d+)/")
 
 
-def parse_rss_feed(rss_xml: str) -> list[dict]:
+def parse_rss_feed(rss_xml: str) -> list[dict[str, Any]]:
     """Return a list of {external_id, url, title, description_html, published_at}
     discovered in the feed, in feed order."""
     root = ElementTree.fromstring(rss_xml)
@@ -37,7 +38,7 @@ def parse_rss_feed(rss_xml: str) -> list[dict]:
     return entries
 
 
-def parse_job_detail(html: str) -> dict:
+def parse_job_detail(html: str) -> dict[str, Any]:
     """Extract structured fields from a DOU vacancy detail page."""
     soup = BeautifulSoup(html, "lxml")
 
