@@ -6,7 +6,20 @@ see docs/domain-model.md.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
+
+
+@dataclass(frozen=True)
+class CvDocument:
+    """A CV as uploaded, with its text extracted. Phase 1 stops here — turning this
+    into a CandidateProfile (skills, experience, roles) needs an LLM and is Phase 2."""
+
+    id: str
+    user_id: str
+    filename: str
+    raw_text: str
+    uploaded_at: datetime
 
 
 class SkillLevel(StrEnum):
