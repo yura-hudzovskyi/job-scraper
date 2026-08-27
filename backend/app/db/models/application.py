@@ -2,15 +2,15 @@
 
 import uuid
 
+from sqlalchemy import ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base
+from app.db.base import Base, UUIDPrimaryKeyMixin
 
 
-class ApplicationModel(Base):
+class ApplicationModel(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "applications"
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID]
-    canonical_job_id: Mapped[uuid.UUID]
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    canonical_job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("canonical_jobs.id"))
     status: Mapped[str]
