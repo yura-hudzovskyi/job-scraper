@@ -7,7 +7,7 @@ The parent `notifications` table itself is a Phase 3 concern (docs/roadmap.md).
 import uuid
 
 from sqlalchemy import UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped
 
 from app.db.base import Base, UUIDPrimaryKeyMixin
 
