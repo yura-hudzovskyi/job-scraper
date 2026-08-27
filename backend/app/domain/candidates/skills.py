@@ -11,6 +11,12 @@ from dataclasses import dataclass, field
 
 _NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
 
+# Excluded from free-text mining only (still resolvable via resolve()) because they're
+# ordinary English words/letters that would false-positive constantly in prose ("go
+# above and beyond", a stray "r" in "Dr."). resolve() is exact-match so they're safe
+# there; extract_mentions() scans arbitrary text, so it isn't.
+_MINING_EXCLUDED_TERMS = frozenset({"go", "r"})
+
 
 def _normalize(name: str) -> str:
     return _NORMALIZE_RE.sub("", name.lower())
@@ -47,9 +53,47 @@ class SkillRegistry:
             for relation in relations
         }
 
+        self._mention_pattern, self._mention_surface_forms = self._build_mention_pattern(
+            definitions
+        )
+
+    @staticmethod
+    def _build_mention_pattern(
+        definitions: list[SkillDefinition],
+    ) -> tuple[re.Pattern[str] | None, dict[str, str]]:
+        surface_forms: dict[str, str] = {}
+        for definition in definitions:
+            for form in (definition.canonical_name, *definition.aliases):
+                lowered = form.lower()
+                if lowered not in _MINING_EXCLUDED_TERMS:
+                    surface_forms[lowered] = definition.canonical_name
+
+        if not surface_forms:
+            return None, surface_forms
+
+        # Longest first so e.g. "node.js" is tried before a shorter overlapping form.
+        # Boundaries use alnum lookaround rather than \b, since \b breaks around
+        # trailing punctuation in forms like "c#" or "node.js".
+        ordered_forms = sorted(surface_forms, key=len, reverse=True)
+        alternation = "|".join(re.escape(form) for form in ordered_forms)
+        pattern = re.compile(rf"(?<![A-Za-z0-9])(?:{alternation})(?![A-Za-z0-9])", re.IGNORECASE)
+        return pattern, surface_forms
+
     def resolve(self, raw_skill_name: str) -> str | None:
         """Return the canonical skill name for a raw/alias string, or None if unknown."""
         return self._alias_index.get(_normalize(raw_skill_name))
+
+    def extract_mentions(self, text: str) -> list[str]:
+        """Text-mine free-form text (job descriptions, CVs) for known skill names.
+        Deterministic, no LLM — this is what backs skill scoring until Phase 4's
+        LLM-based requirement extraction exists. Returns deduplicated canonical names."""
+        if self._mention_pattern is None:
+            return []
+        found = {
+            self._mention_surface_forms[match.group(0).lower()]
+            for match in self._mention_pattern.finditer(text)
+        }
+        return sorted(found)
 
     def transferability(self, from_skill: str, to_skill: str) -> float:
         """Return the transferability weight between two canonical skills (1.0 if
