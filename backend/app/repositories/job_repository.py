@@ -7,7 +7,7 @@ re-normalizing idempotent — upserts, never duplicates.
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,6 +51,12 @@ def _skills_payload(normalized: NormalizedJob) -> list[dict]:
 class JobRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
+
+    async def count_raw_jobs_by_source(self) -> dict[str, int]:
+        result = await self._session.execute(
+            select(RawJobModel.source, func.count()).group_by(RawJobModel.source)
+        )
+        return dict(result.all())
 
     async def raw_job_exists(self, source: str, external_id: str) -> bool:
         result = await self._session.execute(

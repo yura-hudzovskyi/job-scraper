@@ -1,18 +1,21 @@
-"""Use case: list/filter jobs and matches for a user, and record user actions
-(save/apply/reject) against a CanonicalJob."""
+"""Use case: list/get canonical jobs.
 
-from app.domain.matching.models import JobMatch
+Matches and user actions (save/apply/reject) need JobMatch (Phase 2 matching) and an
+application tracker (Phase 5) respectively — see docs/roadmap.md.
+"""
+
+import uuid
+
+from app.domain.jobs.models import CanonicalJob
 from app.repositories.job_repository import JobRepository
-from app.repositories.match_repository import MatchRepository
 
 
 class JobService:
-    def __init__(self, job_repository: JobRepository, match_repository: MatchRepository):
+    def __init__(self, job_repository: JobRepository):
         self._job_repository = job_repository
-        self._match_repository = match_repository
 
-    async def list_matches(self, user_id: str, min_score: float = 0.0) -> list[JobMatch]:
-        return await self._match_repository.list_for_user(user_id, min_score)
+    async def list_jobs(self) -> list[CanonicalJob]:
+        return await self._job_repository.list_canonical_jobs()
 
-    async def record_action(self, user_id: str, canonical_job_id: str, action: str) -> None:
-        raise NotImplementedError
+    async def get_job(self, canonical_job_id: uuid.UUID) -> CanonicalJob | None:
+        return await self._job_repository.get_canonical_job(canonical_job_id)

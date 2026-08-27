@@ -1,15 +1,65 @@
 """FastAPI dependency wiring: constructs services from repositories/integrations.
 
 Routes depend on these, never on repositories or integrations directly.
+
+Phase 1 is single-user, so there's no auth yet — get_current_user_id lazily creates
+one default user instead of building real auth, which isn't on the roadmap for a
+personal tool.
 """
 
+import uuid
+
+from fastapi import Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models.user import UserModel
+from app.db.session import get_session
+from app.repositories.candidate_repository import CandidateRepository
+from app.repositories.job_repository import JobRepository
+from app.services.cv_service import CvService
+from app.services.job_ingestion_service import JobIngestionService
 from app.services.job_service import JobService
 from app.services.profile_service import ProfileService
 
-
-def get_profile_service() -> ProfileService:
-    raise NotImplementedError
+_DEFAULT_USER_EMAIL = "ygudzovski@gmail.com"
 
 
-def get_job_service() -> JobService:
-    raise NotImplementedError
+async def get_current_user_id(session: AsyncSession = Depends(get_session)) -> uuid.UUID:
+    result = await session.execute(select(UserModel).where(UserModel.email == _DEFAULT_USER_EMAIL))
+    user = result.scalar_one_or_none()
+    if user is None:
+        user = UserModel(email=_DEFAULT_USER_EMAIL)
+        session.add(user)
+        await session.flush()
+    return user.id
+
+
+def get_candidate_repository(session: AsyncSession = Depends(get_session)) -> CandidateRepository:
+    return CandidateRepository(session)
+
+
+def get_job_repository(session: AsyncSession = Depends(get_session)) -> JobRepository:
+    return JobRepository(session)
+
+
+def get_cv_service(
+    candidate_repository: CandidateRepository = Depends(get_candidate_repository),
+) -> CvService:
+    return CvService(candidate_repository)
+
+
+def get_profile_service(
+    candidate_repository: CandidateRepository = Depends(get_candidate_repository),
+) -> ProfileService:
+    return ProfileService(candidate_repository)
+
+
+def get_job_service(job_repository: JobRepository = Depends(get_job_repository)) -> JobService:
+    return JobService(job_repository)
+
+
+def get_job_ingestion_service(
+    job_repository: JobRepository = Depends(get_job_repository),
+) -> JobIngestionService:
+    return JobIngestionService(job_repository)
