@@ -55,6 +55,10 @@ ignore_missing_imports = true
 module = "app.workers.tasks.*"
 disable_error_code = ["untyped-decorator"]
 
+[tool.setuptools.packages.find]
+# alembic/, tests/ etc. live alongside app/ but aren't part of the installed package.
+include = ["app*"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
