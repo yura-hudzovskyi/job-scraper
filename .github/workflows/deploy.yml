@@ -26,6 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -34,10 +36,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The Oracle VM is Ampere (ARM64), but the GitHub Actions runner is amd64 — build
+      # arm64 via QEMU emulation, targeting only what's actually deployed.
       - name: Build and push backend
         uses: docker/build-push-action@v6
         with:
           context: ./backend
+          platforms: linux/arm64
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/job-scraper-backend:latest
