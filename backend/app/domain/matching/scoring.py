@@ -90,6 +90,21 @@ class DeterministicScorer:
             + deterministic.preferences * w.preferences
         )
 
+    def skill_gap_analysis(
+        self, job: NormalizedJob, profile: CandidateProfile
+    ) -> tuple[list[str], list[str]]:
+        """(exact_matches, missing) canonical skill names, text-mined from the job —
+        for building human-readable strengths/gaps, not scoring itself."""
+        mentioned_skills = self._skill_registry.extract_mentions(f"{job.title}\n{job.description}")
+        candidate_skills = {
+            resolved
+            for skill in profile.skills
+            if (resolved := self._skill_registry.resolve(skill.name)) is not None
+        }
+        exact = [skill for skill in mentioned_skills if skill in candidate_skills]
+        missing = [skill for skill in mentioned_skills if skill not in candidate_skills]
+        return exact, missing
+
     def _skill_scores(
         self, mentioned_skills: list[str], candidate_skills: set[str]
     ) -> tuple[float, float]:
