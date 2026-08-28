@@ -15,6 +15,17 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
 
+  # Local LLM for CV analysis — no per-token API cost. Needs a model pulled in once
+  # (docs/deployment.md) and enough RAM for whichever model you choose. Only `api`
+  # talks to it: /api/cv/analyze runs in the request handler, not a Celery task —
+  # scoring/matching itself never calls an LLM at all (deterministic + local
+  # embeddings), so worker/beat don't need this.
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+
   api:
     image: ghcr.io/yura-hudzovskyi/job-scraper-backend:latest
     restart: unless-stopped
@@ -23,6 +34,7 @@ services:
     depends_on:
       - postgres
       - redis
+      - ollama
 
   worker:
     image: ghcr.io/yura-hudzovskyi/job-scraper-backend:latest
@@ -60,3 +72,4 @@ services:
 volumes:
   pgdata:
   caddy_data:
+  ollama_data:

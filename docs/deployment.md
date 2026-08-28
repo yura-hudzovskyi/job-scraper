@@ -27,7 +27,11 @@ instead of using a `.duckdns.org` name; everything else is identical.
      Free ARM shape. Give it 2-4 OCPUs and 12-24 GB RAM (the free tier's total
      allowance across all A1 instances is 4 OCPU / 24 GB, so one VM can use all of
      it). The x86 "Micro" free shapes only have 1 GB RAM each — too little for
-     Postgres + sentence-transformers + everything else running together.
+     Postgres + sentence-transformers + everything else running together. Ampere is
+     also plain ARM64, which Ollama and every other image here already supports
+     natively — nothing extra to configure. If you're running Ollama too (the
+     default — see Part 3), lean toward the 24 GB end; a 12 GB VM works but limits
+     you to a small model (see "Choosing an Ollama model" below).
    - **SSH key**: generate a keypair locally if you don't have one —
      `ssh-keygen -t ed25519 -f ~/.ssh/oracle_vm -C "oracle-vm"` — and paste the
      **public** key (`~/.ssh/oracle_vm.pub`) into the "Add SSH keys" box.
@@ -87,9 +91,12 @@ At minimum set:
   you also add a custom domain there later
 - `SECRET_KEY` — any random string (`openssl rand -hex 32`)
 - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — from @BotFather, same as local dev
-- `LLM_PROVIDER` + the matching API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) —
-  `ollama` is the config default but there's no Ollama container in
-  `docker-compose.prod.yml`; set a hosted provider unless you add one yourself
+- `LLM_PROVIDER=ollama` (the default) runs CV analysis on a local model in the
+  `ollama` container in `docker-compose.prod.yml` — no API key, no per-token cost.
+  Set `LLM_MODEL` too (see "Choosing an Ollama model" below). If you'd rather use a
+  hosted model instead, set `LLM_PROVIDER=anthropic` or `openai` and the matching
+  `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` — the `ollama` container then just sits idle
+  and you can remove it from the compose file if you want the RAM back.
 - `EMBEDDING_PROVIDER=sentence_transformers` (the default — needs no key, runs
   locally in the API/worker containers)
 
@@ -99,10 +106,33 @@ Then run the script again to actually start everything and apply migrations:
 ./bootstrap.sh
 ```
 
+This second run also pulls the Ollama model set in `LLM_MODEL` (only if
+`LLM_PROVIDER=ollama`) — a one-time download, see sizing below.
+
 Check it's up: `docker compose -f docker-compose.prod.yml ps`, and
 `curl https://job-scraper-api.duckdns.org/api/sources` (from your own machine, once
 DNS has propagated — usually under a minute) should return `[]` or your two sources,
 with a valid certificate, rather than an error.
+
+### Choosing an Ollama model
+
+CV analysis is a manual, occasional action (you click "Analyze" once per CV, not
+something that runs per-job), so it doesn't need to be fast — a CPU-only response in
+10-30s on the A1 shape is fine. What matters is fitting comfortably in RAM alongside
+Postgres, the API/worker processes, and sentence-transformers, which together use
+roughly 2-3 GB.
+
+| Model | Download / resident size | Free-tier fit |
+|---|---|---|
+| `llama3.2:3b` | ~2 GB | Comfortable even on a 12 GB VM; recommended default |
+| `llama3.1:8b` | ~4.7 GB | Fine on a 24 GB VM (4 OCPU / 24 GB shape); tight on 12 GB |
+| `qwen2.5:7b` | ~4.4 GB | Similar footprint to `llama3.1:8b`, often better structured-output adherence |
+
+Set `LLM_MODEL` to whichever you pick before the second `./bootstrap.sh` run (or
+change it later and run `docker compose -f docker-compose.prod.yml exec ollama ollama
+pull <model>` by hand, then update `.env` and restart the `api` container). If you're
+on the smaller 12 GB VM.Standard.A1.Flex config, stick to `llama3.2:3b` — an 8B model
+plus Postgres can OOM the box under load.
 
 ## Part 4 — Deploy the frontend (Cloudflare Pages)
 
@@ -185,4 +215,10 @@ from the git checkout.
 - **First deploy will be slow**: the backend image bundles sentence-transformers
   (and its PyTorch dependency), which is a large download. Subsequent deploys reuse
   Docker's layer cache and GitHub Actions' build cache, so they're much faster
-  unless `pyproject.toml` changes.
+  unless `pyproject.toml` changes. The Ollama model pull (Part 3) is separate from
+  this and only happens once, not on every deploy.
+- **Ollama cost/latency tradeoff**: CPU inference on the A1 shape is noticeably
+  slower than a hosted API (seconds-to-tens-of-seconds per CV instead of ~1s), but
+  it's the only zero-cost option, and CV analysis is a manual, low-frequency action
+  where that's an acceptable trade. Matching/scoring itself never calls an LLM
+  regardless of provider, so this only affects the "Analyze CV" action.
