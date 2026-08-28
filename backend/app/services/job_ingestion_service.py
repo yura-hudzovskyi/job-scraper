@@ -20,6 +20,7 @@ from app.repositories.job_repository import JobRepository
 class IngestionResult:
     jobs_seen: int
     jobs_processed: int
+    processed_canonical_job_ids: list[str]
 
 
 class JobIngestionService:
@@ -36,16 +37,20 @@ class JobIngestionService:
     ) -> IngestionResult:
         discovery = await adapter.fetch_jobs(search)
 
-        processed = 0
+        canonical_job_ids: list[str] = []
         for listing in discovery.raw_jobs:
             if await self._job_repository.raw_job_exists(listing.source, listing.external_id):
                 continue
 
             detail_raw_job = await adapter.fetch_job_details(listing.external_id, listing.url)
-            await self._ingest_one(adapter, detail_raw_job)
-            processed += 1
+            canonical_job_id = await self._ingest_one(adapter, detail_raw_job)
+            canonical_job_ids.append(str(canonical_job_id))
 
-        return IngestionResult(jobs_seen=len(discovery.raw_jobs), jobs_processed=processed)
+        return IngestionResult(
+            jobs_seen=len(discovery.raw_jobs),
+            jobs_processed=len(canonical_job_ids),
+            processed_canonical_job_ids=canonical_job_ids,
+        )
 
     async def ingest_raw_job(self, adapter: JobSourceAdapter, raw_job: RawJob) -> uuid.UUID:
         """Normalize + dedup a single already-fetched RawJob. Used by the `normalize`

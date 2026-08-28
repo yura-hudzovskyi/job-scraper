@@ -10,11 +10,9 @@ personal tool.
 import uuid
 
 from fastapi import Depends
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
-from app.db.models.user import UserModel
 from app.db.session import get_session
 from app.integrations.ai.llm.base import LLMProvider
 from app.integrations.ai.llm.factory import build_llm_provider
@@ -23,21 +21,14 @@ from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
 from app.repositories.notification_repository import NotificationRepository
 from app.services.cv_service import CvService
+from app.services.default_user import get_or_create_default_user_id
 from app.services.job_ingestion_service import JobIngestionService
 from app.services.job_service import JobService
 from app.services.profile_service import ProfileService
 
-_DEFAULT_USER_EMAIL = "ygudzovski@gmail.com"
-
 
 async def get_current_user_id(session: AsyncSession = Depends(get_session)) -> uuid.UUID:
-    result = await session.execute(select(UserModel).where(UserModel.email == _DEFAULT_USER_EMAIL))
-    user = result.scalar_one_or_none()
-    if user is None:
-        user = UserModel(email=_DEFAULT_USER_EMAIL)
-        session.add(user)
-        await session.flush()
-    return user.id
+    return await get_or_create_default_user_id(session)
 
 
 def get_candidate_repository(session: AsyncSession = Depends(get_session)) -> CandidateRepository:
