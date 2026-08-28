@@ -2,8 +2,8 @@
 
 from typing import Protocol
 
-from app.domain.matching.models import JobMatch
+from app.domain.notifications.models import JobMatchNotification
 
 
 class NotificationProvider(Protocol):
-    async def send_job_match(self, match: JobMatch) -> None: ...
+    async def send_job_match(self, notification: JobMatchNotification) -> None: ...
