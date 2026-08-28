@@ -1,0 +1,9 @@
+# Everything on this VM is the API — the frontend is on Cloudflare Pages, not here.
+# {$API_DOMAIN} comes from .env (see docs/deployment.md — DuckDNS by default, since
+# Oracle doesn't hand out a public domain for the VM itself). Caddy automatically
+# gets and renews a Let's Encrypt certificate for it — no other config needed. The
+# backend needs HTTPS here because the Cloudflare-hosted frontend is always HTTPS,
+# and browsers block HTTPS pages from calling a plain-HTTP API as mixed content.
+{$API_DOMAIN} {
+	reverse_proxy api:8000
+}

@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: job_scraper
+      POSTGRES_PASSWORD: job_scraper
+      POSTGRES_DB: job_scraper
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No published port — only reachable from other containers on this box.
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  api:
+    image: ghcr.io/yura-hudzovskyi/job-scraper-backend:latest
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+
+  worker:
+    image: ghcr.io/yura-hudzovskyi/job-scraper-backend:latest
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app worker --loglevel=info
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+
+  beat:
+    image: ghcr.io/yura-hudzovskyi/job-scraper-backend:latest
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+
+  # Terminates HTTPS for the API and reverse-proxies to it. The frontend is not
+  # served from this box at all — it's on Cloudflare Pages. See docs/deployment.md.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  caddy_data:

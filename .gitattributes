@@ -1,0 +1,5 @@
+# Shell scripts run on Linux (the deploy target) — a CRLF line ending in the shebang
+# breaks execution outright ("bad interpreter"). Force LF regardless of a
+# contributor's core.autocrlf setting.
+*.sh text eol=lf
+Caddyfile text eol=lf

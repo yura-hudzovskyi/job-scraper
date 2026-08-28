@@ -28,6 +28,7 @@ docs/        Deep-dive design docs (domain model, matching engine, adapters, API
 - [docs/notifications.md](docs/notifications.md) — notification channels and delivery policy
 - [docs/api.md](docs/api.md) — REST API surface
 - [docs/roadmap.md](docs/roadmap.md) — build phases and definition of done
+- [docs/deployment.md](docs/deployment.md) — deploying to an Oracle Cloud free VM with auto-deploy on push
 
 ## Local development
 
@@ -78,10 +79,15 @@ the buttons render, but tapping them doesn't do anything server-side.
 **Phase 5** (application tracker) are still interfaces/domain models without business
 logic — see [docs/roadmap.md](docs/roadmap.md).
 
-Nothing here has run against a live Postgres yet — Docker Desktop is broken on the
-machine this was built on (missing `services.iso`, unrelated to this repo). Every
-migration was verified offline instead (DDL compiled from the ORM models diffed
-against `alembic upgrade --sql` output) and every external API call was verified live
-against the real DOU/Djinni/Anthropic/OpenAI/Telegram endpoints where credentials
-allow (auth-rejection paths for the ones needing a key/token this environment doesn't
-have).
+Docker was broken for most of this build (missing `services.iso`, unrelated to this
+repo) — every migration was verified offline instead (DDL compiled from the ORM
+models diffed against `alembic upgrade --sql` output), and every external API call
+was verified live against the real DOU/Djinni/Anthropic/OpenAI/Telegram endpoints
+where credentials allow. Once Docker was fixed, running the real stack against a live
+Postgres immediately surfaced three real bugs no amount of offline checking would
+have caught: `Settings.api_cors_origins` crashing startup when set from a plain
+comma-separated env var, native Windows uvicorn being unable to open an async
+Postgres connection at all (psycopg's async mode vs. uvicorn's forced
+`ProactorEventLoop`), and asyncpg rejecting timezone-naive timestamp columns against
+the app's timezone-aware datetimes. All three are fixed — see the git history for
+specifics ("fix: three real bugs found by actually running docker compose up").
