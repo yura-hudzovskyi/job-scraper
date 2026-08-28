@@ -21,6 +21,7 @@ from app.integrations.ai.llm.factory import build_llm_provider
 from app.repositories.candidate_repository import CandidateRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
+from app.repositories.notification_repository import NotificationRepository
 from app.services.cv_service import CvService
 from app.services.job_ingestion_service import JobIngestionService
 from app.services.job_service import JobService
@@ -49,6 +50,12 @@ def get_job_repository(session: AsyncSession = Depends(get_session)) -> JobRepos
 
 def get_match_repository(session: AsyncSession = Depends(get_session)) -> MatchRepository:
     return MatchRepository(session)
+
+
+def get_notification_repository(
+    session: AsyncSession = Depends(get_session),
+) -> NotificationRepository:
+    return NotificationRepository(session)
 
 
 def get_llm_provider() -> LLMProvider | None:

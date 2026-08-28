@@ -1,5 +1,6 @@
 """Scores one canonical job against a user's candidate profile + preferences and
-persists the JobMatch. See docs/matching-engine.md.
+persists the JobMatch, then enqueues notification dispatch for it — the pipeline
+described in ARCHITECTURE.md ends with NotificationPolicy, not with a saved score.
 """
 
 import asyncio
@@ -13,6 +14,7 @@ from app.repositories.candidate_repository import CandidateRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
 from app.workers.celery_app import celery_app
+from app.workers.tasks.notify import dispatch_match
 
 
 class ScoringUnavailable(RuntimeError):
@@ -49,4 +51,6 @@ async def _run(user_id: str, canonical_job_id: str) -> dict[str, float | str]:
 
 @celery_app.task(name="score.score_job_for_user")
 def score_job_for_user(user_id: str, canonical_job_id: str) -> dict[str, float | str]:
-    return asyncio.run(_run(user_id, canonical_job_id))
+    result = asyncio.run(_run(user_id, canonical_job_id))
+    dispatch_match.delay(user_id, canonical_job_id)
+    return result
