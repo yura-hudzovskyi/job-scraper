@@ -13,8 +13,11 @@ from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config.settings import get_settings
 from app.db.models.user import UserModel
 from app.db.session import get_session
+from app.integrations.ai.llm.base import LLMProvider
+from app.integrations.ai.llm.factory import build_llm_provider
 from app.repositories.candidate_repository import CandidateRepository
 from app.repositories.job_repository import JobRepository
 from app.services.cv_service import CvService
@@ -43,10 +46,15 @@ def get_job_repository(session: AsyncSession = Depends(get_session)) -> JobRepos
     return JobRepository(session)
 
 
+def get_llm_provider() -> LLMProvider | None:
+    return build_llm_provider(get_settings())
+
+
 def get_cv_service(
     candidate_repository: CandidateRepository = Depends(get_candidate_repository),
+    llm_provider: LLMProvider | None = Depends(get_llm_provider),
 ) -> CvService:
-    return CvService(candidate_repository)
+    return CvService(candidate_repository, llm_provider)
 
 
 def get_profile_service(

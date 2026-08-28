@@ -1,0 +1,79 @@
+import uuid
+
+import pytest
+
+from app.domain.candidates.models import CandidateProfile
+from app.services.cv_service import CvService, LlmNotConfigured
+
+
+class _FakeLlmProvider:
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    async def structured_completion(self, prompt, schema):
+        assert "CV" in prompt
+        return schema(**self._payload)
+
+
+class _FakeCandidateRepository:
+    def __init__(self) -> None:
+        self.saved: tuple[uuid.UUID, uuid.UUID, CandidateProfile] | None = None
+
+    async def save_candidate_profile(
+        self, user_id: uuid.UUID, cv_document_id: uuid.UUID, profile: CandidateProfile
+    ) -> CandidateProfile:
+        self.saved = (user_id, cv_document_id, profile)
+        return profile
+
+
+_EXTRACTED_PAYLOAD = {
+    "experience_years": 4.5,
+    "roles": ["backend engineer", "full stack developer"],
+    "skills": [
+        {"name": "Python", "level": "strong", "years": 4.5},
+        {"name": "Django", "level": "commercial", "years": 3.0},
+    ],
+    "experience": [
+        {
+            "company": "Acme",
+            "title": "Backend Engineer",
+            "start_date": "2022-01",
+            "end_date": None,
+            "description": "Built REST APIs.",
+            "skills": ["Python", "Django"],
+        }
+    ],
+    "achievements": ["Cut API latency by 40%"],
+    "domains": ["fintech"],
+    "ai_experience": [],
+}
+
+
+@pytest.mark.asyncio
+async def test_analyze_cv_maps_llm_output_to_candidate_profile() -> None:
+    repository = _FakeCandidateRepository()
+    service = CvService(repository, llm_provider=_FakeLlmProvider(_EXTRACTED_PAYLOAD))  # type: ignore[arg-type]
+    user_id = uuid.uuid4()
+    cv_document_id = uuid.uuid4()
+
+    profile = await service.analyze_cv(user_id, cv_document_id, "some CV text")
+
+    assert profile.experience_years == 4.5
+    assert profile.roles == ["backend engineer", "full stack developer"]
+    assert [skill.name for skill in profile.skills] == ["Python", "Django"]
+    assert profile.skills[0].level.value == "strong"
+    assert profile.experience[0].company == "Acme"
+    assert profile.achievements == ["Cut API latency by 40%"]
+
+    assert repository.saved is not None
+    saved_user_id, saved_cv_document_id, _ = repository.saved
+    assert saved_user_id == user_id
+    assert saved_cv_document_id == cv_document_id
+
+
+@pytest.mark.asyncio
+async def test_analyze_cv_without_llm_provider_raises_clear_error() -> None:
+    service = CvService(_FakeCandidateRepository(), llm_provider=None)  # type: ignore[arg-type]
+
+    with pytest.raises(LlmNotConfigured):
+        await service.analyze_cv(uuid.uuid4(), uuid.uuid4(), "some CV text")

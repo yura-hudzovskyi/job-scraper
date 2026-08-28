@@ -1,12 +1,14 @@
-"""ORM tables for CV storage and user preferences.
+"""ORM tables for CV storage, LLM-extracted candidate profiles, and user preferences.
 
-CandidateProfile (skills/experience extracted from a CV) is a Phase 2 concern once an
-LLM provider exists — see docs/roadmap.md. Phase 1 only stores the uploaded CV's raw
-extracted text. UserPreference is fully structured and needs no AI.
+UserPreference is fully structured and needs no AI. CandidateProfile is extracted
+from a CvDocument by an LLMProvider (see services/cv_service.py) — skills/experience/
+roles are stored as JSONB rather than normalized child tables, matching how
+job_source_records stores its (also LLM-extractable-in-the-future) skills list.
 """
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import ForeignKey, func
 from sqlalchemy.dialects.postgresql import JSONB
@@ -22,6 +24,23 @@ class CvDocumentModel(UUIDPrimaryKeyMixin, Base):
     filename: Mapped[str]
     raw_text: Mapped[str]
     uploaded_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class CandidateProfileModel(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "candidate_profiles"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    cv_document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("cv_documents.id"))
+
+    experience_years: Mapped[float]
+    roles: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    skills: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    experience: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    achievements: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    domains: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    ai_experience: Mapped[list[str]] = mapped_column(JSONB, default=list)
+
+    extracted_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class UserPreferenceModel(UUIDPrimaryKeyMixin, Base):

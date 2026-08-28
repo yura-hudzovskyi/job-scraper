@@ -1,16 +1,19 @@
-"""Persistence for CV documents and user preferences.
-
-CandidateProfile (skills/experience derived from a CV via an LLM) isn't persisted yet —
-that's Phase 2, once an LLMProvider exists. See docs/roadmap.md.
-"""
+"""Persistence for CV documents, LLM-extracted candidate profiles, and preferences."""
 
 import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.candidate import CvDocumentModel, UserPreferenceModel
-from app.domain.candidates.models import CvDocument, UserPreference
+from app.db.models.candidate import CandidateProfileModel, CvDocumentModel, UserPreferenceModel
+from app.domain.candidates.models import (
+    CandidateProfile,
+    CandidateSkill,
+    CvDocument,
+    ExperienceEntry,
+    SkillLevel,
+    UserPreference,
+)
 
 
 def _to_cv_document(model: CvDocumentModel) -> CvDocument:
@@ -20,6 +23,33 @@ def _to_cv_document(model: CvDocumentModel) -> CvDocument:
         filename=model.filename,
         raw_text=model.raw_text,
         uploaded_at=model.uploaded_at,
+    )
+
+
+def _to_candidate_profile(model: CandidateProfileModel) -> CandidateProfile:
+    return CandidateProfile(
+        id=str(model.id),
+        user_id=str(model.user_id),
+        experience_years=model.experience_years,
+        roles=list(model.roles),
+        skills=[
+            CandidateSkill(name=skill["name"], level=SkillLevel(skill["level"]), years=skill.get("years"))
+            for skill in model.skills
+        ],
+        experience=[
+            ExperienceEntry(
+                company=entry["company"],
+                title=entry["title"],
+                start_date=entry["start_date"],
+                end_date=entry.get("end_date"),
+                description=entry["description"],
+                skills=list(entry.get("skills", [])),
+            )
+            for entry in model.experience
+        ],
+        achievements=list(model.achievements),
+        domains=list(model.domains),
+        ai_experience=list(model.ai_experience),
     )
 
 
@@ -57,6 +87,61 @@ class CandidateRepository:
             .order_by(CvDocumentModel.uploaded_at.desc())
         )
         return [_to_cv_document(model) for model in result.scalars()]
+
+    async def get_cv_document(
+        self, user_id: uuid.UUID, cv_document_id: uuid.UUID
+    ) -> CvDocument | None:
+        result = await self._session.execute(
+            select(CvDocumentModel).where(
+                CvDocumentModel.id == cv_document_id, CvDocumentModel.user_id == user_id
+            )
+        )
+        model = result.scalar_one_or_none()
+        return _to_cv_document(model) if model else None
+
+    async def save_candidate_profile(
+        self, user_id: uuid.UUID, cv_document_id: uuid.UUID, profile: CandidateProfile
+    ) -> CandidateProfile:
+        """Each analysis creates a new snapshot rather than overwriting — re-running
+        analyze_cv keeps history instead of silently discarding the previous read."""
+        model = CandidateProfileModel(
+            user_id=user_id,
+            cv_document_id=cv_document_id,
+            experience_years=profile.experience_years,
+            roles=profile.roles,
+            skills=[
+                {"name": skill.name, "level": skill.level.value, "years": skill.years}
+                for skill in profile.skills
+            ],
+            experience=[
+                {
+                    "company": entry.company,
+                    "title": entry.title,
+                    "start_date": entry.start_date,
+                    "end_date": entry.end_date,
+                    "description": entry.description,
+                    "skills": entry.skills,
+                }
+                for entry in profile.experience
+            ],
+            achievements=profile.achievements,
+            domains=profile.domains,
+            ai_experience=profile.ai_experience,
+        )
+        self._session.add(model)
+        await self._session.flush()
+        await self._session.refresh(model)
+        return _to_candidate_profile(model)
+
+    async def get_latest_candidate_profile(self, user_id: uuid.UUID) -> CandidateProfile | None:
+        result = await self._session.execute(
+            select(CandidateProfileModel)
+            .where(CandidateProfileModel.user_id == user_id)
+            .order_by(CandidateProfileModel.extracted_at.desc())
+            .limit(1)
+        )
+        model = result.scalar_one_or_none()
+        return _to_candidate_profile(model) if model else None
 
     async def get_preferences(self, user_id: uuid.UUID) -> UserPreference | None:
         result = await self._session.execute(

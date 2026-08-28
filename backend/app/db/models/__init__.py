@@ -2,7 +2,7 @@
 before Alembic autogenerate or Base.metadata.create_all() will see them."""
 
 from app.db.models.application import ApplicationModel
-from app.db.models.candidate import CvDocumentModel, UserPreferenceModel
+from app.db.models.candidate import CandidateProfileModel, CvDocumentModel, UserPreferenceModel
 from app.db.models.job import (
     CanonicalJobModel,
     JobSourceRecordModel,
@@ -15,6 +15,7 @@ from app.db.models.user import UserModel
 
 __all__ = [
     "ApplicationModel",
+    "CandidateProfileModel",
     "CanonicalJobModel",
     "CvDocumentModel",
     "JobMatchModel",

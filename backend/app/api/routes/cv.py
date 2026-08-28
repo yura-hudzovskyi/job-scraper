@@ -1,4 +1,4 @@
-"""CV upload/listing — see docs/api.md."""
+"""CV upload/listing/analysis — see docs/api.md."""
 
 import uuid
 from datetime import datetime
@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user_id, get_cv_service
-from app.domain.candidates.models import CvDocument
-from app.services.cv_service import CvService, UnsupportedCvFormat
+from app.domain.candidates.models import CandidateProfile, CvDocument
+from app.services.cv_service import CvService, LlmNotConfigured, UnsupportedCvFormat
 
 router = APIRouter(prefix="/api/cv", tags=["cv"])
 
@@ -20,12 +20,64 @@ class CvDocumentResponse(BaseModel):
     text_preview: str
 
 
+class CandidateSkillResponse(BaseModel):
+    name: str
+    level: str
+    years: float | None
+
+
+class ExperienceEntryResponse(BaseModel):
+    company: str
+    title: str
+    start_date: str
+    end_date: str | None
+    description: str
+    skills: list[str]
+
+
+class CandidateProfileResponse(BaseModel):
+    id: str
+    experience_years: float
+    roles: list[str]
+    skills: list[CandidateSkillResponse]
+    experience: list[ExperienceEntryResponse]
+    achievements: list[str]
+    domains: list[str]
+    ai_experience: list[str]
+
+
 def _to_response(document: CvDocument) -> CvDocumentResponse:
     return CvDocumentResponse(
         id=document.id,
         filename=document.filename,
         uploaded_at=document.uploaded_at,
         text_preview=document.raw_text[:500],
+    )
+
+
+def _to_profile_response(profile: CandidateProfile) -> CandidateProfileResponse:
+    return CandidateProfileResponse(
+        id=profile.id,
+        experience_years=profile.experience_years,
+        roles=profile.roles,
+        skills=[
+            CandidateSkillResponse(name=skill.name, level=skill.level.value, years=skill.years)
+            for skill in profile.skills
+        ],
+        experience=[
+            ExperienceEntryResponse(
+                company=entry.company,
+                title=entry.title,
+                start_date=entry.start_date,
+                end_date=entry.end_date,
+                description=entry.description,
+                skills=entry.skills,
+            )
+            for entry in profile.experience
+        ],
+        achievements=profile.achievements,
+        domains=profile.domains,
+        ai_experience=profile.ai_experience,
     )
 
 
@@ -52,8 +104,19 @@ async def list_cvs(
     return [_to_response(document) for document in documents]
 
 
-@router.post("/analyze")
-async def analyze_cv() -> None:
-    """Extracting a structured CandidateProfile (skills, experience, roles) from a CV
-    needs an LLM — Phase 2. See docs/roadmap.md."""
-    raise NotImplementedError
+@router.post("/analyze", response_model=CandidateProfileResponse)
+async def analyze_cv(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    cv_service: CvService = Depends(get_cv_service),
+) -> CandidateProfileResponse:
+    """Analyzes the most recently uploaded CV into a structured CandidateProfile."""
+    documents = await cv_service.list_cvs(user_id)
+    if not documents:
+        raise HTTPException(status_code=404, detail="no CV uploaded yet")
+    latest = documents[0]
+
+    try:
+        profile = await cv_service.analyze_cv(user_id, uuid.UUID(latest.id), latest.raw_text)
+    except LlmNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return _to_profile_response(profile)
