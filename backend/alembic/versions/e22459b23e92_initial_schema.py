@@ -120,8 +120,14 @@ def upgrade() -> None:
             sa.ForeignKey("canonical_jobs.id"),
             nullable=False,
         ),
+        sa.Column("eligible", sa.Boolean(), nullable=False),
         sa.Column("requirement_match", sa.Float(), nullable=False),
         sa.Column("practical_fit", sa.Float(), nullable=False),
+        sa.Column("breakdown", postgresql.JSONB(), nullable=False),
+        sa.Column("strengths", postgresql.JSONB(), nullable=False),
+        sa.Column("gaps", postgresql.JSONB(), nullable=False),
+        sa.Column("recommendation", sa.String(), nullable=True),
+        sa.Column("scored_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
         sa.UniqueConstraint("user_id", "canonical_job_id"),
     )
 
