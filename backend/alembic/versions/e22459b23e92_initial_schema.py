@@ -25,7 +25,6 @@ depends_on: str | Sequence[str] | None = None
 
 _TABLE_NAMES_IN_DEPENDENCY_ORDER = [
     "canonical_jobs",
-    "notification_deliveries",
     "raw_jobs",
     "scrape_runs",
     "users",
@@ -33,7 +32,10 @@ _TABLE_NAMES_IN_DEPENDENCY_ORDER = [
     "cv_documents",
     "job_matches",
     "job_source_records",
+    "telegram_integrations",
     "user_preferences",
+    "notifications",
+    "notification_deliveries",
 ]
 
 
@@ -46,14 +48,6 @@ def upgrade() -> None:
         sa.Column("description", sa.String(), nullable=False),
         sa.Column("first_seen_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
         sa.Column("last_seen_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
-    )
-
-    op.create_table(
-        "notification_deliveries",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("notification_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("channel", sa.String(), nullable=False),
-        sa.UniqueConstraint("notification_id", "channel"),
     )
 
     op.create_table(
@@ -164,6 +158,18 @@ def upgrade() -> None:
     )
 
     op.create_table(
+        "telegram_integrations",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False
+        ),
+        sa.Column("bot_token", sa.String(), nullable=False),
+        sa.Column("chat_id", sa.String(), nullable=False),
+        sa.Column("connected_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
+        sa.UniqueConstraint("user_id"),
+    )
+
+    op.create_table(
         "user_preferences",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column(
@@ -180,6 +186,37 @@ def upgrade() -> None:
         sa.Column("industries_blacklist", postgresql.JSONB(), nullable=False),
         sa.Column("companies_blacklist", postgresql.JSONB(), nullable=False),
         sa.UniqueConstraint("user_id"),
+    )
+
+    op.create_table(
+        "notifications",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False
+        ),
+        sa.Column(
+            "job_match_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("job_matches.id"),
+            nullable=False,
+        ),
+        sa.Column("channel", sa.String(), nullable=False),
+        sa.Column("created_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
+    )
+
+    op.create_table(
+        "notification_deliveries",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "notification_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("notifications.id"),
+            nullable=False,
+        ),
+        sa.Column("channel", sa.String(), nullable=False),
+        sa.Column("delivered_at", sa.DateTime(), nullable=True),
+        sa.Column("error", sa.String(), nullable=True),
+        sa.UniqueConstraint("notification_id", "channel"),
     )
 
 

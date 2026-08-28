@@ -10,7 +10,11 @@ from app.db.models.job import (
     ScrapeRunModel,
 )
 from app.db.models.match import JobMatchModel
-from app.db.models.notification import NotificationDeliveryModel
+from app.db.models.notification import (
+    NotificationDeliveryModel,
+    NotificationModel,
+    TelegramIntegrationModel,
+)
 from app.db.models.user import UserModel
 
 __all__ = [
@@ -21,8 +25,10 @@ __all__ = [
     "JobMatchModel",
     "JobSourceRecordModel",
     "NotificationDeliveryModel",
+    "NotificationModel",
     "RawJobModel",
     "ScrapeRunModel",
+    "TelegramIntegrationModel",
     "UserModel",
     "UserPreferenceModel",
 ]
