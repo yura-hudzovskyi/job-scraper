@@ -7,9 +7,9 @@ notification channels (Telegram first).
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and
 [docs/roadmap.md](docs/roadmap.md) for what's implemented vs. still ahead — in short,
-Phase 1 (scraping DOU/Djinni, normalization, dedup, CV upload, preferences) is real;
-matching, embeddings, Telegram, and the application tracker are still interfaces/stubs
-waiting on their phase.
+Phases 1-3 (scraping, matching, and Telegram delivery) are real; LLM reranking/
+"should I apply?" (Phase 4) and the application tracker (Phase 5) are still
+interfaces/stubs waiting on their phase.
 
 ## Repository layout
 
@@ -55,9 +55,33 @@ have the frontend dependencies installed (`cd frontend && npm install`).
 
 ## Status
 
-Phase 1 is implemented: the DOU and Djinni adapters really scrape (verified against
-both fixtures and the live sites), jobs are normalized/deduplicated and stored in
-Postgres, and CV upload / preferences are real, DB-backed endpoints. Matching
-(Phase 2), Telegram delivery (Phase 3), LLM reranking (Phase 4), and the application
-tracker (Phase 5) are still interfaces and domain models without business logic — see
-[docs/roadmap.md](docs/roadmap.md).
+**Phase 1** — the DOU and Djinni adapters really scrape (verified against both
+fixtures and the live sites), jobs are normalized/deduplicated and stored in Postgres,
+CV upload / preferences are real DB-backed endpoints.
+
+**Phase 2** — CV analysis extracts a structured CandidateProfile via the configured
+LLM provider (Anthropic/OpenAI/Ollama, all implemented against their real APIs); a
+~65-skill ontology backs deterministic scoring (skills, transferable skills, role,
+experience, salary, location, stack preferences) plus real semantic similarity via
+local sentence-transformers embeddings; hard filters run first; every match is
+explainable (component breakdown, strengths, gaps). Live end-to-end verified without
+a database. Persisted embeddings (pgvector) are deferred — on-demand computation is
+correct and fine at this scale.
+
+**Phase 3** — NotificationPolicy (score thresholds, quiet hours) gates delivery
+through a real Telegram Bot API provider (verified live), with idempotent delivery
+tracking so nothing sends twice. `score → notify` is a real Celery chain. Daily-digest
+delivery and inline-button (save/applied/reject) callback handling are not built yet —
+the buttons render, but tapping them doesn't do anything server-side.
+
+**Phase 4** (LLM reranking, "should I apply?", job requirement extraction) and
+**Phase 5** (application tracker) are still interfaces/domain models without business
+logic — see [docs/roadmap.md](docs/roadmap.md).
+
+Nothing here has run against a live Postgres yet — Docker Desktop is broken on the
+machine this was built on (missing `services.iso`, unrelated to this repo). Every
+migration was verified offline instead (DDL compiled from the ORM models diffed
+against `alembic upgrade --sql` output) and every external API call was verified live
+against the real DOU/Djinni/Anthropic/OpenAI/Telegram endpoints where credentials
+allow (auth-rejection paths for the ones needing a key/token this environment doesn't
+have).
