@@ -13,7 +13,15 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.job import CanonicalJobModel, JobSourceRecordModel, RawJobModel
-from app.domain.jobs.models import CanonicalJob, EmploymentType, JobLocation, NormalizedJob, RawJob
+from app.domain.jobs.models import (
+    CanonicalJob,
+    EmploymentType,
+    JobLocation,
+    NormalizedJob,
+    NormalizedJobSkill,
+    RawJob,
+    SalaryRange,
+)
 
 
 def _to_raw_job(model: RawJobModel) -> RawJob:
@@ -47,6 +55,33 @@ def _canonical_candidate_view(model: CanonicalJobModel) -> NormalizedJob:
 
 def _skills_payload(normalized: NormalizedJob) -> list[dict[str, Any]]:
     return [{"name": skill.name, "required": skill.required} for skill in normalized.skills]
+
+
+def _to_normalized_job(model: JobSourceRecordModel) -> NormalizedJob:
+    salary = (
+        SalaryRange(min=model.salary_min, max=model.salary_max, currency=model.salary_currency)
+        if model.salary_min is not None or model.salary_max is not None
+        else None
+    )
+    return NormalizedJob(
+        source=model.source,
+        external_id=model.external_id,
+        url=model.url,
+        title=model.title,
+        company=model.company,
+        description=model.description,
+        employment_type=EmploymentType(model.employment_type),
+        location=JobLocation(
+            remote=model.remote, countries=list(model.countries), cities=list(model.cities)
+        ),
+        salary=salary,
+        seniority=model.seniority,
+        required_experience_years=model.required_experience_years,
+        skills=[
+            NormalizedJobSkill(name=skill["name"], required=skill["required"])
+            for skill in model.skills
+        ],
+    )
 
 
 class JobRepository:
@@ -138,6 +173,22 @@ class JobRepository:
         return CanonicalJob(
             id=str(model.id), normalized=_canonical_candidate_view(model), source_records=source_record_ids
         )
+
+    async def get_normalized_job_for_canonical(
+        self, canonical_job_id: uuid.UUID
+    ) -> NormalizedJob | None:
+        """The full NormalizedJob (salary, location, skills, ...) for one of this
+        canonical job's source records — canonical_jobs itself only stores the
+        title/company/description subset used for dedup matching. Picks whichever
+        source record was normalized most recently."""
+        result = await self._session.execute(
+            select(JobSourceRecordModel)
+            .where(JobSourceRecordModel.canonical_job_id == canonical_job_id)
+            .order_by(JobSourceRecordModel.normalized_at.desc())
+            .limit(1)
+        )
+        model = result.scalar_one_or_none()
+        return _to_normalized_job(model) if model else None
 
     async def create_canonical_job(self, normalized: NormalizedJob) -> uuid.UUID:
         model = CanonicalJobModel(
