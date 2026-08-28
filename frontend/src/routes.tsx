@@ -1,5 +1,6 @@
 import { Route, Routes } from "react-router-dom";
 
+import { Layout } from "./components/Layout";
 import { Applications } from "./pages/Applications";
 import { Dashboard } from "./pages/Dashboard";
 import { JobDetails } from "./pages/JobDetails";
@@ -12,14 +13,16 @@ import { Sources } from "./pages/Sources";
 export function AppRoutes() {
   return (
     <Routes>
-      <Route path="/" element={<Dashboard />} />
-      <Route path="/jobs" element={<Jobs />} />
-      <Route path="/jobs/:jobId" element={<JobDetails />} />
-      <Route path="/applications" element={<Applications />} />
-      <Route path="/profile" element={<Profile />} />
-      <Route path="/market-insights" element={<MarketInsights />} />
-      <Route path="/sources" element={<Sources />} />
-      <Route path="/settings" element={<Settings />} />
+      <Route element={<Layout />}>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/jobs" element={<Jobs />} />
+        <Route path="/jobs/:jobId" element={<JobDetails />} />
+        <Route path="/applications" element={<Applications />} />
+        <Route path="/profile" element={<Profile />} />
+        <Route path="/market-insights" element={<MarketInsights />} />
+        <Route path="/sources" element={<Sources />} />
+        <Route path="/settings" element={<Settings />} />
+      </Route>
     </Routes>
   );
 }

@@ -1,7 +1,159 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 
+import { ApiError } from "../api/client";
+import { getJob, getJobMatch, rescoreJob } from "../api/endpoints";
+import { Button, Card, ErrorBanner, SectionTitle } from "../components/ui";
+
+const BREAKDOWN_LABELS: Record<string, string> = {
+  skills: "Skills",
+  role: "Role",
+  experience: "Experience",
+  semantic_fit: "Semantic fit",
+  salary: "Salary",
+  location: "Location",
+  transferable_skills: "Transferable skills",
+  preferences: "Preferences",
+};
+
 export function JobDetails() {
-  const { jobId } = useParams();
-  // TODO: score breakdown, strengths/gaps, "should I apply?" — docs/matching-engine.md
-  return <h1>Job {jobId}</h1>;
+  const { jobId } = useParams<{ jobId: string }>();
+  const queryClient = useQueryClient();
+  if (!jobId) return null;
+
+  const jobQuery = useQuery({ queryKey: ["job", jobId], queryFn: () => getJob(jobId) });
+  const matchQuery = useQuery({
+    queryKey: ["job-match", jobId],
+    queryFn: () => getJobMatch(jobId),
+    retry: false,
+  });
+
+  const rescoreMutation = useMutation({
+    mutationFn: () => rescoreJob(jobId),
+    onSuccess: () => {
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["job-match", jobId] }), 3000);
+    },
+  });
+
+  const notScoredYet = matchQuery.error instanceof ApiError && matchQuery.error.status === 404;
+
+  return (
+    <div className="flex flex-col gap-6">
+      <Card>
+        {jobQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+        {jobQuery.data && (
+          <>
+            <SectionTitle>{jobQuery.data.title}</SectionTitle>
+            <p className="mb-3 text-sm text-slate-600">{jobQuery.data.company}</p>
+            <p className="whitespace-pre-line text-sm text-slate-700">
+              {jobQuery.data.description}
+            </p>
+          </>
+        )}
+      </Card>
+
+      <Card>
+        <SectionTitle>Match</SectionTitle>
+
+        {notScoredYet && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-slate-600">
+              Not scored yet — needs an analyzed CV and preferences set first.
+            </p>
+            <Button
+              onClick={() => rescoreMutation.mutate()}
+              disabled={rescoreMutation.isPending}
+              className="w-fit"
+            >
+              {rescoreMutation.isPending ? "Queuing…" : "Score this job"}
+            </Button>
+            {rescoreMutation.isSuccess && (
+              <p className="text-sm text-green-700">
+                Queued — this runs in the background, refresh in a few seconds.
+              </p>
+            )}
+          </div>
+        )}
+
+        {matchQuery.error && !notScoredYet && (
+          <ErrorBanner
+            message={
+              matchQuery.error instanceof ApiError ? matchQuery.error.message : "Failed to load"
+            }
+          />
+        )}
+
+        {matchQuery.data && (
+          <div className="flex flex-col gap-4">
+            <div className="flex items-baseline gap-6">
+              <div>
+                <p className="text-3xl font-bold">{matchQuery.data.practical_fit.toFixed(0)}%</p>
+                <p className="text-sm text-slate-500">Practical fit</p>
+              </div>
+              <div>
+                <p className="text-xl font-semibold text-slate-600">
+                  {matchQuery.data.requirement_match.toFixed(0)}%
+                </p>
+                <p className="text-sm text-slate-500">Requirement match</p>
+              </div>
+              {matchQuery.data.recommendation && (
+                <span className="rounded-full bg-slate-900 px-3 py-1 text-sm text-white uppercase">
+                  {matchQuery.data.recommendation}
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+              {Object.entries(matchQuery.data.breakdown).map(([key, value]) => (
+                <div key={key} className="flex items-center justify-between">
+                  <span className="text-slate-600">{BREAKDOWN_LABELS[key] ?? key}</span>
+                  <span className="font-medium">{Number(value).toFixed(0)}%</span>
+                </div>
+              ))}
+            </div>
+
+            {matchQuery.data.strengths.length > 0 && (
+              <div>
+                <p className="mb-1 text-sm text-slate-500">Strengths</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {matchQuery.data.strengths.map((strength) => (
+                    <span
+                      key={strength}
+                      className="rounded-full bg-green-100 px-2.5 py-1 text-xs text-green-800"
+                    >
+                      {strength}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {matchQuery.data.gaps.length > 0 && (
+              <div>
+                <p className="mb-1 text-sm text-slate-500">Gaps</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {matchQuery.data.gaps.map((gap) => (
+                    <span
+                      key={gap}
+                      className="rounded-full bg-amber-100 px-2.5 py-1 text-xs text-amber-800"
+                    >
+                      {gap}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <Button
+              onClick={() => rescoreMutation.mutate()}
+              disabled={rescoreMutation.isPending}
+              className="w-fit bg-slate-600 hover:bg-slate-500"
+            >
+              {rescoreMutation.isPending ? "Queuing…" : "Rescore"}
+            </Button>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
 }

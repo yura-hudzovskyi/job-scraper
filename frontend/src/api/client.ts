@@ -1,9 +1,26 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`, init);
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status} ${path}`);
+    const detail = await response
+      .json()
+      .then((body: { detail?: string }) => body.detail)
+      .catch(() => undefined);
+    throw new ApiError(response.status, detail ?? `${response.status} ${path}`);
+  }
+  if (response.status === 204) {
+    return undefined as T;
   }
   return response.json() as Promise<T>;
 }
@@ -22,4 +39,6 @@ export const apiClient = {
       headers: { "Content-Type": "application/json" },
       body: body ? JSON.stringify(body) : undefined,
     }),
+  postForm: <T>(path: string, form: FormData) =>
+    request<T>(path, { method: "POST", body: form }),
 };
