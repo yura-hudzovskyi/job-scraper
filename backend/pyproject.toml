@@ -10,7 +10,11 @@ dependencies = [
     "pydantic-settings>=2.5",
     "sqlalchemy>=2.0",
     "alembic>=1.13",
+    # psycopg: Alembic's sync engine. asyncpg: the app's async runtime engine —
+    # psycopg's async mode can't run under uvicorn's Windows event loop policy
+    # (ProactorEventLoop), asyncpg has no such restriction. See db/session.py.
     "psycopg[binary]>=3.2",
+    "asyncpg>=0.29",
     "redis>=5.0",
     "celery>=5.4",
     "httpx>=0.27",

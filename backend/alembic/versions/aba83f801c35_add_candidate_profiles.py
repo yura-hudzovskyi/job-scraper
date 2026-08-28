@@ -11,8 +11,9 @@ that migration's docstring and commit message for how.
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "aba83f801c35"
@@ -42,7 +43,10 @@ def upgrade() -> None:
         sa.Column("domains", postgresql.JSONB(), nullable=False),
         sa.Column("ai_experience", postgresql.JSONB(), nullable=False),
         sa.Column(
-            "extracted_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False
+            "extracted_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
         ),
     )
 

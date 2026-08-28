@@ -1,7 +1,8 @@
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -31,7 +32,16 @@ class Settings(BaseSettings):
 
     sentry_dsn: str | None = None
 
-    api_cors_origins: list[str] = ["http://localhost:5173"]
+    # NoDecode: pydantic-settings otherwise tries to json.loads() any list-typed env
+    # var before validation ever runs — .env.example documents the plainer `a,b` form.
+    api_cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:5173"]
+
+    @field_validator("api_cors_origins", mode="before")
+    @classmethod
+    def _split_comma_separated(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
 
 
 @lru_cache

@@ -24,6 +24,7 @@ dist/
 *.db
 *.sqlite3
 pgdata/
+celerybeat-schedule*
 
 # Editors / OS
 .vscode/

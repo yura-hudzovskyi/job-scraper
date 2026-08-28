@@ -14,8 +14,9 @@ check. Table order follows Base.metadata.sorted_tables (topological, by FK).
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "e22459b23e92"
@@ -46,8 +47,18 @@ def upgrade() -> None:
         sa.Column("title", sa.String(), nullable=False),
         sa.Column("company", sa.String(), nullable=False),
         sa.Column("description", sa.String(), nullable=False),
-        sa.Column("first_seen_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
-        sa.Column("last_seen_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "first_seen_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "last_seen_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
 
     op.create_table(
@@ -57,7 +68,12 @@ def upgrade() -> None:
         sa.Column("external_id", sa.String(), nullable=False),
         sa.Column("url", sa.String(), nullable=False),
         sa.Column("payload", postgresql.JSONB(), nullable=False),
-        sa.Column("fetched_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "fetched_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.UniqueConstraint("source", "external_id"),
     )
 
@@ -65,8 +81,13 @@ def upgrade() -> None:
         "scrape_runs",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("source", sa.String(), nullable=False),
-        sa.Column("started_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
-        sa.Column("finished_at", sa.DateTime(), nullable=True),
+        sa.Column(
+            "started_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("pages", sa.Integer(), nullable=False),
         sa.Column("jobs_seen", sa.Integer(), nullable=False),
         sa.Column("new_count", sa.Integer(), nullable=False),
@@ -78,14 +99,21 @@ def upgrade() -> None:
         "users",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("email", sa.String(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.UniqueConstraint("email"),
     )
 
     op.create_table(
         "applications",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column(
+            "user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False
+        ),
         sa.Column(
             "canonical_job_id",
             postgresql.UUID(as_uuid=True),
@@ -98,16 +126,25 @@ def upgrade() -> None:
     op.create_table(
         "cv_documents",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column(
+            "user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False
+        ),
         sa.Column("filename", sa.String(), nullable=False),
         sa.Column("raw_text", sa.String(), nullable=False),
-        sa.Column("uploaded_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "uploaded_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
 
     op.create_table(
         "job_matches",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column(
+            "user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False
+        ),
         sa.Column(
             "canonical_job_id",
             postgresql.UUID(as_uuid=True),
@@ -121,7 +158,9 @@ def upgrade() -> None:
         sa.Column("strengths", postgresql.JSONB(), nullable=False),
         sa.Column("gaps", postgresql.JSONB(), nullable=False),
         sa.Column("recommendation", sa.String(), nullable=True),
-        sa.Column("scored_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "scored_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+        ),
         sa.UniqueConstraint("user_id", "canonical_job_id"),
     )
 
@@ -129,7 +168,10 @@ def upgrade() -> None:
         "job_source_records",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column(
-            "raw_job_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("raw_jobs.id"), nullable=False
+            "raw_job_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("raw_jobs.id"),
+            nullable=False,
         ),
         sa.Column(
             "canonical_job_id",
@@ -153,7 +195,12 @@ def upgrade() -> None:
         sa.Column("seniority", sa.String(), nullable=True),
         sa.Column("required_experience_years", sa.Float(), nullable=True),
         sa.Column("skills", postgresql.JSONB(), nullable=False),
-        sa.Column("normalized_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "normalized_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.UniqueConstraint("source", "external_id"),
     )
 
@@ -165,7 +212,12 @@ def upgrade() -> None:
         ),
         sa.Column("bot_token", sa.String(), nullable=False),
         sa.Column("chat_id", sa.String(), nullable=False),
-        sa.Column("connected_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "connected_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.UniqueConstraint("user_id"),
     )
 
@@ -201,7 +253,12 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("channel", sa.String(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
 
     op.create_table(
@@ -214,7 +271,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("channel", sa.String(), nullable=False),
-        sa.Column("delivered_at", sa.DateTime(), nullable=True),
+        sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("error", sa.String(), nullable=True),
         sa.UniqueConstraint("notification_id", "channel"),
     )
