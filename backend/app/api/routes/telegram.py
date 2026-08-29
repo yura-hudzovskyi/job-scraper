@@ -29,6 +29,10 @@ class ConnectTelegramResponse(BaseModel):
     bot_username: str | None
 
 
+class TelegramStatusResponse(BaseModel):
+    connected: bool
+
+
 def _sample_notification() -> JobMatchNotification:
     match = JobMatch(
         id="test",
@@ -46,6 +50,15 @@ def _sample_notification() -> JobMatchNotification:
         company="Job Intelligence Platform",
         job_url="https://github.com",
     )
+
+
+@router.get("/status", response_model=TelegramStatusResponse)
+async def telegram_status(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    repository: NotificationRepository = Depends(get_notification_repository),
+) -> TelegramStatusResponse:
+    integration = await repository.get_telegram_integration(user_id)
+    return TelegramStatusResponse(connected=integration is not None)
 
 
 @router.post("/connect", response_model=ConnectTelegramResponse)

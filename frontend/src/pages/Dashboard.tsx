@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
-import { getProfile, listJobs, listSources } from "../api/endpoints";
-import { Card, SectionTitle } from "../components/ui";
+import { getProfile, getTelegramStatus, listJobs, listSources } from "../api/endpoints";
+import { Button, Card, SectionTitle } from "../components/ui";
 
 function StatusRow({
   done,
@@ -32,32 +32,43 @@ export function Dashboard() {
   const profileQuery = useQuery({ queryKey: ["profile"], queryFn: getProfile });
   const sourcesQuery = useQuery({ queryKey: ["sources"], queryFn: listSources });
   const jobsQuery = useQuery({ queryKey: ["jobs"], queryFn: listJobs });
+  const telegramQuery = useQuery({ queryKey: ["telegram-status"], queryFn: getTelegramStatus });
 
   const rawJobsStored = sourcesQuery.data?.reduce((sum, s) => sum + s.raw_jobs_stored, 0) ?? 0;
+  const hasCv = (profileQuery.data?.cv_count ?? 0) > 0;
+  const hasPreferences = profileQuery.data?.has_preferences ?? false;
+  const hasJobs = rawJobsStored > 0;
+  const hasTelegram = telegramQuery.data?.connected ?? false;
+  const setupComplete = hasCv && hasPreferences && hasJobs && hasTelegram;
 
   return (
     <div className="flex flex-col gap-6">
       <Card>
         <SectionTitle>Setup</SectionTitle>
+        <StatusRow done={hasCv} label="CV uploaded" to="/profile" linkLabel="Upload / analyze" />
         <StatusRow
-          done={(profileQuery.data?.cv_count ?? 0) > 0}
-          label="CV uploaded"
-          to="/profile"
-          linkLabel="Upload / analyze"
-        />
-        <StatusRow
-          done={profileQuery.data?.has_preferences ?? false}
+          done={hasPreferences}
           label="Preferences set"
           to="/settings"
           linkLabel="Configure"
         />
-        <StatusRow done={rawJobsStored > 0} label="Jobs scraped" to="/sources" linkLabel="Sync now" />
+        <StatusRow done={hasJobs} label="Jobs scraped" to="/sources" linkLabel="Sync now" />
         <StatusRow
-          done={false}
+          done={hasTelegram}
           label="Telegram connected"
           to="/settings"
           linkLabel="Connect + test"
         />
+        {setupComplete && (
+          <div className="mt-4 flex items-center justify-between rounded border border-green-200 bg-green-50 p-3">
+            <p className="text-sm text-green-800">
+              Everything's set up — score jobs against your profile to start getting matches.
+            </p>
+            <Link to="/jobs">
+              <Button className="shrink-0">Score jobs →</Button>
+            </Link>
+          </div>
+        )}
       </Card>
 
       <Card>

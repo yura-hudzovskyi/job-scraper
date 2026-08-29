@@ -103,6 +103,10 @@ export interface ConnectTelegramResponse {
   bot_username: string | null;
 }
 
+export interface TelegramStatus {
+  connected: boolean;
+}
+
 export interface TokenResponse {
   access_token: string;
   token_type: string;

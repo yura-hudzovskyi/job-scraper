@@ -9,6 +9,7 @@ import type {
   Preferences,
   ProfileSummary,
   SourceHealth,
+  TelegramStatus,
   TokenResponse,
 } from "./types";
 
@@ -33,6 +34,8 @@ export const getPreferences = () => apiClient.get<Preferences | null>("/api/sett
 export const updatePreferences = (preferences: Preferences) =>
   apiClient.patch<Preferences>("/api/settings", preferences);
 
+export const getTelegramStatus = () =>
+  apiClient.get<TelegramStatus>("/api/integrations/telegram/status");
 export const connectTelegram = (botToken: string, chatId: string) =>
   apiClient.post<ConnectTelegramResponse>("/api/integrations/telegram/connect", {
     bot_token: botToken,
