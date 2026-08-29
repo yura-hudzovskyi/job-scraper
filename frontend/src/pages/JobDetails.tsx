@@ -72,6 +72,15 @@ export function JobDetails() {
                 Queued — this runs in the background, refresh in a few seconds.
               </p>
             )}
+            {rescoreMutation.isError && (
+              <ErrorBanner
+                message={
+                  rescoreMutation.error instanceof ApiError
+                    ? rescoreMutation.error.message
+                    : "Failed to queue scoring"
+                }
+              />
+            )}
           </div>
         )}
 
@@ -151,6 +160,15 @@ export function JobDetails() {
             >
               {rescoreMutation.isPending ? "Queuing…" : "Rescore"}
             </Button>
+            {rescoreMutation.isError && (
+              <ErrorBanner
+                message={
+                  rescoreMutation.error instanceof ApiError
+                    ? rescoreMutation.error.message
+                    : "Failed to queue scoring"
+                }
+              />
+            )}
           </div>
         )}
       </Card>
