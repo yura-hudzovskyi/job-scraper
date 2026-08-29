@@ -1,19 +1,30 @@
 import { Route, Routes } from "react-router-dom";
 
 import { Layout } from "./components/Layout";
+import { RequireAuth } from "./components/RequireAuth";
 import { Applications } from "./pages/Applications";
 import { Dashboard } from "./pages/Dashboard";
 import { JobDetails } from "./pages/JobDetails";
 import { Jobs } from "./pages/Jobs";
+import { Login } from "./pages/Login";
 import { MarketInsights } from "./pages/MarketInsights";
 import { Profile } from "./pages/Profile";
+import { Register } from "./pages/Register";
 import { Settings } from "./pages/Settings";
 import { Sources } from "./pages/Sources";
 
 export function AppRoutes() {
   return (
     <Routes>
-      <Route element={<Layout />}>
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
+      <Route
+        element={
+          <RequireAuth>
+            <Layout />
+          </RequireAuth>
+        }
+      >
         <Route path="/" element={<Dashboard />} />
         <Route path="/jobs" element={<Jobs />} />
         <Route path="/jobs/:jobId" element={<JobDetails />} />
