@@ -38,3 +38,6 @@ class AuthService:
             raise InvalidCredentials()
 
         return user, create_access_token(uuid.UUID(user.id), self._secret_key)
+
+    async def get_user(self, user_id: uuid.UUID) -> User | None:
+        return await self._user_repository.get_by_id(user_id)

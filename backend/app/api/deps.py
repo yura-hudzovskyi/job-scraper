@@ -2,14 +2,14 @@
 
 Routes depend on these, never on repositories or integrations directly.
 
-Phase 1 is single-user, so there's no auth yet — get_current_user_id lazily creates
-one default user instead of building real auth, which isn't on the roadmap for a
-personal tool.
+get_current_user_id verifies a JWT bearer token (see app/security/tokens.py) rather
+than touching the database — auth is stateless, no session lookup needed.
 """
 
 import uuid
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
@@ -20,15 +20,42 @@ from app.repositories.candidate_repository import CandidateRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
 from app.repositories.notification_repository import NotificationRepository
+from app.repositories.user_repository import UserRepository
+from app.security.tokens import InvalidToken, decode_access_token
+from app.services.auth_service import AuthService
 from app.services.cv_service import CvService
-from app.services.default_user import get_or_create_default_user_id
 from app.services.job_ingestion_service import JobIngestionService
 from app.services.job_service import JobService
 from app.services.profile_service import ProfileService
 
+_bearer_scheme = HTTPBearer(auto_error=False)
 
-async def get_current_user_id(session: AsyncSession = Depends(get_session)) -> uuid.UUID:
-    return await get_or_create_default_user_id(session)
+
+async def get_current_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> uuid.UUID:
+    if credentials is None:
+        raise HTTPException(
+            status_code=401, detail="not authenticated", headers={"WWW-Authenticate": "Bearer"}
+        )
+    try:
+        return decode_access_token(credentials.credentials, get_settings().secret_key)
+    except InvalidToken as exc:
+        raise HTTPException(
+            status_code=401,
+            detail="invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
+def get_user_repository(session: AsyncSession = Depends(get_session)) -> UserRepository:
+    return UserRepository(session)
+
+
+def get_auth_service(
+    user_repository: UserRepository = Depends(get_user_repository),
+) -> AuthService:
+    return AuthService(user_repository, get_settings().secret_key)
 
 
 def get_candidate_repository(session: AsyncSession = Depends(get_session)) -> CandidateRepository:
