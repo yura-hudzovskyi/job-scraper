@@ -12,6 +12,7 @@ celery_app = Celery(
         "app.workers.tasks.scrape",
         "app.workers.tasks.normalize",
         "app.workers.tasks.embed",
+        "app.workers.tasks.extract_job_skills",
         "app.workers.tasks.score",
         "app.workers.tasks.notify",
     ],

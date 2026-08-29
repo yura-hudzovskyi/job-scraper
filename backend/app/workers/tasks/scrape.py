@@ -1,9 +1,9 @@
 """Fetches new jobs from one source, normalizes and dedups them, persists them, and
-enqueues scoring for each newly discovered job for every user who's finished
-onboarding (has an analyzed CandidateProfile — score_job_for_user hard-requires one).
-Safe to re-run — JobIngestionService skips already-known external ids before any
-detail fetch, and score_job_for_user is itself idempotent (upsert on
-(user_id, canonical_job_id)). See docs/source-adapters.md.
+enqueues skill extraction for each newly discovered job — which itself fans out
+scoring to every user who's finished onboarding once extraction completes (see
+workers/tasks/extract_job_skills.py). Safe to re-run — JobIngestionService skips
+already-known external ids before any detail fetch, and both extraction and
+score_job_for_user are themselves idempotent. See docs/source-adapters.md.
 """
 
 import asyncio
@@ -15,7 +15,7 @@ from app.repositories.candidate_repository import CandidateRepository
 from app.repositories.job_repository import JobRepository
 from app.services.job_ingestion_service import IngestionResult, JobIngestionService
 from app.workers.celery_app import celery_app
-from app.workers.tasks.score import score_job_for_user
+from app.workers.tasks.extract_job_skills import extract_job_skills
 
 
 async def _run(source_name: str, keywords: list[str]) -> IngestionResult:
@@ -25,9 +25,9 @@ async def _run(source_name: str, keywords: list[str]) -> IngestionResult:
         result = await ingestion.ingest_source(adapter, JobSearchCriteria(keywords=keywords))
         user_ids = await CandidateRepository(session).list_user_ids_with_profile()
 
+    user_id_strings = [str(user_id) for user_id in user_ids]
     for canonical_job_id in result.processed_canonical_job_ids:
-        for user_id in user_ids:
-            score_job_for_user.delay(str(user_id), canonical_job_id)
+        extract_job_skills.delay(canonical_job_id, user_id_strings)
 
     return result
 
