@@ -143,6 +143,12 @@ class CandidateRepository:
         model = result.scalar_one_or_none()
         return _to_candidate_profile(model) if model else None
 
+    async def list_user_ids_with_profile(self) -> list[uuid.UUID]:
+        """Users who've finished onboarding (analyzed at least one CV) — score_job_for_user
+        hard-requires a CandidateProfile, so this is the fan-out gate in scrape.py."""
+        result = await self._session.execute(select(CandidateProfileModel.user_id).distinct())
+        return list(result.scalars())
+
     async def get_preferences(self, user_id: uuid.UUID) -> UserPreference | None:
         result = await self._session.execute(
             select(UserPreferenceModel).where(UserPreferenceModel.user_id == user_id)
