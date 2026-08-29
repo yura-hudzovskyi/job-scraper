@@ -53,8 +53,8 @@ def _canonical_candidate_view(model: CanonicalJobModel) -> NormalizedJob:
     )
 
 
-def _skills_payload(normalized: NormalizedJob) -> list[dict[str, Any]]:
-    return [{"name": skill.name, "required": skill.required} for skill in normalized.skills]
+def _skills_payload(skills: list[NormalizedJobSkill]) -> list[dict[str, Any]]:
+    return [{"name": skill.name, "required": skill.required} for skill in skills]
 
 
 def _to_normalized_job(model: JobSourceRecordModel) -> NormalizedJob:
@@ -190,6 +190,24 @@ class JobRepository:
         model = result.scalar_one_or_none()
         return _to_normalized_job(model) if model else None
 
+    async def update_skills_for_canonical(
+        self, canonical_job_id: uuid.UUID, skills: list[NormalizedJobSkill]
+    ) -> None:
+        """Saves LLM-extracted skills onto whichever source record scoring reads via
+        get_normalized_job_for_canonical — same "most recently normalized" selection,
+        so extraction writes to exactly the row matching later reads from."""
+        result = await self._session.execute(
+            select(JobSourceRecordModel)
+            .where(JobSourceRecordModel.canonical_job_id == canonical_job_id)
+            .order_by(JobSourceRecordModel.normalized_at.desc())
+            .limit(1)
+        )
+        model = result.scalar_one_or_none()
+        if model is None:
+            return
+        model.skills = _skills_payload(skills)
+        await self._session.flush()
+
     async def create_canonical_job(self, normalized: NormalizedJob) -> uuid.UUID:
         model = CanonicalJobModel(
             title=normalized.title,
@@ -226,7 +244,7 @@ class JobRepository:
             "salary_currency": normalized.salary.currency if normalized.salary else None,
             "seniority": normalized.seniority,
             "required_experience_years": normalized.required_experience_years,
-            "skills": _skills_payload(normalized),
+            "skills": _skills_payload(normalized.skills),
         }
         stmt = (
             insert(JobSourceRecordModel)
