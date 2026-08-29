@@ -1,5 +1,4 @@
-"""The root entity everything else (profile, preferences, jobs actions) hangs off.
-Phase 1 is single-user, but the schema doesn't hardcode that assumption."""
+"""The root entity everything else (profile, preferences, jobs actions) hangs off."""
 
 from datetime import datetime
 
@@ -13,4 +12,5 @@ class UserModel(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "users"
 
     email: Mapped[str] = mapped_column(unique=True)
+    password_hash: Mapped[str]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
