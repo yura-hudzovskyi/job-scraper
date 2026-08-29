@@ -201,6 +201,20 @@ from the git checkout.
 
 ## Notes
 
+- **One-time step when the multi-user auth branch merges to `main`**: the `users`
+  table on an already-running VM almost certainly has a row auto-created by the old
+  single-default-user shortcut, with no password. That migration adds a `NOT NULL`
+  `password_hash` column, so leaving that row in place means you can't register with
+  your own email afterward (409, unique constraint). Before that deploy runs, SSH in
+  and check:
+  ```bash
+  docker compose -f docker-compose.prod.yml exec postgres psql -U job_scraper -c "SELECT id, email FROM users;"
+  ```
+  If it's just that one synthetic row (expected, since no one had registered yet),
+  clear it: `docker compose -f docker-compose.prod.yml exec postgres psql -U job_scraper -c "TRUNCATE users CASCADE;"`.
+  Also confirm `.env`'s `SECRET_KEY` is a real random value (`openssl rand -hex 32`),
+  not the `change-me` default — it now signs login tokens, so anyone who knows it can
+  forge a valid session for any user.
 - **Backups**: `pgdata` is a named Docker volume on the VM's own disk — it survives
   container restarts and redeploys, but not VM deletion. For anything you'd be upset
   to lose, add a cron job doing `docker compose exec -T postgres pg_dump -U
