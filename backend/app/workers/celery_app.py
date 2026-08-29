@@ -1,8 +1,6 @@
 from celery import Celery
-from celery.signals import worker_process_init
 
 from app.config.settings import get_settings
-from app.db.session import reset_engine
 
 settings = get_settings()
 
@@ -36,14 +34,3 @@ celery_app.conf.beat_schedule = {
         "args": ("djinni", []),
     },
 }
-
-
-@worker_process_init.connect
-def _reset_db_engine_after_fork(**kwargs: object) -> None:
-    """The prefork pool forks worker child processes after this module (and
-    app.db.session) has already been imported once in the parent — without this,
-    every forked child inherits and shares the parent's asyncpg connections, which
-    corrupts them the moment more than one process touches the DB. See
-    db/session.py::reset_engine.
-    """
-    reset_engine()
