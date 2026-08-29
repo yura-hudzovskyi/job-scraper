@@ -6,33 +6,33 @@ from app.domain.candidates.models import (
     SkillLevel,
     UserPreference,
 )
-from app.domain.candidates.skill_data import build_default_skill_registry
-from app.domain.jobs.models import EmploymentType, JobLocation, NormalizedJob
+from app.domain.jobs.models import EmploymentType, JobLocation, NormalizedJob, NormalizedJobSkill
 from app.domain.matching.filters import HardFilterService
 from app.domain.matching.models import Recommendation
 from app.domain.matching.scoring import DeterministicScorer, SemanticScorer
 from app.domain.matching.service import MatchingService
+from app.domain.matching.skill_matching import SkillMatcher
 
 
-class _IdenticalVectorsProvider:
-    """Cosine similarity always 1.0 — isolates a test from semantic_fit."""
+class _FakeEmbeddingProvider:
+    """Any text not explicitly overridden gets the same default vector, so unrelated
+    calls (semantic_fit's profile/job text, skills not under test) trivially agree
+    with each other (cosine 1.0) unless a test deliberately overrides them to differ.
+    """
+
+    def __init__(self, overrides: dict[str, list[float]] | None = None):
+        self._overrides = overrides or {}
+        self._default = [1.0, 0.0]
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        return [[1.0, 0.0] for _ in texts]
-
-
-class _OrthogonalVectorsProvider:
-    """Cosine similarity always 0.0 — simulates "no semantic relation" for a test
-    that specifically wants a weak/unrelated match, independent of skill overlap."""
-
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        return [[1.0, 0.0], [0.0, 1.0]][: len(texts)]
+        return [self._overrides.get(text, self._default) for text in texts]
 
 
 def _job(
     title: str = "Senior Backend Engineer",
     description: str = "We use Django and PostgreSQL.",
     company: str = "Acme",
+    skills: list[NormalizedJobSkill] | None = None,
 ) -> NormalizedJob:
     return NormalizedJob(
         source="dou",
@@ -46,6 +46,7 @@ def _job(
         salary=None,
         seniority=None,
         required_experience_years=None,
+        skills=skills or [],
     )
 
 
@@ -66,17 +67,17 @@ def _preferences(**overrides) -> UserPreference:
 
 
 def _matching_service(embedding_provider: object) -> MatchingService:
-    registry = build_default_skill_registry()
     return MatchingService(
         HardFilterService(),
-        DeterministicScorer(registry),
+        DeterministicScorer(),
         SemanticScorer(embedding_provider),  # type: ignore[arg-type]
+        SkillMatcher(embedding_provider),  # type: ignore[arg-type]
     )
 
 
 @pytest.fixture
 def matching_service() -> MatchingService:
-    return _matching_service(_IdenticalVectorsProvider())
+    return _matching_service(_FakeEmbeddingProvider())
 
 
 @pytest.mark.asyncio
@@ -97,7 +98,13 @@ async def test_ineligible_job_short_circuits_before_scoring(
 
 @pytest.mark.asyncio
 async def test_strong_match_recommends_apply(matching_service: MatchingService) -> None:
-    job = _job(description="We use Django and PostgreSQL.")
+    job = _job(
+        description="We use Django and PostgreSQL.",
+        skills=[
+            NormalizedJobSkill(name="Django", required=True),
+            NormalizedJobSkill(name="PostgreSQL", required=True),
+        ],
+    )
     profile = _profile(skills=["Django", "PostgreSQL"])
 
     match = await matching_service.evaluate("canonical-1", job, profile, _preferences())
@@ -105,26 +112,47 @@ async def test_strong_match_recommends_apply(matching_service: MatchingService) 
     assert match.eligible is True
     assert match.recommendation == Recommendation.APPLY
     assert match.practical_fit > 80
-    assert any(reason.label == "django" for reason in match.strengths)
+    assert any(reason.label == "Django" for reason in match.strengths)
 
 
 @pytest.mark.asyncio
-async def test_practical_fit_exceeds_requirement_match_when_skills_are_only_transferable(
-    matching_service: MatchingService,
-) -> None:
-    job = _job(title="Backend Engineer", description="We use FastAPI.")
+async def test_practical_fit_exceeds_requirement_match_when_skills_are_only_transferable() -> None:
+    # cos(Django, FastAPI's default vector) = 0.5 — related enough for partial
+    # transfer credit, below the match threshold so it's still a gap.
+    provider = _FakeEmbeddingProvider({"Django": [0.5, 0.8660254]})
+    service = _matching_service(provider)
+    job = _job(
+        title="Backend Engineer",
+        description="We use FastAPI.",
+        skills=[NormalizedJobSkill(name="FastAPI", required=True)],
+    )
     profile = _profile(skills=["Django"])  # no FastAPI, but transfers via Django
 
-    match = await matching_service.evaluate("canonical-1", job, profile, _preferences())
+    match = await service.evaluate("canonical-1", job, profile, _preferences())
 
     assert match.practical_fit > match.requirement_match
-    assert any(gap.label == "fastapi" for gap in match.gaps)
+    assert any(gap.label == "FastAPI" for gap in match.gaps)
 
 
 @pytest.mark.asyncio
 async def test_weak_match_recommends_skip() -> None:
-    service = _matching_service(_OrthogonalVectorsProvider())
-    job = _job(title="Backend Engineer", description="We use Rust and Kafka.")
+    provider = _FakeEmbeddingProvider(
+        {
+            "Rust": [0.0, 1.0],
+            "Kafka": [0.0, 1.0],
+            "Photoshop": [1.0, 0.0],
+            "Backend Engineer\nWe use Rust and Kafka.": [0.0, 1.0],
+        }
+    )
+    service = _matching_service(provider)
+    job = _job(
+        title="Backend Engineer",
+        description="We use Rust and Kafka.",
+        skills=[
+            NormalizedJobSkill(name="Rust", required=True),
+            NormalizedJobSkill(name="Kafka", required=True),
+        ],
+    )
     profile = _profile(skills=["Photoshop"])
 
     match = await service.evaluate("canonical-1", job, profile, _preferences())

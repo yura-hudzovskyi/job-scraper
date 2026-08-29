@@ -3,18 +3,20 @@
 Weights are indicative defaults from docs/matching-engine.md; make them configurable
 per user/search-profile rather than hardcoded once this grows real logic.
 
-NormalizedJob has no structured skill list yet (that's Phase 4's LLM requirement
-extraction) — every skill-aware component here works off SkillRegistry.extract_mentions
-over the job's title+description instead. It's an approximation, not a stand-in for
-real requirement extraction, but it's honest, deterministic, and immediately useful.
+Skill-aware scoring (skills/transferable_skills/preferences) lives in
+skill_matching.py's SkillMatcher, not here — it needs NormalizedJob.skills (LLM-
+extracted at ingestion, see app/services/job_skill_extraction_service.py) and an
+embedding call, so MatchingService computes it separately and merges it into
+DeterministicScore before calling overall(). This class only covers the genuinely
+synchronous, registry-free components: role/experience/salary/location.
 """
 
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from app.domain.candidates.models import CandidateProfile, UserPreference
-from app.domain.candidates.skills import SkillRegistry
 from app.domain.jobs.models import NormalizedJob
+from app.domain.matching.similarity import cosine_similarity
 from app.integrations.ai.embeddings.base import EmbeddingProvider
 
 
@@ -32,8 +34,10 @@ class ScoringWeights:
 
 @dataclass(frozen=True)
 class DeterministicScore:
-    """Everything ScoreBreakdown needs except semantic_fit, which needs embeddings
-    and is computed separately by SemanticScorer. See MatchingService."""
+    """Everything ScoreBreakdown needs except semantic_fit (computed separately by
+    SemanticScorer) and skills/transferable_skills/preferences (computed separately
+    by SkillMatcher). See MatchingService, which merges all three into one instance
+    before calling overall()."""
 
     skills: float
     role: float
@@ -45,8 +49,7 @@ class DeterministicScore:
 
 
 class DeterministicScorer:
-    def __init__(self, skill_registry: SkillRegistry, weights: ScoringWeights | None = None):
-        self._skill_registry = skill_registry
+    def __init__(self, weights: ScoringWeights | None = None):
         self._weights = weights or ScoringWeights()
 
     def score(
@@ -54,25 +57,14 @@ class DeterministicScorer:
         job: NormalizedJob,
         profile: CandidateProfile,
         preferences: UserPreference,
-    ) -> DeterministicScore:
-        job_text = f"{job.title}\n{job.description}"
-        mentioned_skills = self._skill_registry.extract_mentions(job_text)
-        candidate_skills = {
-            resolved
-            for skill in profile.skills
-            if (resolved := self._skill_registry.resolve(skill.name)) is not None
-        }
-
-        skills_score, transferable_score = self._skill_scores(mentioned_skills, candidate_skills)
-
-        return DeterministicScore(
-            skills=skills_score,
-            transferable_skills=transferable_score,
-            role=self._role_score(job, preferences),
-            experience=self._experience_score(job, profile),
-            salary=self._salary_score(job, preferences),
-            location=self._location_score(job, preferences),
-            preferences=self._preferences_score(mentioned_skills, preferences),
+    ) -> tuple[float, float, float, float]:
+        """Returns (role, experience, salary, location) — MatchingService merges
+        these with SkillMatcher's output to build the full DeterministicScore."""
+        return (
+            self._role_score(job, preferences),
+            self._experience_score(job, profile),
+            self._salary_score(job, preferences),
+            self._location_score(job, preferences),
         )
 
     def overall(self, deterministic: DeterministicScore, semantic_fit: float) -> float:
@@ -89,44 +81,6 @@ class DeterministicScorer:
             + deterministic.location * w.location
             + deterministic.preferences * w.preferences
         )
-
-    def skill_gap_analysis(
-        self, job: NormalizedJob, profile: CandidateProfile
-    ) -> tuple[list[str], list[str]]:
-        """(exact_matches, missing) canonical skill names, text-mined from the job —
-        for building human-readable strengths/gaps, not scoring itself."""
-        mentioned_skills = self._skill_registry.extract_mentions(f"{job.title}\n{job.description}")
-        candidate_skills = {
-            resolved
-            for skill in profile.skills
-            if (resolved := self._skill_registry.resolve(skill.name)) is not None
-        }
-        exact = [skill for skill in mentioned_skills if skill in candidate_skills]
-        missing = [skill for skill in mentioned_skills if skill not in candidate_skills]
-        return exact, missing
-
-    def _skill_scores(
-        self, mentioned_skills: list[str], candidate_skills: set[str]
-    ) -> tuple[float, float]:
-        if not mentioned_skills:
-            return 100.0, 100.0
-
-        exact = [skill for skill in mentioned_skills if skill in candidate_skills]
-        missing = [skill for skill in mentioned_skills if skill not in candidate_skills]
-        skills_score = len(exact) / len(mentioned_skills) * 100
-
-        if not missing:
-            return skills_score, 100.0
-
-        transfer_values = [
-            max(
-                (self._skill_registry.transferability(cand, gap) for cand in candidate_skills),
-                default=0.0,
-            )
-            for gap in missing
-        ]
-        transferable_score = sum(transfer_values) / len(missing) * 100
-        return skills_score, transferable_score
 
     def _role_score(self, job: NormalizedJob, preferences: UserPreference) -> float:
         if not preferences.preferred_roles:
@@ -167,25 +121,6 @@ class DeterministicScorer:
         )
         return 100.0 if matches else 50.0
 
-    def _preferences_score(
-        self, mentioned_skills: list[str], preferences: UserPreference
-    ) -> float:
-        """How much of the job's (text-mined) stack is something the candidate said
-        they want or would accept."""
-        if not mentioned_skills or (not preferences.preferred_stack and not preferences.acceptable_stack):
-            return 100.0
-
-        preferred = {self._skill_registry.resolve(s) or s.lower() for s in preferences.preferred_stack}
-        acceptable = {
-            self._skill_registry.resolve(s) or s.lower() for s in preferences.acceptable_stack
-        }
-
-        weights = [
-            1.0 if skill in preferred else 0.6 if skill in acceptable else 0.0
-            for skill in mentioned_skills
-        ]
-        return sum(weights) / len(weights) * 100
-
 
 class SemanticScorer:
     def __init__(self, embedding_provider: EmbeddingProvider):
@@ -199,7 +134,7 @@ class SemanticScorer:
         [profile_vector, job_vector] = await self._embedding_provider.embed(
             [profile_text, job_text]
         )
-        return _cosine_similarity(profile_vector, job_vector)
+        return cosine_similarity(profile_vector, job_vector)
 
 
 def _profile_text(profile: CandidateProfile) -> str:
@@ -211,12 +146,3 @@ def _profile_text(profile: CandidateProfile) -> str:
         " ".join(profile.domains),
     ]
     return "\n".join(part for part in parts if part)
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = float(sum(x * y for x, y in zip(a, b, strict=True)))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(y * y for y in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return float(max(0.0, min(1.0, dot / (norm_a * norm_b))))

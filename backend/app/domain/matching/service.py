@@ -1,12 +1,13 @@
 """Orchestrates the matching pipeline: filters -> deterministic score -> semantic
-score -> explanation. See docs/matching-engine.md.
+score -> skill match -> explanation. See docs/matching-engine.md.
 
 LLM reranking and "should I apply?" are Phase 4 (docs/roadmap.md) — evaluate() stops
-at the deterministic+semantic pipeline, which is already fully explainable on its own.
+at the deterministic+semantic+skill pipeline, which is already fully explainable on
+its own.
 
 This is the only entry point other modules should call — it composes
-HardFilterService, DeterministicScorer and SemanticScorer, none of which should be
-called directly from services/ or the API layer.
+HardFilterService, DeterministicScorer, SemanticScorer and SkillMatcher, none of
+which should be called directly from services/ or the API layer.
 """
 
 from dataclasses import replace
@@ -21,7 +22,8 @@ from app.domain.matching.models import (
     Recommendation,
     ScoreBreakdown,
 )
-from app.domain.matching.scoring import DeterministicScorer, SemanticScorer
+from app.domain.matching.scoring import DeterministicScore, DeterministicScorer, SemanticScorer
+from app.domain.matching.skill_matching import SkillAssessment, SkillMatcher
 
 _APPLY_THRESHOLD = 75.0
 _CONSIDER_THRESHOLD = 55.0
@@ -34,10 +36,12 @@ class MatchingService:
         hard_filters: HardFilterService,
         deterministic_scorer: DeterministicScorer,
         semantic_scorer: SemanticScorer,
+        skill_matcher: SkillMatcher,
     ):
         self._hard_filters = hard_filters
         self._deterministic_scorer = deterministic_scorer
         self._semantic_scorer = semantic_scorer
+        self._skill_matcher = skill_matcher
 
     async def evaluate(
         self,
@@ -61,8 +65,26 @@ class MatchingService:
                 recommendation=Recommendation.SKIP,
             )
 
-        deterministic = self._deterministic_scorer.score(job, profile, preferences)
+        role, experience, salary, location = self._deterministic_scorer.score(
+            job, profile, preferences
+        )
+        skill_assessment = await self._skill_matcher.assess(
+            job_skills=job.skills,
+            candidate_skills=[skill.name for skill in profile.skills],
+            preferred_stack=preferences.preferred_stack,
+            acceptable_stack=preferences.acceptable_stack,
+        )
         semantic_fit = await self._semantic_scorer.similarity(job, profile) * 100
+
+        deterministic = DeterministicScore(
+            skills=skill_assessment.skills_score,
+            role=role,
+            experience=experience,
+            transferable_skills=skill_assessment.transferable_score,
+            salary=salary,
+            location=location,
+            preferences=skill_assessment.preferences_score,
+        )
 
         practical_fit = self._deterministic_scorer.overall(deterministic, semantic_fit)
         # "Requirement match" is the literal fit — transferable-skill credit doesn't count.
@@ -81,7 +103,7 @@ class MatchingService:
             preferences=deterministic.preferences,
         )
 
-        strengths, gaps = self._explain(job, profile)
+        strengths, gaps = self._explain(skill_assessment)
 
         return JobMatch(
             id="",
@@ -97,18 +119,15 @@ class MatchingService:
         )
 
     def _explain(
-        self, job: NormalizedJob, profile: CandidateProfile
+        self, skill_assessment: SkillAssessment
     ) -> tuple[list[MatchReason], list[MatchGap]]:
-        exact, missing = self._deterministic_scorer.skill_gap_analysis(job, profile)
-
         strengths = [
             MatchReason(label=skill, detail=f"{skill} appears in the job and in your profile")
-            for skill in exact[:_MAX_LISTED_REASONS]
+            for skill in skill_assessment.strengths[:_MAX_LISTED_REASONS]
         ]
-        # Criticality isn't determinable from text-mined mentions alone — real
-        # required-vs-nice-to-have extraction is Phase 4 (LLM requirement extraction).
         gaps = [
-            MatchGap(label=skill, critical=False) for skill in missing[:_MAX_LISTED_REASONS]
+            MatchGap(label=skill, critical=is_required)
+            for skill, is_required in skill_assessment.gaps[:_MAX_LISTED_REASONS]
         ]
         return strengths, gaps
 
