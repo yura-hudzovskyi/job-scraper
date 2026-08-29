@@ -94,13 +94,16 @@ Two distinct models that must never be merged:
 this job?" — the matching engine scores both independently (see
 [matching-engine.md](matching-engine.md)).
 
-## Skill ontology
+## Skill identity
 
-Skills need a registry, not free-text strings, so that `"JS"`, `"Javascript"` and
-`"JavaScript"` collapse to one skill, and related-but-distinct skills (`Django` →
-`FastAPI`, `NestJS`) can carry a transferability weight instead of counting as a flat
-miss. See `backend/app/domain/candidates/skills.py` for the `SkillRegistry` contract and
-[matching-engine.md](matching-engine.md) for how transferability feeds scoring.
+Skills are free text end to end, never normalized against a fixed vocabulary — a
+hand-maintained skill registry was tried and dropped, since it only ever covered a
+narrow slice of what real postings mention and silently defaulted unrecognized jobs
+to a perfect score. Instead, `"JS"`/`"Javascript"`/`"JavaScript"` (or `Django` vs
+`FastAPI`) are treated as "the same skill" by embedding cosine similarity — no
+canonicalization step needed. See
+`backend/app/domain/matching/skill_matching.py`'s `SkillMatcher` and
+[matching-engine.md](matching-engine.md) for how that similarity feeds scoring.
 
 ## Multiple CV profiles
 

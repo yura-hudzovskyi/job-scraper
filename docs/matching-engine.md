@@ -47,14 +47,19 @@ Weighted components (indicative weights, tunable):
 | Product/domain relevance  | 5%    |
 | User preferences          | 5%    |
 
-Skill scoring distinguishes `exact match`, `related match` (via the skill ontology),
-`missing (nice-to-have)`, and `missing (critical)` — a required skill with no related
-match in the candidate's profile costs far more than one with a strong related skill.
+Skill scoring distinguishes `exact match`, `related match` (via embedding
+similarity), `missing (nice-to-have)`, and `missing (critical)` — a required skill
+with no related match in the candidate's profile costs far more than one with a
+strong related skill.
 
 **Transferable skill engine:** a framework gap is not the same as a fundamental
-engineering gap. `SkillRelation` records a `from → to` transferability weight (e.g.
-`django → nestjs: 0.55`) so backend depth in one framework counts toward a related one
-instead of scoring as a flat zero.
+engineering gap. Rather than a hand-maintained `from → to` weight table (tried,
+dropped — it only ever covered a narrow slice of real postings and silently gave a
+perfect score to anything outside its vocabulary), `SkillMatcher`
+(`backend/app/domain/matching/skill_matching.py`) embeds each required and each
+candidate skill name and uses cosine similarity directly as the transferability
+weight — so `django`/`fastapi` naturally score as more related than `django`/`cobol`
+without anyone having typed that in.
 
 ### Stage 3 — Semantic similarity
 

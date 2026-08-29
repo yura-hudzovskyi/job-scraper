@@ -112,9 +112,9 @@ backend/
     app/
         api/              FastAPI routers — HTTP only, no business logic
         domain/            Framework-free business logic
-            candidates/      CandidateProfile, UserPreferences, SkillRegistry
+            candidates/      CandidateProfile, UserPreferences
             jobs/            RawJob/NormalizedJob/CanonicalJob, deduplication
-            matching/        Hard filters, deterministic scoring, orchestration
+            matching/        Hard filters, deterministic scoring, embedding skill matching, orchestration
             applications/    Application tracker state machine
             notifications/   Notification policy (thresholds, quiet hours)
         services/          Use-case orchestration between domain + repositories + integrations

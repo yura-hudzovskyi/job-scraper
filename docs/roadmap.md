@@ -13,7 +13,7 @@ each phase should be independently mergeable and demoable.
 ## Phase 2 — Matching
 
 - CV extraction into `CandidateProfile`
-- Skill registry
+- Skill identity via embedding similarity (no hand-maintained registry)
 - Hard filters + deterministic scoring
 - Local embeddings + pgvector similarity
 - Match explanation (component breakdown, strengths/gaps)
@@ -27,7 +27,9 @@ each phase should be independently mergeable and demoable.
 ## Phase 4 — AI
 
 - LLM provider abstraction (Ollama default, OpenAI/Anthropic optional)
-- Job requirement extraction
+- ~~Job requirement extraction~~ — done, moved earlier: runs once per scraped job
+  (see `backend/app/services/job_skill_extraction_service.py`), not gated behind
+  the rest of Phase 4
 - LLM reranking of the top shortlist
 - Gap analysis, "should I apply?"
 - CV variant recommendation
