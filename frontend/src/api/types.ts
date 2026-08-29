@@ -102,3 +102,15 @@ export interface ConnectTelegramResponse {
   status: string;
   bot_username: string | null;
 }
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  user_id: string;
+  email: string;
+}
+
+export interface MeResponse {
+  user_id: string;
+  email: string;
+}

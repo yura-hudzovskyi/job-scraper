@@ -1,4 +1,5 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const TOKEN_KEY = "job_scraper_token";
 
 export class ApiError extends Error {
   constructor(
@@ -10,8 +11,24 @@ export class ApiError extends Error {
   }
 }
 
+export const getToken = () => localStorage.getItem(TOKEN_KEY);
+export const setToken = (token: string) => localStorage.setItem(TOKEN_KEY, token);
+export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${BASE_URL}${path}`, init);
+  const headers = new Headers(init?.headers);
+  const token = getToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const response = await fetch(`${BASE_URL}${path}`, { ...init, headers });
+
+  if (response.status === 401 && token) {
+    clearToken();
+    window.location.assign("/login");
+  }
+
   if (!response.ok) {
     const detail = await response
       .json()

@@ -5,10 +5,18 @@ import type {
   CvDocument,
   JobMatch,
   JobSummary,
+  MeResponse,
   Preferences,
   ProfileSummary,
   SourceHealth,
+  TokenResponse,
 } from "./types";
+
+export const register = (email: string, password: string) =>
+  apiClient.post<TokenResponse>("/api/auth/register", { email, password });
+export const login = (email: string, password: string) =>
+  apiClient.post<TokenResponse>("/api/auth/login", { email, password });
+export const getMe = () => apiClient.get<MeResponse>("/api/auth/me");
 
 export function uploadCv(file: File): Promise<CvDocument> {
   const form = new FormData();
