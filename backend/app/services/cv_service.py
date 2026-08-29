@@ -102,6 +102,9 @@ class CvService:
     async def list_cvs(self, user_id: uuid.UUID) -> list[CvDocument]:
         return await self._candidate_repository.list_cv_documents(user_id)
 
+    async def get_latest_profile(self, user_id: uuid.UUID) -> CandidateProfile | None:
+        return await self._candidate_repository.get_latest_candidate_profile(user_id)
+
     async def analyze_cv(
         self, user_id: uuid.UUID, cv_document_id: uuid.UUID, cv_text: str
     ) -> CandidateProfile:

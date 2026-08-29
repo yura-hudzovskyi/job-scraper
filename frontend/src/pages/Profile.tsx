@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
 import { ApiError } from "../api/client";
-import { analyzeCv, listCvs, uploadCv } from "../api/endpoints";
+import { analyzeCv, getCandidateProfile, listCvs, uploadCv } from "../api/endpoints";
 import { Button, Card, ErrorBanner, SectionTitle } from "../components/ui";
 
 export function Profile() {
@@ -11,6 +11,7 @@ export function Profile() {
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   const cvsQuery = useQuery({ queryKey: ["cvs"], queryFn: listCvs });
+  const profileQuery = useQuery({ queryKey: ["candidate-profile"], queryFn: getCandidateProfile });
 
   const uploadMutation = useMutation({
     mutationFn: uploadCv,
@@ -22,7 +23,10 @@ export function Profile() {
       setUploadError(error instanceof ApiError ? error.message : "Upload failed"),
   });
 
-  const analyzeMutation = useMutation({ mutationFn: analyzeCv });
+  const analyzeMutation = useMutation({
+    mutationFn: analyzeCv,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["candidate-profile"] }),
+  });
 
   function handleFileChange() {
     const file = fileInputRef.current?.files?.[0];
@@ -92,23 +96,23 @@ export function Profile() {
         )}
       </Card>
 
-      {analyzeMutation.data && (
+      {profileQuery.data && (
         <Card>
           <SectionTitle>Candidate profile</SectionTitle>
           <dl className="grid grid-cols-2 gap-3 text-sm">
             <div>
               <dt className="text-slate-500">Experience</dt>
-              <dd>{analyzeMutation.data.experience_years} years</dd>
+              <dd>{profileQuery.data.experience_years} years</dd>
             </div>
             <div>
               <dt className="text-slate-500">Roles</dt>
-              <dd>{analyzeMutation.data.roles.join(", ") || "—"}</dd>
+              <dd>{profileQuery.data.roles.join(", ") || "—"}</dd>
             </div>
           </dl>
           <div className="mt-3">
             <p className="mb-1 text-sm text-slate-500">Skills</p>
             <div className="flex flex-wrap gap-1.5">
-              {analyzeMutation.data.skills.map((skill) => (
+              {profileQuery.data.skills.map((skill) => (
                 <span
                   key={skill.name}
                   className="rounded-full bg-slate-100 px-2.5 py-1 text-xs"
@@ -119,11 +123,11 @@ export function Profile() {
               ))}
             </div>
           </div>
-          {analyzeMutation.data.achievements.length > 0 && (
+          {profileQuery.data.achievements.length > 0 && (
             <div className="mt-3">
               <p className="mb-1 text-sm text-slate-500">Achievements</p>
               <ul className="list-inside list-disc text-sm">
-                {analyzeMutation.data.achievements.map((achievement) => (
+                {profileQuery.data.achievements.map((achievement) => (
                   <li key={achievement}>{achievement}</li>
                 ))}
               </ul>

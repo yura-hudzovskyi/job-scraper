@@ -104,6 +104,16 @@ async def list_cvs(
     return [_to_response(document) for document in documents]
 
 
+@router.get("/profile", response_model=CandidateProfileResponse | None)
+async def get_latest_profile(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    cv_service: CvService = Depends(get_cv_service),
+) -> CandidateProfileResponse | None:
+    """Returns the already-analyzed profile, if any — without re-running the LLM."""
+    profile = await cv_service.get_latest_profile(user_id)
+    return _to_profile_response(profile) if profile else None
+
+
 @router.post("/analyze", response_model=CandidateProfileResponse)
 async def analyze_cv(
     user_id: uuid.UUID = Depends(get_current_user_id),
