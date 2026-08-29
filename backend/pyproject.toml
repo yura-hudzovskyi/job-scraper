@@ -63,8 +63,9 @@ module = "celery.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# @celery_app.task(...) is an untyped decorator factory for the same reason.
-module = "app.workers.tasks.*"
+# @celery_app.task(...) / @worker_process_init.connect are untyped decorators for
+# the same reason.
+module = ["app.workers.tasks.*", "app.workers.celery_app"]
 disable_error_code = ["untyped-decorator"]
 
 [tool.setuptools.packages.find]
