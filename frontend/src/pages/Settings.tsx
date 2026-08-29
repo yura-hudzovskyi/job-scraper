@@ -2,7 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { ApiError } from "../api/client";
-import { connectTelegram, getPreferences, testTelegram, updatePreferences } from "../api/endpoints";
+import {
+  connectTelegram,
+  getPreferences,
+  getTelegramStatus,
+  testTelegram,
+  updatePreferences,
+} from "../api/endpoints";
 import { EMPTY_PREFERENCES, type Preferences } from "../api/types";
 import { Button, Card, ErrorBanner, Field, SectionTitle, inputClass } from "../components/ui";
 
@@ -35,10 +41,15 @@ export function Settings() {
     },
   });
 
+  const telegramStatusQuery = useQuery({
+    queryKey: ["telegram-status"],
+    queryFn: getTelegramStatus,
+  });
   const [botToken, setBotToken] = useState("");
   const [chatId, setChatId] = useState("");
   const connectMutation = useMutation({
     mutationFn: () => connectTelegram(botToken, chatId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["telegram-status"] }),
   });
   const testMutation = useMutation({ mutationFn: testTelegram });
 
@@ -46,6 +57,10 @@ export function Settings() {
     <div className="flex flex-col gap-6">
       <Card>
         <SectionTitle>Preferences</SectionTitle>
+
+        <p className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
+          Compensation &amp; experience
+        </p>
         <div className="grid grid-cols-2 gap-4">
           <Field label="Desired salary (USD)">
             <input
@@ -73,6 +88,12 @@ export function Settings() {
               }
             />
           </Field>
+        </div>
+
+        <p className="mt-5 mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
+          Role &amp; location
+        </p>
+        <div className="grid grid-cols-2 gap-4">
           <Field label="Preferred roles (comma-separated)">
             <input
               className={inputClass}
@@ -87,6 +108,19 @@ export function Settings() {
               onChange={(e) => setForm({ ...form, locations: textToList(e.target.value) })}
             />
           </Field>
+          <Field label="Work formats (e.g. remote)">
+            <input
+              className={inputClass}
+              value={listToText(form.work_formats)}
+              onChange={(e) => setForm({ ...form, work_formats: textToList(e.target.value) })}
+            />
+          </Field>
+        </div>
+
+        <p className="mt-5 mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
+          Tech stack
+        </p>
+        <div className="grid grid-cols-2 gap-4">
           <Field label="Preferred stack">
             <input
               className={inputClass}
@@ -108,19 +142,27 @@ export function Settings() {
               onChange={(e) => setForm({ ...form, blocked_stack: textToList(e.target.value) })}
             />
           </Field>
-          <Field label="Work formats (e.g. remote)">
-            <input
-              className={inputClass}
-              value={listToText(form.work_formats)}
-              onChange={(e) => setForm({ ...form, work_formats: textToList(e.target.value) })}
-            />
-          </Field>
+        </div>
+
+        <p className="mt-5 mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
+          Exclusions
+        </p>
+        <div className="grid grid-cols-2 gap-4">
           <Field label="Companies blacklist">
             <input
               className={inputClass}
               value={listToText(form.companies_blacklist)}
               onChange={(e) =>
                 setForm({ ...form, companies_blacklist: textToList(e.target.value) })
+              }
+            />
+          </Field>
+          <Field label="Industries blacklist">
+            <input
+              className={inputClass}
+              value={listToText(form.industries_blacklist)}
+              onChange={(e) =>
+                setForm({ ...form, industries_blacklist: textToList(e.target.value) })
               }
             />
           </Field>
@@ -148,7 +190,20 @@ export function Settings() {
       </Card>
 
       <Card>
-        <SectionTitle>Telegram</SectionTitle>
+        <div className="mb-3 flex items-center gap-3">
+          <SectionTitle>Telegram</SectionTitle>
+          {telegramStatusQuery.data && (
+            <span
+              className={`mb-3 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                telegramStatusQuery.data.connected
+                  ? "bg-green-100 text-green-800"
+                  : "bg-slate-100 text-slate-600"
+              }`}
+            >
+              {telegramStatusQuery.data.connected ? "Connected" : "Not connected"}
+            </span>
+          )}
+        </div>
         <p className="mb-3 text-sm text-slate-600">
           Create a bot via @BotFather in Telegram to get a token, then message it once to get
           your chat id.
