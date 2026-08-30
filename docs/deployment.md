@@ -97,6 +97,12 @@ At minimum set:
   hosted model instead, set `LLM_PROVIDER=anthropic` or `openai` and the matching
   `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` — the `ollama` container then just sits idle
   and you can remove it from the compose file if you want the RAM back.
+- `GEMINI_API_KEY` — optional, and free (get one at
+  [aistudio.google.com/apikey](https://aistudio.google.com/apikey)). When set, CV
+  analysis specifically tries Gemini first, falling back to Ollama automatically on
+  a 429 (quota exceeded) — job skill extraction still always uses Ollama regardless,
+  so the free-tier quota stays available for CV analysis. Leave blank to use
+  `LLM_PROVIDER` for everything, exactly as if this option didn't exist.
 - `EMBEDDING_PROVIDER=sentence_transformers` (the default — needs no key, runs
   locally in the API/worker containers)
 

@@ -88,6 +88,28 @@ semantic scoring. It must return **structured**, not prose:
 }
 ```
 
+## LLM provider policy: Gemini for quality, Ollama for volume
+
+Two independent LLM call sites exist outside the scoring pipeline itself — CV
+analysis (`backend/app/services/cv_service.py`, user-triggered, rare) and job skill
+extraction (`backend/app/services/job_skill_extraction_service.py`, once per
+newly-scraped job, high-volume). They deliberately use different providers:
+
+- **CV analysis** — quality matters most here (it's the one artifact every match a
+  user sees depends on), and it happens rarely per user, so it can afford a
+  higher-quality provider. If `GEMINI_API_KEY` is set, this tries Google's free
+  Gemini tier first, falling back to Ollama automatically the instant Gemini
+  returns 429 (quota exceeded) — but never for other errors, so a misconfigured key
+  fails loudly instead of silently degrading. See
+  `backend/app/integrations/ai/llm/fallback_provider.py`.
+- **Job skill extraction** — runs on every scraped job, so it always uses Ollama
+  unconditionally, regardless of Gemini configuration. This keeps the (limited)
+  free-tier quota available for CV analysis instead of being exhausted by volume.
+
+Whichever model actually produced a result is recorded (`LLMResult.model_label`,
+`backend/app/integrations/ai/llm/base.py`) and shown in the UI — a Gemini-quota
+fallback to Ollama is never presented as if it were the primary provider.
+
 ## Two separate scores
 
 - **Requirement Match** — how literally the CV satisfies the listed requirements.
