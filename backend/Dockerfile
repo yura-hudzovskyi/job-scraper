@@ -14,13 +14,16 @@ WORKDIR /app
 # it still correctly picks the +cpu build, not PyPI's CUDA one. Once torch is
 # installed here, sentence-transformers' own requirement below is already satisfied
 # and pip won't replace it.
+# dev extras (pytest/ruff/mypy) are deliberately left out — they're test/lint
+# tooling with no runtime role, run locally/in CI outside Docker (see README), not
+# something the deployed container needs to carry.
 COPY pyproject.toml ./
 RUN mkdir -p app && touch app/__init__.py \
     && pip install --no-cache-dir \
        --index-url https://download.pytorch.org/whl/cpu \
        --extra-index-url https://pypi.org/simple \
        torch \
-    && pip install --no-cache-dir ".[dev,matching,llm]"
+    && pip install --no-cache-dir ".[matching,llm]"
 
 COPY . .
 RUN pip install --no-cache-dir --no-deps .

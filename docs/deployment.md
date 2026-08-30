@@ -249,9 +249,15 @@ from the git checkout.
   service at all.
 - **First deploy will be slow**: the backend image bundles sentence-transformers
   (and its PyTorch dependency), which is a large download. Subsequent deploys reuse
-  Docker's layer cache and GitHub Actions' build cache, so they're much faster
-  unless `pyproject.toml` changes. The Ollama model pull (Part 3) is separate from
-  this and only happens once, not on every deploy.
+  Docker's layer cache and a registry-based buildx cache (a `:buildcache` tag on the
+  same GHCR image — see `.github/workflows/deploy.yml`), so they're much faster
+  unless `pyproject.toml` changes. The build also runs on a native ARM64 GitHub
+  Actions runner rather than cross-compiling via QEMU on an amd64 one, which is what
+  actually keeps this fast — an earlier version used `type=gha` for the cache, which
+  shares one 10GB-per-repo quota and kept evicting this image's large dependency
+  layer, silently regressing back to a full ~20min rebuild every time regardless of
+  what changed. The Ollama model pull (Part 3) is separate from this and only
+  happens once, not on every deploy.
 - **Ollama cost/latency tradeoff**: CPU inference on the A1 shape is noticeably
   slower than a hosted API (seconds-to-tens-of-seconds per CV instead of ~1s), but
   it's the only zero-cost option, and CV analysis is a manual, low-frequency action
