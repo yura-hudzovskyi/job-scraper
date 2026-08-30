@@ -33,12 +33,20 @@ class JobIngestionService:
         self._dedup_service = dedup_service or DeduplicationService()
 
     async def ingest_source(
-        self, adapter: JobSourceAdapter, search: JobSearchCriteria
+        self,
+        adapter: JobSourceAdapter,
+        search: JobSearchCriteria,
+        max_jobs: int | None = None,
     ) -> IngestionResult:
+        """max_jobs caps how many discovered listings this call will even attempt to
+        detail-fetch — a safety ceiling on run cost, not a guarantee of exactly N
+        newly-processed jobs (already-known listings still get skipped for free
+        within that cap, same as without one)."""
         discovery = await adapter.fetch_jobs(search)
+        listings = discovery.raw_jobs[:max_jobs] if max_jobs is not None else discovery.raw_jobs
 
         canonical_job_ids: list[str] = []
-        for listing in discovery.raw_jobs:
+        for listing in listings:
             if await self._job_repository.raw_job_exists(listing.source, listing.external_id):
                 continue
 

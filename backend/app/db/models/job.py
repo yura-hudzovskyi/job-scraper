@@ -73,11 +73,13 @@ class JobSourceRecordModel(UUIDPrimaryKeyMixin, Base):
 
 
 class ScrapeRunModel(UUIDPrimaryKeyMixin, Base):
-    """Per-source scrape execution record — see docs/source-adapters.md."""
+    """Per-source, per-category scrape execution record. Also doubles as the
+    rotation's own state — see JobRepository.get_least_recently_scraped_category."""
 
     __tablename__ = "scrape_runs"
 
     source: Mapped[str]
+    category: Mapped[str | None] = mapped_column(default=None)
     started_at: Mapped[datetime] = mapped_column(server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(default=None)
     pages: Mapped[int] = mapped_column(default=0)

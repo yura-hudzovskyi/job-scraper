@@ -15,23 +15,27 @@ celery_app = Celery(
         "app.workers.tasks.extract_job_skills",
         "app.workers.tasks.score",
         "app.workers.tasks.notify",
+        "app.workers.tasks.retention",
     ],
 )
 
-_SCRAPE_INTERVAL_SECONDS = 2 * 60 * 60  # 2h, per docs/source-adapters.md's example cadence
-
-# Per-source-only for now — no keyword filtering, since SearchProfile (multiple named
-# searches per source, each with its own keywords/interval) doesn't exist yet. See
-# docs/roadmap.md; this is a fixed stand-in for that.
+# Each tick scrapes one category (rotating through app/integrations/sources/
+# categories.py over time, see workers/tasks/scrape.py) rather than everything at
+# once — a shorter interval than the old fixed 2h is what makes the rotation reach
+# every category in a reasonable time instead of taking weeks.
 celery_app.conf.beat_schedule = {
     "scrape-dou": {
         "task": "scrape.fetch_source",
-        "schedule": _SCRAPE_INTERVAL_SECONDS,
-        "args": ("dou", []),
+        "schedule": settings.scrape_interval_seconds,
+        "args": ("dou",),
     },
     "scrape-djinni": {
         "task": "scrape.fetch_source",
-        "schedule": _SCRAPE_INTERVAL_SECONDS,
-        "args": ("djinni", []),
+        "schedule": settings.scrape_interval_seconds,
+        "args": ("djinni",),
+    },
+    "purge-stale-jobs": {
+        "task": "retention.purge_stale_jobs",
+        "schedule": 24 * 60 * 60,
     },
 }

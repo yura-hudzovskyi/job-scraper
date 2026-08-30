@@ -38,6 +38,17 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
 
+    # Each scrape tick covers one category (rotating through every configured
+    # category over time — see app/integrations/sources/categories.py), capped at
+    # this many listings per run. See app/workers/tasks/scrape.py.
+    scrape_interval_seconds: int = 1800
+    scrape_max_jobs_per_run: int = 100
+
+    # How long a job stays in the DB after it was last seen in a scrape before
+    # retention cleanup deletes it (and everything that references it — matches,
+    # notifications). See app/services/job_retention_service.py.
+    job_retention_days: int = 18
+
     sentry_dsn: str | None = None
 
     # NoDecode: pydantic-settings otherwise tries to json.loads() any list-typed env

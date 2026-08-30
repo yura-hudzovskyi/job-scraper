@@ -8,11 +8,17 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.job import CanonicalJobModel, JobSourceRecordModel, RawJobModel
+from app.db.models.application import ApplicationModel
+from app.db.models.job import (
+    CanonicalJobModel,
+    JobSourceRecordModel,
+    RawJobModel,
+    ScrapeRunModel,
+)
 from app.domain.jobs.models import (
     CanonicalJob,
     EmploymentType,
@@ -22,6 +28,7 @@ from app.domain.jobs.models import (
     RawJob,
     SalaryRange,
 )
+from app.domain.jobs.scrape_rotation import pick_next_category
 
 
 def _to_raw_job(model: RawJobModel) -> RawJob:
@@ -127,6 +134,40 @@ class JobRepository:
         result = await self._session.execute(stmt)
         await self._session.flush()
         return result.scalar_one()
+
+    async def get_least_recently_scraped_category(self, source: str, categories: list[str]) -> str:
+        """Which of `categories` to scrape next for this source — whichever has gone
+        longest without a run (or has never been run at all). See scrape_rotation.py
+        for the selection logic itself."""
+        result = await self._session.execute(
+            select(ScrapeRunModel.category, func.max(ScrapeRunModel.started_at))
+            .where(ScrapeRunModel.source == source, ScrapeRunModel.category.in_(categories))
+            .group_by(ScrapeRunModel.category)
+        )
+        last_scraped = {category: started_at for category, started_at in result.all() if category}
+        return pick_next_category(categories, last_scraped)
+
+    async def record_scrape_run(
+        self,
+        source: str,
+        category: str,
+        started_at: datetime,
+        finished_at: datetime,
+        jobs_seen: int,
+        new_count: int,
+        errors: int,
+    ) -> None:
+        model = ScrapeRunModel(
+            source=source,
+            category=category,
+            started_at=started_at,
+            finished_at=finished_at,
+            jobs_seen=jobs_seen,
+            new_count=new_count,
+            errors=errors,
+        )
+        self._session.add(model)
+        await self._session.flush()
 
     async def get_raw_job(self, raw_job_id: uuid.UUID) -> RawJob:
         model = await self._session.get(RawJobModel, raw_job_id)
@@ -270,3 +311,51 @@ class JobRepository:
         result = await self._session.execute(stmt)
         await self._session.flush()
         return result.scalar_one()
+
+    async def find_stale_canonical_job_ids(self, cutoff: datetime) -> list[uuid.UUID]:
+        result = await self._session.execute(
+            select(CanonicalJobModel.id).where(CanonicalJobModel.last_seen_at < cutoff)
+        )
+        return [row[0] for row in result.all()]
+
+    async def delete_stale_jobs(self, canonical_job_ids: list[uuid.UUID]) -> None:
+        """Deletes applications and job_source_records for these canonical jobs, then
+        the canonical_jobs themselves, then any raw_jobs left unreferenced by that.
+        Must run after MatchRepository.delete_for_canonical_jobs — job_matches also
+        reference canonical_jobs and would block this otherwise. See
+        JobRetentionService for the full cross-table ordering."""
+        if not canonical_job_ids:
+            return
+
+        await self._session.execute(
+            delete(ApplicationModel).where(ApplicationModel.canonical_job_id.in_(canonical_job_ids))
+        )
+
+        raw_job_ids_result = await self._session.execute(
+            select(JobSourceRecordModel.raw_job_id).where(
+                JobSourceRecordModel.canonical_job_id.in_(canonical_job_ids)
+            )
+        )
+        raw_job_ids = [row[0] for row in raw_job_ids_result.all()]
+
+        await self._session.execute(
+            delete(JobSourceRecordModel).where(
+                JobSourceRecordModel.canonical_job_id.in_(canonical_job_ids)
+            )
+        )
+        await self._session.execute(
+            delete(CanonicalJobModel).where(CanonicalJobModel.id.in_(canonical_job_ids))
+        )
+
+        if raw_job_ids:
+            still_referenced_result = await self._session.execute(
+                select(JobSourceRecordModel.raw_job_id).where(
+                    JobSourceRecordModel.raw_job_id.in_(raw_job_ids)
+                )
+            )
+            still_referenced = {row[0] for row in still_referenced_result.all()}
+            orphaned = [raw_job_id for raw_job_id in raw_job_ids if raw_job_id not in still_referenced]
+            if orphaned:
+                await self._session.execute(delete(RawJobModel).where(RawJobModel.id.in_(orphaned)))
+
+        await self._session.flush()
