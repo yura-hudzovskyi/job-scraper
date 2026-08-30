@@ -10,7 +10,7 @@ POST   /api/cv/analyze
 
 GET    /api/profile
 
-GET    /api/jobs
+GET    /api/jobs                  paginated (?limit, ?offset), items include practical_fit/recommendation
 GET    /api/jobs/{id}
 GET    /api/jobs/{id}/match
 POST   /api/jobs/{id}/rescore

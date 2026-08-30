@@ -52,6 +52,24 @@ similarity), `missing (nice-to-have)`, and `missing (critical)` — a required s
 with no related match in the candidate's profile costs far more than one with a
 strong related skill.
 
+Role scoring compares the job title against `UserPreference.preferred_roles` when
+the candidate has set it, falling back to `CandidateProfile.roles` (the roles the CV
+analysis derived) otherwise — a candidate who never filled in a role preference
+still gets a real title-mismatch signal instead of an unconditional 100 for every
+job title (`DeterministicScorer._role_score`).
+
+**No extracted skills is not a perfect match.** When a posting has no technical
+skills to extract at all (e.g. a non-technical role like "Account Manager"),
+`SkillMatcher` has nothing to assess and reports a neutral 100 for
+skills/transferable/preferences (nothing required, so nothing missing — see
+`SkillMatcher._NEUTRAL`). Folding that straight into the weighted average used to
+mean any such job scored ~85%+ against *any* profile, technical or not, because 50%
+of the total weight (skills + transferable + preferences) was silently maxed out.
+`DeterministicScorer.overall(..., skills_available=False)` instead drops those three
+components from the average and rescales the rest, so role/semantic mismatch (the
+signals that actually distinguish "wrong profession" from "right profession, no
+listed stack") determine the score instead of being drowned out.
+
 **Transferable skill engine:** a framework gap is not the same as a fundamental
 engineering gap. Rather than a hand-maintained `from → to` weight table (tried,
 dropped — it only ever covered a narrow slice of real postings and silently gave a

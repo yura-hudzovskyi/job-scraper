@@ -3,6 +3,7 @@ import type {
   CandidateProfile,
   ConnectTelegramResponse,
   CvDocument,
+  JobListResponse,
   JobMatch,
   JobSummary,
   MeResponse,
@@ -48,7 +49,8 @@ export const listSources = () => apiClient.get<SourceHealth[]>("/api/sources");
 export const syncSource = (sourceName: string) =>
   apiClient.post<{ status: string; source: string }>(`/api/sources/${sourceName}/sync`);
 
-export const listJobs = () => apiClient.get<JobSummary[]>("/api/jobs");
+export const listJobs = (limit: number, offset: number) =>
+  apiClient.get<JobListResponse>(`/api/jobs?limit=${limit}&offset=${offset}`);
 export const getJob = (jobId: string) => apiClient.get<JobSummary>(`/api/jobs/${jobId}`);
 export const getJobMatch = (jobId: string) => apiClient.get<JobMatch>(`/api/jobs/${jobId}/match`);
 export const rescoreJob = (jobId: string) =>

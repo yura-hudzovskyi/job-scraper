@@ -93,8 +93,11 @@ def get_profile_service(
     return ProfileService(candidate_repository)
 
 
-def get_job_service(job_repository: JobRepository = Depends(get_job_repository)) -> JobService:
-    return JobService(job_repository)
+def get_job_service(
+    job_repository: JobRepository = Depends(get_job_repository),
+    match_repository: MatchRepository = Depends(get_match_repository),
+) -> JobService:
+    return JobService(job_repository, match_repository)
 
 
 def get_job_ingestion_service(

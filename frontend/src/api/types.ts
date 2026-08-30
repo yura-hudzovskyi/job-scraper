@@ -75,6 +75,15 @@ export interface JobSummary {
   company: string;
   description: string;
   source_count: number;
+  practical_fit: number | null;
+  recommendation: string | null;
+}
+
+export interface JobListResponse {
+  items: JobSummary[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface ScoreBreakdown {

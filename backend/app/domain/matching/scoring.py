@@ -61,16 +61,42 @@ class DeterministicScorer:
         """Returns (role, experience, salary, location) — MatchingService merges
         these with SkillMatcher's output to build the full DeterministicScore."""
         return (
-            self._role_score(job, preferences),
+            self._role_score(job, profile, preferences),
             self._experience_score(job, profile),
             self._salary_score(job, preferences),
             self._location_score(job, preferences),
         )
 
-    def overall(self, deterministic: DeterministicScore, semantic_fit: float) -> float:
+    def overall(
+        self,
+        deterministic: DeterministicScore,
+        semantic_fit: float,
+        skills_available: bool = True,
+    ) -> float:
         """Weighted combination of every component, including the separately-computed
-        semantic_fit. Result is 0-100."""
+        semantic_fit. Result is 0-100.
+
+        `skills_available` must be False when the job had no extracted skills at all
+        (job.skills was empty) — SkillMatcher then reports skills/transferable/
+        preferences as a fabricated "neutral" 100 (nothing required, so nothing
+        missing), which is not the same as "this job is a good fit". Folding that
+        100 straight into the weighted sum (50% of total weight) made every such job
+        look like a near-perfect match regardless of role or semantic fit — e.g. an
+        "Account Manager" posting scoring ~85% against a developer profile. When
+        there's no real skill signal, drop those three components from the average
+        instead of crediting them, and rescale the remaining weights to sum to 1.
+        """
         w = self._weights
+        if not skills_available:
+            remaining = w.role + w.semantic_fit + w.experience + w.salary + w.location
+            return (
+                deterministic.role * w.role
+                + semantic_fit * w.semantic_fit
+                + deterministic.experience * w.experience
+                + deterministic.salary * w.salary
+                + deterministic.location * w.location
+            ) / remaining
+
         return (
             deterministic.skills * w.skills
             + deterministic.role * w.role
@@ -82,13 +108,19 @@ class DeterministicScorer:
             + deterministic.preferences * w.preferences
         )
 
-    def _role_score(self, job: NormalizedJob, preferences: UserPreference) -> float:
-        if not preferences.preferred_roles:
+    def _role_score(
+        self, job: NormalizedJob, profile: CandidateProfile, preferences: UserPreference
+    ) -> float:
+        """Preferred roles (explicitly configured) win when set; otherwise fall back
+        to the roles the CV analysis actually derived (CandidateProfile.roles), so a
+        candidate who never bothered filling in role preferences still gets a real
+        role-match signal instead of an unconditional 100 for every job title."""
+        roles = preferences.preferred_roles or profile.roles
+        if not roles:
             return 100.0
         title = job.title.lower()
         best = max(
-            SequenceMatcher(None, title, role.replace("_", " ").lower()).ratio()
-            for role in preferences.preferred_roles
+            SequenceMatcher(None, title, role.replace("_", " ").lower()).ratio() for role in roles
         )
         return best * 100
 

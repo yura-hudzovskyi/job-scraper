@@ -60,6 +60,36 @@ def test_role_score_defaults_to_full_marks_with_no_preference(scorer: Determinis
     assert role == 100.0
 
 
+def test_role_score_falls_back_to_profile_roles_without_preference(
+    scorer: DeterministicScorer,
+) -> None:
+    # No preferred_roles configured, but the CV-derived profile says "Backend
+    # Developer" — an "Account Manager" posting must not get a free pass just
+    # because the candidate never filled in a role preference.
+    job = _job(title="Account Manager")
+    profile = CandidateProfile(
+        id="p1", user_id="u1", experience_years=3.0, roles=["Backend Developer"], skills=[]
+    )
+    role, *_ = scorer.score(job, profile, _preferences())
+    assert role < 50.0
+
+
+def test_role_score_prefers_explicit_preference_over_profile_roles(
+    scorer: DeterministicScorer,
+) -> None:
+    job = _job(title="Senior Full Stack Engineer")
+    preferences = _preferences(preferred_roles=["full_stack"])
+    matching_profile_roles = CandidateProfile(
+        id="p1", user_id="u1", experience_years=3.0, roles=["Full Stack Engineer"], skills=[]
+    )
+    mismatched_profile_roles = CandidateProfile(
+        id="p1", user_id="u1", experience_years=3.0, roles=["Data Scientist"], skills=[]
+    )
+    role_a, *_ = scorer.score(job, matching_profile_roles, preferences)
+    role_b, *_ = scorer.score(job, mismatched_profile_roles, preferences)
+    assert role_a == role_b
+
+
 def test_experience_score_full_marks_when_candidate_meets_requirement(
     scorer: DeterministicScorer,
 ) -> None:
@@ -122,6 +152,25 @@ def test_overall_combines_components_by_weight() -> None:
         skills=100.0, role=0.0, experience=0.0, transferable_skills=0.0, salary=0.0, location=0.0, preferences=0.0
     )
     assert scorer.overall(deterministic, semantic_fit=0.0) == pytest.approx(100.0)
+
+
+def test_overall_redistributes_skill_weight_when_job_has_no_extracted_skills() -> None:
+    # A job with no extracted skills makes SkillMatcher report a fabricated neutral
+    # 100 for skills/transferable/preferences (nothing required -> nothing missing).
+    # skills_available=False must stop that from being credited at full weight.
+    scorer = DeterministicScorer()
+    deterministic = DeterministicScore(
+        skills=100.0,
+        role=0.0,
+        experience=100.0,
+        transferable_skills=100.0,
+        salary=100.0,
+        location=100.0,
+        preferences=100.0,
+    )
+    with_skills = scorer.overall(deterministic, semantic_fit=0.0, skills_available=True)
+    without_skills = scorer.overall(deterministic, semantic_fit=0.0, skills_available=False)
+    assert without_skills < with_skills
 
 
 class _FakeEmbeddingProvider:

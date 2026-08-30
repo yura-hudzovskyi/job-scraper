@@ -76,6 +76,21 @@ class MatchRepository:
         )
         return [_to_job_match(model) for model in result.scalars()]
 
+    async def list_for_canonical_jobs(
+        self, user_id: uuid.UUID, canonical_job_ids: list[uuid.UUID]
+    ) -> dict[str, JobMatch]:
+        """Batch lookup for the jobs list page — one query for a whole page of jobs
+        instead of the frontend firing a separate /match request per row."""
+        if not canonical_job_ids:
+            return {}
+        result = await self._session.execute(
+            select(JobMatchModel).where(
+                JobMatchModel.user_id == user_id,
+                JobMatchModel.canonical_job_id.in_(canonical_job_ids),
+            )
+        )
+        return {str(model.canonical_job_id): _to_job_match(model) for model in result.scalars()}
+
     async def get_for_canonical_job(
         self, user_id: uuid.UUID, canonical_job_id: uuid.UUID
     ) -> JobMatch | None:

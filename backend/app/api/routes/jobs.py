@@ -5,7 +5,7 @@ save/apply/reject need the application tracker — Phase 5, see docs/roadmap.md.
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user_id, get_job_service, get_match_repository
@@ -17,6 +17,9 @@ from app.workers.tasks.score import score_job_for_user
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
+_DEFAULT_PAGE_SIZE = 50
+_MAX_PAGE_SIZE = 200
+
 
 class JobSummaryResponse(BaseModel):
     id: str
@@ -24,6 +27,15 @@ class JobSummaryResponse(BaseModel):
     company: str
     description: str
     source_count: int
+    practical_fit: float | None = None
+    recommendation: str | None = None
+
+
+class JobListResponse(BaseModel):
+    items: list[JobSummaryResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 class ScoreBreakdownResponse(BaseModel):
@@ -49,13 +61,17 @@ class JobMatchResponse(BaseModel):
     skills_source: str | None
 
 
-def _to_summary(job: CanonicalJob) -> JobSummaryResponse:
+def _to_summary(job: CanonicalJob, match: JobMatch | None) -> JobSummaryResponse:
     return JobSummaryResponse(
         id=job.id,
         title=job.normalized.title,
         company=job.normalized.company,
         description=job.normalized.description,
         source_count=len(job.source_records),
+        practical_fit=match.practical_fit if match else None,
+        recommendation=(
+            match.recommendation.value if match and match.recommendation else None
+        ),
     )
 
 
@@ -73,10 +89,16 @@ def _to_match_response(match: JobMatch) -> JobMatchResponse:
     )
 
 
-@router.get("", response_model=list[JobSummaryResponse])
-async def list_jobs(job_service: JobService = Depends(get_job_service)) -> list[JobSummaryResponse]:
-    jobs = await job_service.list_jobs()
-    return [_to_summary(job) for job in jobs]
+@router.get("", response_model=JobListResponse)
+async def list_jobs(
+    limit: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
+    offset: int = Query(0, ge=0),
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    job_service: JobService = Depends(get_job_service),
+) -> JobListResponse:
+    jobs, matches, total = await job_service.list_jobs(user_id, limit, offset)
+    items = [_to_summary(job, matches.get(job.id)) for job in jobs]
+    return JobListResponse(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/{job_id}", response_model=JobSummaryResponse)
@@ -86,7 +108,7 @@ async def get_job(
     job = await job_service.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
-    return _to_summary(job)
+    return _to_summary(job, match=None)
 
 
 @router.get("/{job_id}/match", response_model=JobMatchResponse)

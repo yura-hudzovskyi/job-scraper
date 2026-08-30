@@ -139,6 +139,39 @@ async def test_practical_fit_exceeds_requirement_match_when_skills_are_only_tran
 
 
 @pytest.mark.asyncio
+async def test_unrelated_job_with_no_extracted_skills_is_not_a_false_positive() -> None:
+    # Regression test: an "Account Manager" posting has no technical skills to
+    # extract at all, so job.skills stays empty. That must not fall back to a
+    # fabricated "perfect" skills/transferable/preferences score against a developer
+    # profile — role and semantic mismatch should drag the overall score down to SKIP.
+    provider = _FakeEmbeddingProvider(
+        {
+            "Backend Developer\nPython": [1.0, 0.0],
+            "Account Manager\nManage client relationships and sales pipeline.": [0.0, 1.0],
+        }
+    )
+    service = _matching_service(provider)
+    job = _job(
+        title="Account Manager",
+        description="Manage client relationships and sales pipeline.",
+        skills=[],
+    )
+    profile = CandidateProfile(
+        id="p1",
+        user_id="u1",
+        experience_years=5.0,
+        roles=["Backend Developer"],
+        skills=[CandidateSkill(name="Python", level=SkillLevel.COMMERCIAL)],
+    )
+
+    match = await service.evaluate("canonical-1", job, profile, _preferences())
+
+    assert match.eligible is True
+    assert match.practical_fit < 55.0
+    assert match.recommendation == Recommendation.SKIP
+
+
+@pytest.mark.asyncio
 async def test_weak_match_recommends_skip() -> None:
     provider = _FakeEmbeddingProvider(
         {

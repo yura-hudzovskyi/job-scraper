@@ -175,11 +175,23 @@ class JobRepository:
             raise LookupError(f"raw job {raw_job_id} not found")
         return _to_raw_job(model)
 
-    async def list_canonical_jobs(self) -> list[CanonicalJob]:
-        """All canonical jobs, as dedup candidates and for the jobs list API. Fine at
-        Phase 1 (personal-scale) volumes — narrowing by company/recency is a later
-        optimization if this ever needs to scale past that."""
-        result = await self._session.execute(select(CanonicalJobModel))
+    async def count_canonical_jobs(self) -> int:
+        result = await self._session.execute(select(func.count()).select_from(CanonicalJobModel))
+        return result.scalar_one()
+
+    async def list_canonical_jobs(
+        self, limit: int | None = None, offset: int = 0
+    ) -> list[CanonicalJob]:
+        """Canonical jobs, newest-seen first. `limit=None` (the default) returns every
+        row — used by DeduplicationService, which needs the full candidate set. The
+        jobs list API must always pass a real `limit`; without one, every page load
+        would pull the entire table (and, before pagination existed, the frontend
+        additionally fired one match request per row on top of that — see
+        docs/api.md and Jobs.tsx)."""
+        stmt = select(CanonicalJobModel).order_by(CanonicalJobModel.last_seen_at.desc())
+        if limit is not None:
+            stmt = stmt.limit(limit).offset(offset)
+        result = await self._session.execute(stmt)
         canonical_models = result.scalars().all()
         if not canonical_models:
             return []

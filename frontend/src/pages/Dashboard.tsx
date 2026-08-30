@@ -31,7 +31,9 @@ function StatusRow({
 export function Dashboard() {
   const profileQuery = useQuery({ queryKey: ["profile"], queryFn: getProfile });
   const sourcesQuery = useQuery({ queryKey: ["sources"], queryFn: listSources });
-  const jobsQuery = useQuery({ queryKey: ["jobs"], queryFn: listJobs });
+  // Only the total count is needed here, so ask for the smallest possible page
+  // instead of pulling every job just to read jobsQuery.data.length.
+  const jobsQuery = useQuery({ queryKey: ["jobs-count"], queryFn: () => listJobs(1, 0) });
   const telegramQuery = useQuery({ queryKey: ["telegram-status"], queryFn: getTelegramStatus });
 
   const rawJobsStored = sourcesQuery.data?.reduce((sum, s) => sum + s.raw_jobs_stored, 0) ?? 0;
@@ -75,7 +77,7 @@ export function Dashboard() {
         <SectionTitle>At a glance</SectionTitle>
         <div className="grid grid-cols-3 gap-4 text-center">
           <div>
-            <p className="text-2xl font-bold">{jobsQuery.data?.length ?? "—"}</p>
+            <p className="text-2xl font-bold">{jobsQuery.data?.total ?? "—"}</p>
             <p className="text-sm text-slate-500">canonical jobs</p>
           </div>
           <div>

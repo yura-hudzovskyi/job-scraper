@@ -86,10 +86,19 @@ class MatchingService:
             preferences=skill_assessment.preferences_score,
         )
 
-        practical_fit = self._deterministic_scorer.overall(deterministic, semantic_fit)
+        # An empty job.skills means SkillMatcher had nothing to assess and returned
+        # its fabricated "neutral" 100/100/100 (see SkillMatcher._NEUTRAL) — that's
+        # not a real signal, so overall() must not credit it at full weight.
+        skills_available = bool(job.skills)
+
+        practical_fit = self._deterministic_scorer.overall(
+            deterministic, semantic_fit, skills_available=skills_available
+        )
         # "Requirement match" is the literal fit — transferable-skill credit doesn't count.
         requirement_match = self._deterministic_scorer.overall(
-            replace(deterministic, transferable_skills=0.0), semantic_fit
+            replace(deterministic, transferable_skills=0.0),
+            semantic_fit,
+            skills_available=skills_available,
         )
 
         breakdown = ScoreBreakdown(
