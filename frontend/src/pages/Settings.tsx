@@ -5,6 +5,7 @@ import { ApiError } from "../api/client";
 import {
   connectTelegram,
   getPreferences,
+  getTelegramBotInfo,
   getTelegramStatus,
   testTelegram,
   updatePreferences,
@@ -45,10 +46,13 @@ export function Settings() {
     queryKey: ["telegram-status"],
     queryFn: getTelegramStatus,
   });
-  const [botToken, setBotToken] = useState("");
+  const botInfoQuery = useQuery({
+    queryKey: ["telegram-bot-info"],
+    queryFn: getTelegramBotInfo,
+  });
   const [chatId, setChatId] = useState("");
   const connectMutation = useMutation({
-    mutationFn: () => connectTelegram(botToken, chatId),
+    mutationFn: () => connectTelegram(chatId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["telegram-status"] }),
   });
   const testMutation = useMutation({ mutationFn: testTelegram });
@@ -205,18 +209,24 @@ export function Settings() {
           )}
         </div>
         <p className="mb-3 text-sm text-slate-600">
-          Create a bot via @BotFather in Telegram to get a token, then message it once to get
-          your chat id.
+          {botInfoQuery.data?.username ? (
+            <>
+              Message{" "}
+              <a
+                href={`https://t.me/${botInfoQuery.data.username}`}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-slate-900 underline"
+              >
+                @{botInfoQuery.data.username}
+              </a>{" "}
+              on Telegram to get your chat id, then paste it below.
+            </>
+          ) : (
+            "No Telegram bot is configured on the server yet."
+          )}
         </p>
         <div className="grid grid-cols-2 gap-4">
-          <Field label="Bot token">
-            <input
-              className={inputClass}
-              value={botToken}
-              onChange={(e) => setBotToken(e.target.value)}
-              placeholder="123456:AAExampleTokenGoesHere"
-            />
-          </Field>
           <Field label="Chat id">
             <input
               className={inputClass}
@@ -229,7 +239,7 @@ export function Settings() {
         <div className="mt-4 flex items-center gap-3">
           <Button
             onClick={() => connectMutation.mutate()}
-            disabled={connectMutation.isPending || !botToken || !chatId}
+            disabled={connectMutation.isPending || !chatId}
           >
             {connectMutation.isPending ? "Connecting…" : "Connect"}
           </Button>

@@ -157,11 +157,22 @@ Critical: none
 
 ## "Should I apply?"
 
-A single question, answered with a structured, explainable recommendation: yes/no,
-why, which gaps don't matter (transferable), the main risk, an estimated interview
-probability, the recommended CV variant, and a suggested salary ask. This is the
-highest-leverage user-facing feature of the matching engine — see
-`backend/app/domain/matching/service.py`.
+A single question, answered with a structured, explainable recommendation: fit
+score, apply/consider/skip, confidence, strengths, gaps, which gaps are actually
+critical vs. transferable, an interview-risk estimate, a summary, and (when the
+candidate has more than one CV variant) which one to use. This is the
+highest-leverage user-facing feature of the matching engine — implemented as
+`MatchingService.should_i_apply` (`backend/app/domain/matching/service.py`) plus
+`LlmReranker` (`backend/app/domain/matching/llm_reranker.py`).
+
+It's deliberately narrow-cast: only called for matches the deterministic pipeline
+already recommends `Recommendation.APPLY` — that's both where the question is
+actually worth asking and the main volume control on a personal-scale Gemini
+free-tier key, on top of `LlmReranker`'s own daily call budget
+(`app/integrations/ai/llm/budget.py`, `LLM_RERANK_DAILY_LIMIT`), which caps
+usage independent of whatever the provider's own rate-limit/billing behavior is.
+Batch reranking over an explicit shortlist (`rerank_shortlist`) is still
+deferred — see docs/roadmap.md.
 
 ## What the LLM must never own
 

@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"
 
+    # Hard daily ceiling on LlmReranker calls (see app/integrations/ai/llm/budget.py
+    # and app/domain/matching/llm_reranker.py) — independent of whatever Gemini's
+    # own rate-limit/billing behavior is. Conservative default; tune to your actual
+    # Gemini plan (free-tier daily quotas vary by model/tier and change over time,
+    # so this isn't a number guaranteed correct for any particular plan).
+    llm_rerank_daily_limit: int = 30
+
     embedding_provider: Literal["sentence_transformers", "openai"] = "sentence_transformers"
     embedding_model: str = "all-MiniLM-L6-v2"
 

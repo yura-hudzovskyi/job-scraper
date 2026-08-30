@@ -16,6 +16,7 @@ celery_app = Celery(
         "app.workers.tasks.score",
         "app.workers.tasks.notify",
         "app.workers.tasks.retention",
+        "app.workers.tasks.backfill",
     ],
 )
 

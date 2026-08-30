@@ -10,3 +10,11 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return float(max(0.0, min(1.0, dot / (norm_a * norm_b))))
+
+
+def best_similarity(target: list[float], candidates: list[list[float]]) -> float:
+    """Highest cosine similarity between `target` and any of `candidates`, or 0.0
+    when there are no candidates to compare against."""
+    if not candidates:
+        return 0.0
+    return max(cosine_similarity(target, candidate) for candidate in candidates)

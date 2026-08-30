@@ -48,53 +48,11 @@ def scorer() -> DeterministicScorer:
     return DeterministicScorer()
 
 
-def test_role_score_rewards_close_title_match(scorer: DeterministicScorer) -> None:
-    job = _job(title="Senior Full Stack Engineer")
-    exact_role, *_ = scorer.score(job, _profile(), _preferences(preferred_roles=["full_stack"]))
-    unrelated_role, *_ = scorer.score(job, _profile(), _preferences(preferred_roles=["data_scientist"]))
-    assert exact_role > unrelated_role
-
-
-def test_role_score_defaults_to_full_marks_with_no_preference(scorer: DeterministicScorer) -> None:
-    role, _experience, _salary, _location = scorer.score(_job(), _profile(), _preferences())
-    assert role == 100.0
-
-
-def test_role_score_falls_back_to_profile_roles_without_preference(
-    scorer: DeterministicScorer,
-) -> None:
-    # No preferred_roles configured, but the CV-derived profile says "Backend
-    # Developer" — an "Account Manager" posting must not get a free pass just
-    # because the candidate never filled in a role preference.
-    job = _job(title="Account Manager")
-    profile = CandidateProfile(
-        id="p1", user_id="u1", experience_years=3.0, roles=["Backend Developer"], skills=[]
-    )
-    role, *_ = scorer.score(job, profile, _preferences())
-    assert role < 50.0
-
-
-def test_role_score_prefers_explicit_preference_over_profile_roles(
-    scorer: DeterministicScorer,
-) -> None:
-    job = _job(title="Senior Full Stack Engineer")
-    preferences = _preferences(preferred_roles=["full_stack"])
-    matching_profile_roles = CandidateProfile(
-        id="p1", user_id="u1", experience_years=3.0, roles=["Full Stack Engineer"], skills=[]
-    )
-    mismatched_profile_roles = CandidateProfile(
-        id="p1", user_id="u1", experience_years=3.0, roles=["Data Scientist"], skills=[]
-    )
-    role_a, *_ = scorer.score(job, matching_profile_roles, preferences)
-    role_b, *_ = scorer.score(job, mismatched_profile_roles, preferences)
-    assert role_a == role_b
-
-
 def test_experience_score_full_marks_when_candidate_meets_requirement(
     scorer: DeterministicScorer,
 ) -> None:
     job = _job(required_experience_years=3.0)
-    _role, experience, _salary, _location = scorer.score(job, _profile(experience_years=5.0), _preferences())
+    experience, _salary, _location = scorer.score(job, _profile(experience_years=5.0), _preferences())
     assert experience == 100.0
 
 
@@ -102,37 +60,37 @@ def test_experience_score_scales_down_when_candidate_falls_short(
     scorer: DeterministicScorer,
 ) -> None:
     job = _job(required_experience_years=6.0)
-    _role, experience, _salary, _location = scorer.score(job, _profile(experience_years=3.0), _preferences())
+    experience, _salary, _location = scorer.score(job, _profile(experience_years=3.0), _preferences())
     assert experience == pytest.approx(50.0)
 
 
 def test_salary_score_full_marks_when_job_meets_desired(scorer: DeterministicScorer) -> None:
     job = _job(salary=SalaryRange(min=4000, max=6000, currency="USD"))
-    _role, _experience, salary, _location = scorer.score(job, _profile(), _preferences(desired_salary_usd=4000))
+    _experience, salary, _location = scorer.score(job, _profile(), _preferences(desired_salary_usd=4000))
     assert salary == 100.0
 
 
 def test_salary_score_scales_down_when_job_pays_less(scorer: DeterministicScorer) -> None:
     job = _job(salary=SalaryRange(min=1500, max=2000, currency="USD"))
-    _role, _experience, salary, _location = scorer.score(job, _profile(), _preferences(desired_salary_usd=4000))
+    _experience, salary, _location = scorer.score(job, _profile(), _preferences(desired_salary_usd=4000))
     assert salary == pytest.approx(50.0)
 
 
 def test_salary_score_neutral_for_non_usd_currency(scorer: DeterministicScorer) -> None:
     job = _job(salary=SalaryRange(min=50000, max=60000, currency="UAH"))
-    _role, _experience, salary, _location = scorer.score(job, _profile(), _preferences(desired_salary_usd=4000))
+    _experience, salary, _location = scorer.score(job, _profile(), _preferences(desired_salary_usd=4000))
     assert salary == 100.0
 
 
 def test_location_score_full_marks_for_open_remote(scorer: DeterministicScorer) -> None:
     job = _job(remote=True, countries=[])
-    _role, _experience, _salary, location = scorer.score(job, _profile(), _preferences(locations=["Ukraine"]))
+    _experience, _salary, location = scorer.score(job, _profile(), _preferences(locations=["Ukraine"]))
     assert location == 100.0
 
 
 def test_location_score_penalizes_no_overlap(scorer: DeterministicScorer) -> None:
     job = _job(remote=True, countries=["United States"])
-    _role, _experience, _salary, location = scorer.score(job, _profile(), _preferences(locations=["Ukraine"]))
+    _experience, _salary, location = scorer.score(job, _profile(), _preferences(locations=["Ukraine"]))
     assert location == 50.0
 
 

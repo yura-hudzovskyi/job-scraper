@@ -12,7 +12,7 @@ skill A the same as skill B" identity test changed, not the weighting logic.
 from dataclasses import dataclass, field
 
 from app.domain.jobs.models import NormalizedJobSkill
-from app.domain.matching.similarity import cosine_similarity
+from app.domain.matching.similarity import best_similarity
 from app.integrations.ai.embeddings.base import EmbeddingProvider
 
 DEFAULT_MATCH_THRESHOLD = 0.75
@@ -66,7 +66,7 @@ class SkillMatcher:
         preference_weights: list[float] = []
 
         for skill, job_vector in zip(job_skills, job_vectors, strict=True):
-            best_candidate_similarity = _best_similarity(job_vector, candidate_vectors)
+            best_candidate_similarity = best_similarity(job_vector, candidate_vectors)
             if best_candidate_similarity >= self._match_threshold:
                 strengths.append(skill.name)
             else:
@@ -101,14 +101,8 @@ class SkillMatcher:
         preferred_vectors: list[list[float]],
         acceptable_vectors: list[list[float]],
     ) -> float:
-        if _best_similarity(job_vector, preferred_vectors) >= self._match_threshold:
+        if best_similarity(job_vector, preferred_vectors) >= self._match_threshold:
             return 1.0
-        if _best_similarity(job_vector, acceptable_vectors) >= self._match_threshold:
+        if best_similarity(job_vector, acceptable_vectors) >= self._match_threshold:
             return 0.6
         return 0.0
-
-
-def _best_similarity(target: list[float], candidates: list[list[float]]) -> float:
-    if not candidates:
-        return 0.0
-    return max(cosine_similarity(target, candidate) for candidate in candidates)

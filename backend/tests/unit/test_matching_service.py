@@ -8,7 +8,13 @@ from app.domain.candidates.models import (
 )
 from app.domain.jobs.models import EmploymentType, JobLocation, NormalizedJob, NormalizedJobSkill
 from app.domain.matching.filters import HardFilterService
-from app.domain.matching.models import Recommendation
+from app.domain.matching.models import (
+    JobMatch,
+    LlmAssessment,
+    Recommendation,
+    ScoreBreakdown,
+)
+from app.domain.matching.role_matching import RoleMatcher
 from app.domain.matching.scoring import DeterministicScorer, SemanticScorer
 from app.domain.matching.service import MatchingService
 from app.domain.matching.skill_matching import SkillMatcher
@@ -68,13 +74,104 @@ def _preferences(**overrides) -> UserPreference:
     return UserPreference(**defaults)
 
 
-def _matching_service(embedding_provider: object) -> MatchingService:
+def _matching_service(embedding_provider: object, llm_reranker: object | None = None) -> MatchingService:
     return MatchingService(
         HardFilterService(),
         DeterministicScorer(),
         SemanticScorer(embedding_provider),  # type: ignore[arg-type]
         SkillMatcher(embedding_provider),  # type: ignore[arg-type]
+        RoleMatcher(embedding_provider),  # type: ignore[arg-type]
+        llm_reranker=llm_reranker,  # type: ignore[arg-type]
     )
+
+
+def _match(recommendation: Recommendation) -> JobMatch:
+    return JobMatch(
+        id="m1",
+        user_id="u1",
+        canonical_job_id="c1",
+        eligible=True,
+        requirement_match=80.0,
+        practical_fit=80.0,
+        breakdown=ScoreBreakdown(90, 90, 90, 90, 100, 100, 90, 100),
+        recommendation=recommendation,
+    )
+
+
+class _FakeLlmReranker:
+    def __init__(self, assessment: LlmAssessment | None):
+        self._assessment = assessment
+        self.call_count = 0
+
+    async def assess(self, job, profile, breakdown, strengths, gaps) -> LlmAssessment | None:
+        self.call_count += 1
+        return self._assessment
+
+
+_FAKE_ASSESSMENT = LlmAssessment(
+    overall_fit=85.0,
+    recommendation=Recommendation.APPLY,
+    confidence=0.8,
+    strengths=["Django"],
+    gaps=[],
+    critical_gaps=[],
+    transferable_experience=[],
+    interview_risk="low",
+    summary="Good fit.",
+    recommended_cv=None,
+    model_label="fake-model",
+)
+
+
+@pytest.mark.asyncio
+async def test_should_i_apply_is_a_noop_without_a_reranker() -> None:
+    service = _matching_service(_FakeEmbeddingProvider(), llm_reranker=None)
+    match = _match(Recommendation.APPLY)
+
+    result = await service.should_i_apply(_job(), _profile(), match)
+
+    assert result is match
+    assert result.llm_assessment is None
+
+
+@pytest.mark.asyncio
+async def test_should_i_apply_is_a_noop_for_non_apply_recommendation() -> None:
+    reranker = _FakeLlmReranker(_FAKE_ASSESSMENT)
+    service = _matching_service(_FakeEmbeddingProvider(), llm_reranker=reranker)
+    match = _match(Recommendation.CONSIDER)
+
+    result = await service.should_i_apply(_job(), _profile(), match)
+
+    assert result is match
+    assert reranker.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_should_i_apply_is_a_noop_when_reranker_returns_none() -> None:
+    # Budget exhausted (or any other degrade-gracefully reason) -> reranker
+    # itself returns None rather than raising; should_i_apply must leave the
+    # match untouched, not error.
+    reranker = _FakeLlmReranker(None)
+    service = _matching_service(_FakeEmbeddingProvider(), llm_reranker=reranker)
+    match = _match(Recommendation.APPLY)
+
+    result = await service.should_i_apply(_job(), _profile(), match)
+
+    assert result is match
+    assert reranker.call_count == 1
+    assert result.llm_assessment is None
+
+
+@pytest.mark.asyncio
+async def test_should_i_apply_populates_llm_assessment_when_apply_and_budget_allows() -> None:
+    reranker = _FakeLlmReranker(_FAKE_ASSESSMENT)
+    service = _matching_service(_FakeEmbeddingProvider(), llm_reranker=reranker)
+    match = _match(Recommendation.APPLY)
+
+    result = await service.should_i_apply(_job(), _profile(), match)
+
+    assert result.llm_assessment == _FAKE_ASSESSMENT
+    assert reranker.call_count == 1
 
 
 @pytest.fixture
@@ -148,6 +245,12 @@ async def test_unrelated_job_with_no_extracted_skills_is_not_a_false_positive() 
         {
             "Backend Developer\nPython": [1.0, 0.0],
             "Account Manager\nManage client relationships and sales pipeline.": [0.0, 1.0],
+            # RoleMatcher embeds the job title and CV-derived roles standalone
+            # (separately from SemanticScorer's full-text embed above) — without
+            # these, both would fall back to the same default vector and role
+            # would wrongly read as a perfect 100 instead of a mismatch.
+            "Account Manager": [0.0, 1.0],
+            "Backend Developer": [1.0, 0.0],
         }
     )
     service = _matching_service(provider)
@@ -169,6 +272,45 @@ async def test_unrelated_job_with_no_extracted_skills_is_not_a_false_positive() 
     assert match.eligible is True
     assert match.practical_fit < 55.0
     assert match.recommendation == Recommendation.SKIP
+
+
+@pytest.mark.asyncio
+async def test_domain_mismatch_gate_forces_skip_despite_superficial_skill_match() -> None:
+    # A job that skill-matches superficially (skills_available=True — Excel is a
+    # real, matched skill) but is a different profession entirely — role and
+    # semantic both say so — floors at ~70 (CONSIDER band) on the score alone,
+    # since skills/transferable/experience/salary/location all read as neutral or
+    # perfect. The domain-mismatch gate overrides the recommendation to SKIP
+    # without altering the score itself.
+    provider = _FakeEmbeddingProvider(
+        {
+            "Excel": [1.0, 0.0],
+            "Account Manager": [0.0, 1.0],
+            "Backend Developer": [1.0, 0.0],
+            "Backend Developer\nExcel": [1.0, 0.0],
+            "Account Manager\nManage client relationships.": [0.0, 1.0],
+        }
+    )
+    service = _matching_service(provider)
+    job = _job(
+        title="Account Manager",
+        description="Manage client relationships.",
+        skills=[NormalizedJobSkill(name="Excel", required=True)],
+    )
+    profile = CandidateProfile(
+        id="p1",
+        user_id="u1",
+        experience_years=5.0,
+        roles=["Backend Developer"],
+        skills=[CandidateSkill(name="Excel", level=SkillLevel.COMMERCIAL)],
+    )
+
+    match = await service.evaluate("canonical-1", job, profile, _preferences())
+
+    assert match.eligible is True
+    assert match.practical_fit == pytest.approx(70.0)
+    assert match.recommendation == Recommendation.SKIP
+    assert any(gap.label == "role/domain mismatch" for gap in match.gaps)
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./.venv/Scripts/mypy.exe --strict app)",
+      "Bash(./.venv/Scripts/python.exe -m pytest -q)",
+      "Bash(git commit -m ' *)",
+      "Bash(git fetch *)",
+      "Bash(git checkout *)",
+      "Bash(git merge *)",
+      "Bash(git push *)",
+      "Bash(gh run *)",
+      "WebFetch(domain:www.work.ua)",
+      "WebFetch(domain:robota.ua)",
+      "WebFetch(domain:jooble.org)",
+      "WebFetch(domain:developer.adzuna.com)",
+      "WebFetch(domain:weworkremotely.com)",
+      "WebFetch(domain:remoteok.com)",
+      "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0 Safari/537.36\" https://robota.ua/robots.txt -o /tmp/robotaua_robots.txt -w \"HTTP %{http_code}\\\\n\")",
+      "Read(//tmp/**)",
+      "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0 Safari/537.36\" https://remoteok.com/api -o /tmp/remoteok.json -w \"HTTP %{http_code}\\\\n\")",
+      "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0 Safari/537.36\" https://www.work.ua/jobs/rss/ -o /tmp/workua_rss.xml -w \"workua RSS: HTTP %{http_code}\\\\n\")",
+      "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0 Safari/537.36\" \"https://www.work.ua/jobs-kyiv-python/\" -o /tmp/workua_search.html -w \"workua search page: HTTP %{http_code} size=%{size_download}\\\\n\")",
+      "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0 Safari/537.36\" \"https://www.work.ua/jobs/\" -o /tmp/workua_jobs.html -w \"HTTP %{http_code} size=%{size_download}\\\\n\")",
+      "Bash(.venv/Scripts/python -m pytest -q)"
+    ]
+  }
+}

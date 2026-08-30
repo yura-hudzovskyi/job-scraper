@@ -30,9 +30,12 @@ each phase should be independently mergeable and demoable.
 - ~~Job requirement extraction~~ — done, moved earlier: runs once per scraped job
   (see `backend/app/services/job_skill_extraction_service.py`), not gated behind
   the rest of Phase 4
-- LLM reranking of the top shortlist
-- Gap analysis, "should I apply?"
-- CV variant recommendation
+- ~~LLM reranking, gap analysis, "should I apply?", CV variant recommendation~~ —
+  done for the per-match case (`MatchingService.should_i_apply`, gated to
+  APPLY-tier matches with a daily call budget — see
+  `backend/app/domain/matching/llm_reranker.py`). Batch reranking over a literal
+  shortlist (`rerank_shortlist`) is still deferred — no shortlist view or digest
+  batching exists yet to feed it.
 
 ## Phase 5 — Job search cockpit
 

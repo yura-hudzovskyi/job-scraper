@@ -10,6 +10,7 @@ import type {
   Preferences,
   ProfileSummary,
   SourceHealth,
+  TelegramBotInfo,
   TelegramStatus,
   TokenResponse,
 } from "./types";
@@ -37,9 +38,10 @@ export const updatePreferences = (preferences: Preferences) =>
 
 export const getTelegramStatus = () =>
   apiClient.get<TelegramStatus>("/api/integrations/telegram/status");
-export const connectTelegram = (botToken: string, chatId: string) =>
+export const getTelegramBotInfo = () =>
+  apiClient.get<TelegramBotInfo>("/api/integrations/telegram/bot-info");
+export const connectTelegram = (chatId: string) =>
   apiClient.post<ConnectTelegramResponse>("/api/integrations/telegram/connect", {
-    bot_token: botToken,
     chat_id: chatId,
   });
 export const testTelegram = () =>
@@ -49,8 +51,10 @@ export const listSources = () => apiClient.get<SourceHealth[]>("/api/sources");
 export const syncSource = (sourceName: string) =>
   apiClient.post<{ status: string; source: string }>(`/api/sources/${sourceName}/sync`);
 
-export const listJobs = (limit: number, offset: number) =>
-  apiClient.get<JobListResponse>(`/api/jobs?limit=${limit}&offset=${offset}`);
+export const listJobs = (limit: number, offset: number, includeSkipped = false) =>
+  apiClient.get<JobListResponse>(
+    `/api/jobs?limit=${limit}&offset=${offset}&include_skipped=${includeSkipped}`,
+  );
 export const getJob = (jobId: string) => apiClient.get<JobSummary>(`/api/jobs/${jobId}`);
 export const getJobMatch = (jobId: string) => apiClient.get<JobMatch>(`/api/jobs/${jobId}/match`);
 export const rescoreJob = (jobId: string) =>

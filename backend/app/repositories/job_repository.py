@@ -175,20 +175,38 @@ class JobRepository:
             raise LookupError(f"raw job {raw_job_id} not found")
         return _to_raw_job(model)
 
-    async def count_canonical_jobs(self) -> int:
-        result = await self._session.execute(select(func.count()).select_from(CanonicalJobModel))
+    async def count_canonical_jobs(self, exclude_ids: set[uuid.UUID] | None = None) -> int:
+        stmt = select(func.count()).select_from(CanonicalJobModel)
+        if exclude_ids:
+            stmt = stmt.where(CanonicalJobModel.id.notin_(exclude_ids))
+        result = await self._session.execute(stmt)
         return result.scalar_one()
 
+    async def list_all_canonical_job_ids(self) -> list[uuid.UUID]:
+        """Every canonical job id, no join — used to fan out backfill scoring for a
+        newly-onboarded user (see workers/tasks/backfill.py) without paying for the
+        source-records join list_canonical_jobs does for the full jobs-list view."""
+        result = await self._session.execute(select(CanonicalJobModel.id))
+        return list(result.scalars())
+
     async def list_canonical_jobs(
-        self, limit: int | None = None, offset: int = 0
+        self,
+        limit: int | None = None,
+        offset: int = 0,
+        exclude_ids: set[uuid.UUID] | None = None,
     ) -> list[CanonicalJob]:
         """Canonical jobs, newest-seen first. `limit=None` (the default) returns every
         row — used by DeduplicationService, which needs the full candidate set. The
         jobs list API must always pass a real `limit`; without one, every page load
         would pull the entire table (and, before pagination existed, the frontend
         additionally fired one match request per row on top of that — see
-        docs/api.md and Jobs.tsx)."""
+        docs/api.md and Jobs.tsx). `exclude_ids` lets the jobs-list API hide jobs
+        already recommendation=SKIP for the current user by default (see
+        JobService.list_jobs) — omitted (or empty) entirely skips the clause rather
+        than filtering on an empty NOT IN, which is both pointless and edge-case-prone."""
         stmt = select(CanonicalJobModel).order_by(CanonicalJobModel.last_seen_at.desc())
+        if exclude_ids:
+            stmt = stmt.where(CanonicalJobModel.id.notin_(exclude_ids))
         if limit is not None:
             stmt = stmt.limit(limit).offset(offset)
         result = await self._session.execute(stmt)

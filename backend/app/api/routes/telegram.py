@@ -20,7 +20,6 @@ router = APIRouter(prefix="/api/integrations/telegram", tags=["telegram"])
 
 
 class ConnectTelegramRequest(BaseModel):
-    bot_token: str
     chat_id: str
 
 
@@ -31,6 +30,10 @@ class ConnectTelegramResponse(BaseModel):
 
 class TelegramStatusResponse(BaseModel):
     connected: bool
+
+
+class TelegramBotInfoResponse(BaseModel):
+    username: str | None
 
 
 def _sample_notification() -> JobMatchNotification:
@@ -61,19 +64,45 @@ async def telegram_status(
     return TelegramStatusResponse(connected=integration is not None)
 
 
+@router.get("/bot-info", response_model=TelegramBotInfoResponse)
+async def telegram_bot_info(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+) -> TelegramBotInfoResponse:
+    """Public-ish identity of the one shared bot everyone connects to (see
+    /connect) — lets the UI tell a user which bot to message before they've
+    connected anything themselves."""
+    bot_token = get_settings().telegram_bot_token
+    if not bot_token:
+        return TelegramBotInfoResponse(username=None)
+
+    provider = TelegramNotificationProvider(bot_token, chat_id="unused")
+    try:
+        bot_info = await provider.verify()
+    except TelegramApiError:
+        return TelegramBotInfoResponse(username=None)
+    return TelegramBotInfoResponse(username=bot_info.get("username"))
+
+
 @router.post("/connect", response_model=ConnectTelegramResponse)
 async def connect_telegram(
     payload: ConnectTelegramRequest,
     user_id: uuid.UUID = Depends(get_current_user_id),
     repository: NotificationRepository = Depends(get_notification_repository),
 ) -> ConnectTelegramResponse:
-    provider = TelegramNotificationProvider(payload.bot_token, payload.chat_id)
+    """Connects the current user's chat id to the one shared bot configured via
+    TELEGRAM_BOT_TOKEN — there's no per-user bot token to collect, just the chat
+    id, so nobody needs to be handed the bot's token out-of-band."""
+    bot_token = get_settings().telegram_bot_token
+    if not bot_token:
+        raise HTTPException(status_code=503, detail="no Telegram bot configured on the server")
+
+    provider = TelegramNotificationProvider(bot_token, payload.chat_id)
     try:
         bot_info = await provider.verify()
     except TelegramApiError as exc:
         raise HTTPException(status_code=422, detail=f"invalid bot token: {exc}") from exc
 
-    await repository.save_telegram_integration(user_id, payload.bot_token, payload.chat_id)
+    await repository.save_telegram_integration(user_id, bot_token, payload.chat_id)
     return ConnectTelegramResponse(status="connected", bot_username=bot_info.get("username"))
 
 

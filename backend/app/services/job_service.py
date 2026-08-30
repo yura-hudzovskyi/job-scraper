@@ -18,13 +18,21 @@ class JobService:
         self._match_repository = match_repository
 
     async def list_jobs(
-        self, user_id: uuid.UUID, limit: int, offset: int
+        self, user_id: uuid.UUID, limit: int, offset: int, include_skipped: bool = False
     ) -> tuple[list[CanonicalJob], dict[str, JobMatch], int]:
         """One page of canonical jobs plus this user's match for each — a single pair
         of queries instead of the frontend fetching every job and then one match per
-        job (see docs/api.md)."""
-        jobs = await self._job_repository.list_canonical_jobs(limit=limit, offset=offset)
-        total = await self._job_repository.count_canonical_jobs()
+        job (see docs/api.md). By default excludes jobs this user's matches already
+        recommend skipping (wrong profession, ineligible, etc.) — pass
+        include_skipped=True to see everything regardless of recommendation."""
+        exclude_ids: set[uuid.UUID] | None = None
+        if not include_skipped:
+            exclude_ids = await self._match_repository.list_skipped_canonical_job_ids(user_id)
+
+        jobs = await self._job_repository.list_canonical_jobs(
+            limit=limit, offset=offset, exclude_ids=exclude_ids
+        )
+        total = await self._job_repository.count_canonical_jobs(exclude_ids=exclude_ids)
         matches = await self._match_repository.list_for_canonical_jobs(
             user_id, [uuid.UUID(job.id) for job in jobs]
         )

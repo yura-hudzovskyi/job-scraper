@@ -3,6 +3,7 @@ a job for a user updates the existing row instead of duplicating."""
 
 import uuid
 from dataclasses import asdict
+from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
@@ -11,11 +12,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.match import JobMatchModel
 from app.domain.matching.models import (
     JobMatch,
+    LlmAssessment,
     MatchGap,
     MatchReason,
     Recommendation,
     ScoreBreakdown,
 )
+
+
+def _to_llm_assessment(payload: dict[str, Any] | None) -> LlmAssessment | None:
+    if payload is None:
+        return None
+    # JSONB round-trips the nested `recommendation` enum back as a plain str on
+    # read — same wrinkle the top-level `recommendation` column already has,
+    # re-wrap explicitly rather than let callers get a bare str where the type
+    # says Recommendation.
+    return LlmAssessment(**{**payload, "recommendation": Recommendation(payload["recommendation"])})
 
 
 def _to_job_match(model: JobMatchModel) -> JobMatch:
@@ -30,6 +42,7 @@ def _to_job_match(model: JobMatchModel) -> JobMatch:
         strengths=[MatchReason(**reason) for reason in model.strengths],
         gaps=[MatchGap(**gap) for gap in model.gaps],
         recommendation=Recommendation(model.recommendation) if model.recommendation else None,
+        llm_assessment=_to_llm_assessment(model.llm_assessment),
         skills_source=model.skills_source,
     )
 
@@ -47,6 +60,11 @@ class MatchRepository:
             "strengths": [asdict(reason) for reason in match.strengths],
             "gaps": [asdict(gap) for gap in match.gaps],
             "recommendation": match.recommendation.value if match.recommendation else None,
+            "llm_assessment": (
+                {**asdict(match.llm_assessment), "recommendation": match.llm_assessment.recommendation.value}
+                if match.llm_assessment
+                else None
+            ),
             "skills_source": match.skills_source,
         }
         stmt = (
@@ -75,6 +93,19 @@ class MatchRepository:
             .order_by(JobMatchModel.practical_fit.desc())
         )
         return [_to_job_match(model) for model in result.scalars()]
+
+    async def list_skipped_canonical_job_ids(self, user_id: uuid.UUID) -> set[uuid.UUID]:
+        """Canonical job ids this user's matches recommend skipping — used by
+        JobService.list_jobs to hide them from the default jobs-list view (see
+        JobRepository.list_canonical_jobs's exclude_ids). Cheap at this app's
+        scale: a few hundred rows per user, one indexed query, no pagination."""
+        result = await self._session.execute(
+            select(JobMatchModel.canonical_job_id).where(
+                JobMatchModel.user_id == user_id,
+                JobMatchModel.recommendation == Recommendation.SKIP.value,
+            )
+        )
+        return set(result.scalars())
 
     async def list_for_canonical_jobs(
         self, user_id: uuid.UUID, canonical_job_ids: list[uuid.UUID]

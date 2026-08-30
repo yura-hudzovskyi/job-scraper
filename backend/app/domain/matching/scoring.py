@@ -4,15 +4,14 @@ Weights are indicative defaults from docs/matching-engine.md; make them configur
 per user/search-profile rather than hardcoded once this grows real logic.
 
 Skill-aware scoring (skills/transferable_skills/preferences) lives in
-skill_matching.py's SkillMatcher, not here — it needs NormalizedJob.skills (LLM-
-extracted at ingestion, see app/services/job_skill_extraction_service.py) and an
-embedding call, so MatchingService computes it separately and merges it into
+skill_matching.py's SkillMatcher, and role scoring lives in role_matching.py's
+RoleMatcher — neither lives here, since both need an embedding call, so
+MatchingService computes them separately and merges everything into
 DeterministicScore before calling overall(). This class only covers the genuinely
-synchronous, registry-free components: role/experience/salary/location.
+synchronous, registry-free components: experience/salary/location.
 """
 
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 
 from app.domain.candidates.models import CandidateProfile, UserPreference
 from app.domain.jobs.models import NormalizedJob
@@ -57,11 +56,11 @@ class DeterministicScorer:
         job: NormalizedJob,
         profile: CandidateProfile,
         preferences: UserPreference,
-    ) -> tuple[float, float, float, float]:
-        """Returns (role, experience, salary, location) — MatchingService merges
-        these with SkillMatcher's output to build the full DeterministicScore."""
+    ) -> tuple[float, float, float]:
+        """Returns (experience, salary, location) — MatchingService merges these
+        with RoleMatcher's and SkillMatcher's output to build the full
+        DeterministicScore."""
         return (
-            self._role_score(job, profile, preferences),
             self._experience_score(job, profile),
             self._salary_score(job, preferences),
             self._location_score(job, preferences),
@@ -107,22 +106,6 @@ class DeterministicScorer:
             + deterministic.location * w.location
             + deterministic.preferences * w.preferences
         )
-
-    def _role_score(
-        self, job: NormalizedJob, profile: CandidateProfile, preferences: UserPreference
-    ) -> float:
-        """Preferred roles (explicitly configured) win when set; otherwise fall back
-        to the roles the CV analysis actually derived (CandidateProfile.roles), so a
-        candidate who never bothered filling in role preferences still gets a real
-        role-match signal instead of an unconditional 100 for every job title."""
-        roles = preferences.preferred_roles or profile.roles
-        if not roles:
-            return 100.0
-        title = job.title.lower()
-        best = max(
-            SequenceMatcher(None, title, role.replace("_", " ").lower()).ratio() for role in roles
-        )
-        return best * 100
 
     def _experience_score(self, job: NormalizedJob, profile: CandidateProfile) -> float:
         required = job.required_experience_years

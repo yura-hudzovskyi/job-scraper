@@ -97,6 +97,20 @@ export interface ScoreBreakdown {
   preferences: number;
 }
 
+export interface LlmAssessment {
+  overall_fit: number;
+  recommendation: string;
+  confidence: number;
+  strengths: string[];
+  gaps: string[];
+  critical_gaps: string[];
+  transferable_experience: string[];
+  interview_risk: string;
+  summary: string;
+  recommended_cv: string | null;
+  model_label: string;
+}
+
 export interface JobMatch {
   id: string;
   eligible: boolean;
@@ -106,6 +120,7 @@ export interface JobMatch {
   strengths: string[];
   gaps: string[];
   recommendation: string | null;
+  llm_assessment: LlmAssessment | null;
   skills_source: string | null;
 }
 
@@ -116,6 +131,10 @@ export interface ConnectTelegramResponse {
 
 export interface TelegramStatus {
   connected: boolean;
+}
+
+export interface TelegramBotInfo {
+  username: string | null;
 }
 
 export interface TokenResponse {

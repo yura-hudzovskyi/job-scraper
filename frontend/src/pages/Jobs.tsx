@@ -10,10 +10,11 @@ const PAGE_SIZE = 25;
 export function Jobs() {
   const queryClient = useQueryClient();
   const [offset, setOffset] = useState(0);
+  const [includeSkipped, setIncludeSkipped] = useState(false);
 
   const jobsQuery = useQuery({
-    queryKey: ["jobs", offset],
-    queryFn: () => listJobs(PAGE_SIZE, offset),
+    queryKey: ["jobs", offset, includeSkipped],
+    queryFn: () => listJobs(PAGE_SIZE, offset, includeSkipped),
     placeholderData: (previous) => previous,
   });
   const jobs = jobsQuery.data?.items ?? [];
@@ -25,7 +26,7 @@ export function Jobs() {
     mutationFn: () => Promise.all(unscoredJobIds.map((jobId) => rescoreJob(jobId))),
     onSuccess: () => {
       setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: ["jobs", offset] });
+        queryClient.invalidateQueries({ queryKey: ["jobs", offset, includeSkipped] });
       }, 3000);
     },
   });
@@ -45,6 +46,17 @@ export function Jobs() {
           </Button>
         )}
       </div>
+      <label className="mb-3 flex w-fit items-center gap-2 text-sm text-slate-600">
+        <input
+          type="checkbox"
+          checked={includeSkipped}
+          onChange={(e) => {
+            setIncludeSkipped(e.target.checked);
+            setOffset(0);
+          }}
+        />
+        Show all, including low matches
+      </label>
       {scoreAllMutation.isSuccess && (
         <p className="mb-3 text-sm text-green-700">
           Queued — this runs in the background, refresh in a few seconds.

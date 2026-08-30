@@ -32,8 +32,13 @@ export function Dashboard() {
   const profileQuery = useQuery({ queryKey: ["profile"], queryFn: getProfile });
   const sourcesQuery = useQuery({ queryKey: ["sources"], queryFn: listSources });
   // Only the total count is needed here, so ask for the smallest possible page
-  // instead of pulling every job just to read jobsQuery.data.length.
-  const jobsQuery = useQuery({ queryKey: ["jobs-count"], queryFn: () => listJobs(1, 0) });
+  // instead of pulling every job just to read jobsQuery.data.length. This stat is
+  // "how much has been scraped overall," not "how much is relevant to me" — pass
+  // includeSkipped so it isn't silently filtered by the Jobs page's relevance gate.
+  const jobsQuery = useQuery({
+    queryKey: ["jobs-count"],
+    queryFn: () => listJobs(1, 0, true),
+  });
   const telegramQuery = useQuery({ queryKey: ["telegram-status"], queryFn: getTelegramStatus });
 
   const rawJobsStored = sourcesQuery.data?.reduce((sum, s) => sum + s.raw_jobs_stored, 0) ?? 0;

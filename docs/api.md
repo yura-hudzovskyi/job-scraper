@@ -10,7 +10,8 @@ POST   /api/cv/analyze
 
 GET    /api/profile
 
-GET    /api/jobs                  paginated (?limit, ?offset), items include practical_fit/recommendation
+GET    /api/jobs                  paginated (?limit, ?offset), items include practical_fit/recommendation;
+                                   excludes Recommendation.SKIP matches by default (?include_skipped=true to see all)
 GET    /api/jobs/{id}
 GET    /api/jobs/{id}/match
 POST   /api/jobs/{id}/rescore
@@ -32,7 +33,8 @@ GET    /api/applications
 GET    /api/settings
 PATCH  /api/settings
 
-POST   /api/integrations/telegram/connect
+GET    /api/integrations/telegram/bot-info    the one shared bot's @username, before connecting
+POST   /api/integrations/telegram/connect     chat_id only — the bot token is server-side (TELEGRAM_BOT_TOKEN)
 POST   /api/integrations/telegram/test
 ```
 

@@ -1,20 +1,26 @@
 """Orchestrates the matching pipeline: filters -> deterministic score -> semantic
-score -> skill match -> explanation. See docs/matching-engine.md.
+score -> skill match -> explanation -> (optional) LLM rerank. See
+docs/matching-engine.md.
 
-LLM reranking and "should I apply?" are Phase 4 (docs/roadmap.md) — evaluate() stops
-at the deterministic+semantic+skill pipeline, which is already fully explainable on
-its own.
+evaluate() alone is already fully explainable — deterministic + semantic + skill,
+no LLM involved. should_i_apply() is a separate, optional Phase 4 step callers
+run afterward for matches worth a closer look (see its own docstring for the
+APPLY-only gating and volume controls). rerank_shortlist() (batch reranking) is
+still deferred — no shortlist view or digest batching exists to feed it.
 
 This is the only entry point other modules should call — it composes
-HardFilterService, DeterministicScorer, SemanticScorer and SkillMatcher, none of
-which should be called directly from services/ or the API layer.
+HardFilterService, DeterministicScorer, SemanticScorer, SkillMatcher, RoleMatcher
+and (optionally) LlmReranker, none of which should be called directly from
+services/ or the API layer.
 """
 
-from dataclasses import replace
+import asyncio
+from dataclasses import dataclass, replace
 
 from app.domain.candidates.models import CandidateProfile, UserPreference
 from app.domain.jobs.models import NormalizedJob
 from app.domain.matching.filters import HardFilterService
+from app.domain.matching.llm_reranker import LlmReranker
 from app.domain.matching.models import (
     JobMatch,
     MatchGap,
@@ -22,12 +28,33 @@ from app.domain.matching.models import (
     Recommendation,
     ScoreBreakdown,
 )
+from app.domain.matching.role_matching import RoleMatcher
 from app.domain.matching.scoring import DeterministicScore, DeterministicScorer, SemanticScorer
 from app.domain.matching.skill_matching import SkillAssessment, SkillMatcher
 
-_APPLY_THRESHOLD = 75.0
-_CONSIDER_THRESHOLD = 55.0
 _MAX_LISTED_REASONS = 5
+
+
+@dataclass(frozen=True)
+class MatchingThresholds:
+    """Recommendation-band thresholds for match *quality*. Deliberately kept
+    separate from NotificationPolicyConfig (app/domain/notifications/policy.py),
+    which answers a different question — delivery *urgency* — even though both
+    are "threshold numbers applied to a JobMatch." Merging them would recouple
+    two concerns that should be free to evolve independently.
+    """
+
+    apply: float = 75.0
+    consider: float = 55.0
+    # Below these, a job that only skill-matches superficially (skills_available
+    # is True but role/semantic both say "different profession") gets its
+    # Recommendation forced to SKIP regardless of practical_fit — see the
+    # domain-mismatch gate in evaluate(). Validated against real embeddings
+    # (all-MiniLM-L6-v2): genuine mismatches cluster ~15-30, legitimate
+    # adjacent/pivot roles cluster ~40-60 — re-validate if the embedding
+    # provider ever changes, since the margin is model-specific.
+    domain_mismatch_role_ceiling: float = 35.0
+    domain_mismatch_semantic_ceiling: float = 35.0
 
 
 class MatchingService:
@@ -37,11 +64,17 @@ class MatchingService:
         deterministic_scorer: DeterministicScorer,
         semantic_scorer: SemanticScorer,
         skill_matcher: SkillMatcher,
+        role_matcher: RoleMatcher,
+        thresholds: MatchingThresholds | None = None,
+        llm_reranker: LlmReranker | None = None,
     ):
         self._hard_filters = hard_filters
         self._deterministic_scorer = deterministic_scorer
         self._semantic_scorer = semantic_scorer
         self._skill_matcher = skill_matcher
+        self._role_matcher = role_matcher
+        self._thresholds = thresholds or MatchingThresholds()
+        self._llm_reranker = llm_reranker
 
     async def evaluate(
         self,
@@ -65,16 +98,18 @@ class MatchingService:
                 recommendation=Recommendation.SKIP,
             )
 
-        role, experience, salary, location = self._deterministic_scorer.score(
-            job, profile, preferences
+        experience, salary, location = self._deterministic_scorer.score(job, profile, preferences)
+        skill_assessment, semantic_similarity, role = await asyncio.gather(
+            self._skill_matcher.assess(
+                job_skills=job.skills,
+                candidate_skills=[skill.name for skill in profile.skills],
+                preferred_stack=preferences.preferred_stack,
+                acceptable_stack=preferences.acceptable_stack,
+            ),
+            self._semantic_scorer.similarity(job, profile),
+            self._role_matcher.assess(job.title, preferences.preferred_roles, profile.roles),
         )
-        skill_assessment = await self._skill_matcher.assess(
-            job_skills=job.skills,
-            candidate_skills=[skill.name for skill in profile.skills],
-            preferred_stack=preferences.preferred_stack,
-            acceptable_stack=preferences.acceptable_stack,
-        )
-        semantic_fit = await self._semantic_scorer.similarity(job, profile) * 100
+        semantic_fit = semantic_similarity * 100
 
         deterministic = DeterministicScore(
             skills=skill_assessment.skills_score,
@@ -114,6 +149,26 @@ class MatchingService:
 
         strengths, gaps = self._explain(skill_assessment)
 
+        # A job that only skill-matches superficially (skills_available=True) but
+        # is a different profession entirely — role and semantic fit both say so —
+        # never scores low enough on its own to guarantee SKIP (worst case floors
+        # around 70, the CONSIDER band: see docs/matching-engine.md). A hard cap on
+        # the *score* would also penalize legitimate career pivots (e.g. a
+        # Backend->DevOps title mismatch is supposed to score decently on
+        # transferable grounds), so this overrides the *recommendation* only —
+        # the score stays honest, only the actionable label + a visible reason
+        # change.
+        domain_mismatch = (
+            skills_available
+            and role < self._thresholds.domain_mismatch_role_ceiling
+            and semantic_fit < self._thresholds.domain_mismatch_semantic_ceiling
+        )
+        if domain_mismatch:
+            recommendation = Recommendation.SKIP
+            gaps = [MatchGap(label="role/domain mismatch", critical=True), *gaps]
+        else:
+            recommendation = self._recommend(practical_fit)
+
         return JobMatch(
             id="",
             user_id=profile.user_id,
@@ -124,7 +179,7 @@ class MatchingService:
             breakdown=breakdown,
             strengths=strengths,
             gaps=gaps,
-            recommendation=self._recommend(practical_fit),
+            recommendation=recommendation,
             skills_source=job.skills_extracted_by,
         )
 
@@ -142,18 +197,37 @@ class MatchingService:
         return strengths, gaps
 
     def _recommend(self, practical_fit: float) -> Recommendation:
-        if practical_fit >= _APPLY_THRESHOLD:
+        if practical_fit >= self._thresholds.apply:
             return Recommendation.APPLY
-        if practical_fit >= _CONSIDER_THRESHOLD:
+        if practical_fit >= self._thresholds.consider:
             return Recommendation.CONSIDER
         return Recommendation.SKIP
 
     async def rerank_shortlist(self, matches: list[JobMatch]) -> list[JobMatch]:
-        """Send the top-N deterministic+semantic matches to the LLM for reranking and
-        gap analysis. Phase 4 — see docs/roadmap.md."""
+        """Batch LLM rerank over a shortlist. Deferred — there's no shortlist view
+        or digest batching to feed it yet (mirrors notifications' own not-yet-built
+        digest batching); should_i_apply() below covers the per-match case that's
+        actually wired up today."""
         raise NotImplementedError
 
-    async def should_i_apply(self, match: JobMatch) -> str:
-        """Structured, explainable apply/skip recommendation for a single match.
-        Phase 4 — see docs/roadmap.md."""
-        raise NotImplementedError
+    async def should_i_apply(
+        self, job: NormalizedJob, profile: CandidateProfile, match: JobMatch
+    ) -> JobMatch:
+        """Layers the LLM's qualitative verdict onto an already-scored match — see
+        LlmReranker and docs/matching-engine.md's Phase 4 section. Only ever called
+        for Recommendation.APPLY matches: that's both where the "should I apply?"
+        question is actually worth asking, and the primary volume control on top of
+        LlmReranker's own daily call budget (see app/integrations/ai/llm/budget.py) —
+        a personal-scale Gemini free-tier key can't afford reranking every match
+        that merely isn't SKIP. Returns `match` unchanged (no LLM configured, not
+        APPLY-tier, or the daily budget is exhausted) rather than erroring — same
+        "degrade gracefully" policy as every other optional AI layer here."""
+        if self._llm_reranker is None or match.recommendation != Recommendation.APPLY:
+            return match
+
+        assessment = await self._llm_reranker.assess(
+            job, profile, match.breakdown, match.strengths, match.gaps
+        )
+        if assessment is None:
+            return match
+        return replace(match, llm_assessment=assessment)

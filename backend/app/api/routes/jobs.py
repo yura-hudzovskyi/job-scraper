@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.api.deps import get_current_user_id, get_job_service, get_match_repository
 from app.domain.jobs.models import CanonicalJob
-from app.domain.matching.models import JobMatch
+from app.domain.matching.models import JobMatch, LlmAssessment
 from app.repositories.match_repository import MatchRepository
 from app.services.job_service import JobService
 from app.workers.tasks.score import score_job_for_user
@@ -49,6 +49,20 @@ class ScoreBreakdownResponse(BaseModel):
     preferences: float
 
 
+class LlmAssessmentResponse(BaseModel):
+    overall_fit: float
+    recommendation: str
+    confidence: float
+    strengths: list[str]
+    gaps: list[str]
+    critical_gaps: list[str]
+    transferable_experience: list[str]
+    interview_risk: str
+    summary: str
+    recommended_cv: str | None
+    model_label: str
+
+
 class JobMatchResponse(BaseModel):
     id: str
     eligible: bool
@@ -58,6 +72,7 @@ class JobMatchResponse(BaseModel):
     strengths: list[str]
     gaps: list[str]
     recommendation: str | None
+    llm_assessment: LlmAssessmentResponse | None
     skills_source: str | None
 
 
@@ -75,6 +90,24 @@ def _to_summary(job: CanonicalJob, match: JobMatch | None) -> JobSummaryResponse
     )
 
 
+def _to_llm_assessment_response(assessment: LlmAssessment | None) -> LlmAssessmentResponse | None:
+    if assessment is None:
+        return None
+    return LlmAssessmentResponse(
+        overall_fit=assessment.overall_fit,
+        recommendation=assessment.recommendation.value,
+        confidence=assessment.confidence,
+        strengths=assessment.strengths,
+        gaps=assessment.gaps,
+        critical_gaps=assessment.critical_gaps,
+        transferable_experience=assessment.transferable_experience,
+        interview_risk=assessment.interview_risk,
+        summary=assessment.summary,
+        recommended_cv=assessment.recommended_cv,
+        model_label=assessment.model_label,
+    )
+
+
 def _to_match_response(match: JobMatch) -> JobMatchResponse:
     return JobMatchResponse(
         id=match.id,
@@ -85,6 +118,7 @@ def _to_match_response(match: JobMatch) -> JobMatchResponse:
         strengths=[reason.label for reason in match.strengths],
         gaps=[gap.label for gap in match.gaps],
         recommendation=match.recommendation.value if match.recommendation else None,
+        llm_assessment=_to_llm_assessment_response(match.llm_assessment),
         skills_source=match.skills_source,
     )
 
@@ -93,10 +127,13 @@ def _to_match_response(match: JobMatch) -> JobMatchResponse:
 async def list_jobs(
     limit: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
     offset: int = Query(0, ge=0),
+    include_skipped: bool = Query(False),
     user_id: uuid.UUID = Depends(get_current_user_id),
     job_service: JobService = Depends(get_job_service),
 ) -> JobListResponse:
-    jobs, matches, total = await job_service.list_jobs(user_id, limit, offset)
+    jobs, matches, total = await job_service.list_jobs(
+        user_id, limit, offset, include_skipped=include_skipped
+    )
     items = [_to_summary(job, matches.get(job.id)) for job in jobs]
     return JobListResponse(items=items, total=total, limit=limit, offset=offset)
 

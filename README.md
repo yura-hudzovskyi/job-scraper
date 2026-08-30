@@ -75,9 +75,18 @@ tracking so nothing sends twice. `score → notify` is a real Celery chain. Dail
 delivery and inline-button (save/applied/reject) callback handling are not built yet —
 the buttons render, but tapping them doesn't do anything server-side.
 
-**Phase 4** (LLM reranking, "should I apply?", job requirement extraction) and
-**Phase 5** (application tracker) are still interfaces/domain models without business
-logic — see [docs/roadmap.md](docs/roadmap.md).
+**Phase 4** — job requirement extraction has run since Phase 2 (moved earlier, see
+`job_skill_extraction_service.py`). LLM reranking / "should I apply?" is now real
+too: `MatchingService.should_i_apply` calls an LLM (Gemini-first with Ollama
+fallback, same policy as CV analysis) for matches the deterministic pipeline
+already recommends APPLY, gated by a configurable daily call budget
+(`LLM_RERANK_DAILY_LIMIT`) independent of the provider's own rate limits — see
+`app/domain/matching/llm_reranker.py` and `app/integrations/ai/llm/budget.py`.
+Batch reranking over a shortlist (`rerank_shortlist`) is still deferred — no
+shortlist view or digest batching exists to feed it yet.
+
+**Phase 5** (application tracker) is still interfaces/domain models without
+business logic — see [docs/roadmap.md](docs/roadmap.md).
 
 Docker was broken for most of this build (missing `services.iso`, unrelated to this
 repo) — every migration was verified offline instead (DDL compiled from the ORM

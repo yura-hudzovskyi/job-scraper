@@ -44,6 +44,7 @@ async def _run(user_id: str, canonical_job_id: str) -> dict[str, float | str]:
         ) or UserPreference(user_id=user_id, desired_salary_usd=None)
 
         match = await matching_service.evaluate(canonical_job_id, job, profile, preferences)
+        match = await matching_service.should_i_apply(job, profile, match)
         saved = await match_repository.upsert(match)
 
     return {"match_id": saved.id, "practical_fit": saved.practical_fit}

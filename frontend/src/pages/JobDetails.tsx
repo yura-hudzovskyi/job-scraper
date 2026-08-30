@@ -178,6 +178,64 @@ export function JobDetails() {
           </div>
         )}
       </Card>
+
+      {matchQuery.data?.llm_assessment && (
+        <Card>
+          <div className="mb-3 flex items-center gap-3">
+            <SectionTitle>Should I apply?</SectionTitle>
+            <span className="rounded-full bg-slate-900 px-3 py-1 text-sm text-white uppercase">
+              {matchQuery.data.llm_assessment.recommendation}
+            </span>
+            <span className="text-xs text-slate-500">
+              {(matchQuery.data.llm_assessment.confidence * 100).toFixed(0)}% confidence ·{" "}
+              {matchQuery.data.llm_assessment.interview_risk} interview risk
+            </span>
+          </div>
+          <p className="mb-3 text-sm text-slate-700">{matchQuery.data.llm_assessment.summary}</p>
+
+          {matchQuery.data.llm_assessment.critical_gaps.length > 0 && (
+            <div className="mb-3">
+              <p className="mb-1 text-sm text-slate-500">Critical gaps</p>
+              <div className="flex flex-wrap gap-1.5">
+                {matchQuery.data.llm_assessment.critical_gaps.map((gap) => (
+                  <span
+                    key={gap}
+                    className="rounded-full bg-red-100 px-2.5 py-1 text-xs text-red-800"
+                  >
+                    {gap}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {matchQuery.data.llm_assessment.transferable_experience.length > 0 && (
+            <div className="mb-3">
+              <p className="mb-1 text-sm text-slate-500">Transferable experience</p>
+              <div className="flex flex-wrap gap-1.5">
+                {matchQuery.data.llm_assessment.transferable_experience.map((item) => (
+                  <span
+                    key={item}
+                    className="rounded-full bg-green-100 px-2.5 py-1 text-xs text-green-800"
+                  >
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {matchQuery.data.llm_assessment.recommended_cv && (
+            <p className="mb-3 text-sm text-slate-600">
+              Recommended CV: <span className="font-medium">{matchQuery.data.llm_assessment.recommended_cv}</span>
+            </p>
+          )}
+
+          <p className="text-xs text-slate-400">
+            Assessed using {matchQuery.data.llm_assessment.model_label}
+          </p>
+        </Card>
+      )}
     </div>
   );
 }
