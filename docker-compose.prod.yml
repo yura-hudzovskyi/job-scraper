@@ -15,11 +15,12 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
 
-  # Local LLM for CV analysis — no per-token API cost. Needs a model pulled in once
-  # (docs/deployment.md) and enough RAM for whichever model you choose. Only `api`
-  # talks to it: /api/cv/analyze runs in the request handler, not a Celery task —
-  # scoring/matching itself never calls an LLM at all (deterministic + local
-  # embeddings), so worker/beat don't need this.
+  # Local LLM — no per-token API cost. Needs a model pulled in once
+  # (docs/deployment.md) and enough RAM for whichever model you choose. `api` calls
+  # it for CV analysis when GEMINI_API_KEY isn't set or Gemini's free tier is
+  # rate-limited; `worker` calls it unconditionally for job skill extraction
+  # (see docs/matching-engine.md's "LLM provider policy"). `beat` never calls it —
+  # it only schedules, it doesn't run task bodies itself.
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
@@ -41,9 +42,14 @@ services:
     restart: unless-stopped
     command: celery -A app.workers.celery_app worker --loglevel=info
     env_file: .env
+    volumes:
+      # sentence-transformers' embedding model cache — without this it re-downloads
+      # from HuggingFace on every deploy (every container recreate), not just once.
+      - hf_cache:/root/.cache/huggingface
     depends_on:
       - postgres
       - redis
+      - ollama
 
   beat:
     image: ghcr.io/yura-hudzovskyi/job-scraper-backend:latest
@@ -73,3 +79,4 @@ volumes:
   pgdata:
   caddy_data:
   ollama_data:
+  hf_cache:
