@@ -26,5 +26,6 @@ class JobMatchModel(UUIDPrimaryKeyMixin, Base):
     strengths: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     gaps: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     recommendation: Mapped[str | None] = mapped_column(default=None)
+    skills_source: Mapped[str | None] = mapped_column(default=None)
 
     scored_at: Mapped[datetime] = mapped_column(server_default=func.now())

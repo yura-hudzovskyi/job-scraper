@@ -44,6 +44,7 @@ class CandidateProfileResponse(BaseModel):
     achievements: list[str]
     domains: list[str]
     ai_experience: list[str]
+    generated_by: str | None
 
 
 def _to_response(document: CvDocument) -> CvDocumentResponse:
@@ -78,6 +79,7 @@ def _to_profile_response(profile: CandidateProfile) -> CandidateProfileResponse:
         achievements=profile.achievements,
         domains=profile.domains,
         ai_experience=profile.ai_experience,
+        generated_by=profile.generated_by,
     )
 
 

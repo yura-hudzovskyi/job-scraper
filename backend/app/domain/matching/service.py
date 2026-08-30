@@ -116,6 +116,7 @@ class MatchingService:
             strengths=strengths,
             gaps=gaps,
             recommendation=self._recommend(practical_fit),
+            skills_source=job.skills_extracted_by,
         )
 
     def _explain(

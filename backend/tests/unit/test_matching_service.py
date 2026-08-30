@@ -33,6 +33,7 @@ def _job(
     description: str = "We use Django and PostgreSQL.",
     company: str = "Acme",
     skills: list[NormalizedJobSkill] | None = None,
+    skills_extracted_by: str | None = None,
 ) -> NormalizedJob:
     return NormalizedJob(
         source="dou",
@@ -47,6 +48,7 @@ def _job(
         seniority=None,
         required_experience_years=None,
         skills=skills or [],
+        skills_extracted_by=skills_extracted_by,
     )
 
 
@@ -104,6 +106,7 @@ async def test_strong_match_recommends_apply(matching_service: MatchingService) 
             NormalizedJobSkill(name="Django", required=True),
             NormalizedJobSkill(name="PostgreSQL", required=True),
         ],
+        skills_extracted_by="Ollama (llama3.2:3b)",
     )
     profile = _profile(skills=["Django", "PostgreSQL"])
 
@@ -112,6 +115,7 @@ async def test_strong_match_recommends_apply(matching_service: MatchingService) 
     assert match.eligible is True
     assert match.recommendation == Recommendation.APPLY
     assert match.practical_fit > 80
+    assert match.skills_source == "Ollama (llama3.2:3b)"
     assert any(reason.label == "Django" for reason in match.strengths)
 
 

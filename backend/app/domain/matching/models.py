@@ -53,3 +53,4 @@ class JobMatch:
     recommendation: Recommendation | None = None
     recommended_cv_variant: str | None = None
     llm_summary: str | None = None
+    skills_source: str | None = None  # which LLM extracted this job's skills, if any

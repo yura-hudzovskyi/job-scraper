@@ -46,6 +46,7 @@ class JobMatchResponse(BaseModel):
     strengths: list[str]
     gaps: list[str]
     recommendation: str | None
+    skills_source: str | None
 
 
 def _to_summary(job: CanonicalJob) -> JobSummaryResponse:
@@ -68,6 +69,7 @@ def _to_match_response(match: JobMatch) -> JobMatchResponse:
         strengths=[reason.label for reason in match.strengths],
         gaps=[gap.label for gap in match.gaps],
         recommendation=match.recommendation.value if match.recommendation else None,
+        skills_source=match.skills_source,
     )
 
 

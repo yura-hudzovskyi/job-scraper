@@ -30,6 +30,7 @@ def _to_job_match(model: JobMatchModel) -> JobMatch:
         strengths=[MatchReason(**reason) for reason in model.strengths],
         gaps=[MatchGap(**gap) for gap in model.gaps],
         recommendation=Recommendation(model.recommendation) if model.recommendation else None,
+        skills_source=model.skills_source,
     )
 
 
@@ -46,6 +47,7 @@ class MatchRepository:
             "strengths": [asdict(reason) for reason in match.strengths],
             "gaps": [asdict(gap) for gap in match.gaps],
             "recommendation": match.recommendation.value if match.recommendation else None,
+            "skills_source": match.skills_source,
         }
         stmt = (
             insert(JobMatchModel)
