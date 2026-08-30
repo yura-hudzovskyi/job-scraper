@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import get_settings
 from app.db.session import get_session
 from app.integrations.ai.llm.base import LLMProvider
-from app.integrations.ai.llm.factory import build_llm_provider
+from app.integrations.ai.llm.factory import build_quality_llm_provider
 from app.repositories.candidate_repository import CandidateRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
@@ -76,13 +76,13 @@ def get_notification_repository(
     return NotificationRepository(session)
 
 
-def get_llm_provider() -> LLMProvider | None:
-    return build_llm_provider(get_settings())
+def get_quality_llm_provider() -> LLMProvider | None:
+    return build_quality_llm_provider(get_settings())
 
 
 def get_cv_service(
     candidate_repository: CandidateRepository = Depends(get_candidate_repository),
-    llm_provider: LLMProvider | None = Depends(get_llm_provider),
+    llm_provider: LLMProvider | None = Depends(get_quality_llm_provider),
 ) -> CvService:
     return CvService(candidate_repository, llm_provider)
 

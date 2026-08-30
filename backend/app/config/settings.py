@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
 
+    # Optional: when set, CV analysis (the "quality matters" call site) uses
+    # Gemini's free tier first, falling back to Ollama on rate limit — see
+    # app/integrations/ai/llm/factory.py::build_quality_llm_provider. Job skill
+    # extraction always uses Ollama regardless of this, to keep the free-tier quota
+    # for CV analysis.
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.0-flash"
+
     embedding_provider: Literal["sentence_transformers", "openai"] = "sentence_transformers"
     embedding_model: str = "all-MiniLM-L6-v2"
 
