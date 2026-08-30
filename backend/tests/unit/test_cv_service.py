@@ -3,6 +3,7 @@ import uuid
 import pytest
 
 from app.domain.candidates.models import CandidateProfile
+from app.integrations.ai.llm.base import LLMResult
 from app.services.cv_service import CvService, LlmNotConfigured
 
 
@@ -12,7 +13,7 @@ class _FakeLlmProvider:
 
     async def structured_completion(self, prompt, schema):
         assert "CV" in prompt
-        return schema(**self._payload)
+        return LLMResult(data=schema(**self._payload), model_label="fake-model")
 
 
 class _FakeCandidateRepository:
@@ -64,6 +65,7 @@ async def test_analyze_cv_maps_llm_output_to_candidate_profile() -> None:
     assert profile.skills[0].level.value == "strong"
     assert profile.experience[0].company == "Acme"
     assert profile.achievements == ["Cut API latency by 40%"]
+    assert profile.generated_by == "fake-model"
 
     assert repository.saved is not None
     saved_user_id, saved_cv_document_id, _ = repository.saved

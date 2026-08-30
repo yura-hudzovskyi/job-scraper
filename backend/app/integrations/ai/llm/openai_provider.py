@@ -7,7 +7,7 @@ it on choices[0].message.parsed.
 
 import openai
 
-from app.integrations.ai.llm.base import T
+from app.integrations.ai.llm.base import LLMResult, T
 
 DEFAULT_MODEL = "gpt-4o"
 
@@ -17,7 +17,7 @@ class OpenAILLMProvider:
         self._client = openai.AsyncOpenAI(api_key=api_key)
         self._model = model
 
-    async def structured_completion(self, prompt: str, schema: type[T]) -> T:
+    async def structured_completion(self, prompt: str, schema: type[T]) -> LLMResult[T]:
         response = await self._client.chat.completions.parse(
             model=self._model,
             messages=[{"role": "user", "content": prompt}],
@@ -29,4 +29,4 @@ class OpenAILLMProvider:
                 f"OpenAI response did not parse into {schema.__name__} "
                 f"(refusal={message.refusal!r})"
             )
-        return message.parsed
+        return LLMResult(data=message.parsed, model_label=f"OpenAI ({self._model})")

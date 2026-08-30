@@ -51,13 +51,15 @@ class JobSkillExtractionService:
         if job is None:
             raise LookupError(f"canonical job {canonical_job_id} has no normalized source record")
 
-        extracted = await self._llm_provider.structured_completion(
+        result = await self._llm_provider.structured_completion(
             _EXTRACTION_PROMPT.format(title=job.title, description=job.description),
             _ExtractedJobSkills,
         )
         skills = [
             NormalizedJobSkill(name=skill.name, required=skill.required)
-            for skill in extracted.skills
+            for skill in result.data.skills
         ]
-        await self._job_repository.update_skills_for_canonical(canonical_job_id, skills)
+        await self._job_repository.update_skills_for_canonical(
+            canonical_job_id, skills, result.model_label
+        )
         return skills

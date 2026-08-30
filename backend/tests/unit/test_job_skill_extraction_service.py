@@ -3,6 +3,7 @@ import uuid
 import pytest
 
 from app.domain.jobs.models import EmploymentType, JobLocation, NormalizedJob
+from app.integrations.ai.llm.base import LLMResult
 from app.services.job_skill_extraction_service import JobSkillExtractionService
 
 
@@ -12,19 +13,21 @@ class _FakeLlmProvider:
 
     async def structured_completion(self, prompt, schema):
         assert "Backend Engineer" in prompt
-        return schema(**self._payload)
+        return LLMResult(data=schema(**self._payload), model_label="fake-model")
 
 
 class _FakeJobRepository:
     def __init__(self, job: NormalizedJob | None):
         self._job = job
-        self.saved: tuple[uuid.UUID, list] | None = None
+        self.saved: tuple[uuid.UUID, list, str | None] | None = None
 
     async def get_normalized_job_for_canonical(self, canonical_job_id: uuid.UUID) -> NormalizedJob | None:
         return self._job
 
-    async def update_skills_for_canonical(self, canonical_job_id: uuid.UUID, skills: list) -> None:
-        self.saved = (canonical_job_id, skills)
+    async def update_skills_for_canonical(
+        self, canonical_job_id: uuid.UUID, skills: list, generated_by: str | None
+    ) -> None:
+        self.saved = (canonical_job_id, skills, generated_by)
 
 
 def _job() -> NormalizedJob:
@@ -66,7 +69,7 @@ async def test_extract_and_save_maps_llm_output_and_persists() -> None:
         ("PostgreSQL", True),
         ("Docker", False),
     ]
-    assert repository.saved == (canonical_job_id, skills)
+    assert repository.saved == (canonical_job_id, skills, "fake-model")
 
 
 @pytest.mark.asyncio

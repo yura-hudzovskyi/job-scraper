@@ -57,6 +57,7 @@ class CandidateProfile:
     achievements: list[str] = field(default_factory=list)
     domains: list[str] = field(default_factory=list)
     ai_experience: list[str] = field(default_factory=list)
+    generated_by: str | None = None  # which LLM produced this, e.g. "Gemini (gemini-2.0-flash)"
 
 
 @dataclass(frozen=True)

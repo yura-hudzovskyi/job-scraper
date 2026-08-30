@@ -33,4 +33,5 @@ async def test_structured_completion_returns_validated_schema() -> None:
     result = await provider.structured_completion(
         "Reply with a JSON object where 'answer' is the string 'hello'.", _Dummy
     )
-    assert isinstance(result, _Dummy)
+    assert isinstance(result.data, _Dummy)
+    assert result.model_label == f"Ollama ({DEFAULT_MODEL})"

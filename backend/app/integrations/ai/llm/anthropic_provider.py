@@ -7,7 +7,7 @@ no manual JSON parsing or tool-use plumbing needed.
 
 import anthropic
 
-from app.integrations.ai.llm.base import T
+from app.integrations.ai.llm.base import LLMResult, T
 
 DEFAULT_MODEL = "claude-opus-5"
 
@@ -17,7 +17,7 @@ class AnthropicLLMProvider:
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self._model = model
 
-    async def structured_completion(self, prompt: str, schema: type[T]) -> T:
+    async def structured_completion(self, prompt: str, schema: type[T]) -> LLMResult[T]:
         response = await self._client.messages.parse(
             model=self._model,
             max_tokens=16000,
@@ -29,4 +29,4 @@ class AnthropicLLMProvider:
                 f"Anthropic response did not parse into {schema.__name__} "
                 f"(stop_reason={response.stop_reason!r})"
             )
-        return response.parsed_output
+        return LLMResult(data=response.parsed_output, model_label=f"Anthropic ({self._model})")

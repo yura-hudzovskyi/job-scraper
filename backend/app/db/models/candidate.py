@@ -39,6 +39,7 @@ class CandidateProfileModel(UUIDPrimaryKeyMixin, Base):
     achievements: Mapped[list[str]] = mapped_column(JSONB, default=list)
     domains: Mapped[list[str]] = mapped_column(JSONB, default=list)
     ai_experience: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    generated_by: Mapped[str | None] = mapped_column(default=None)
 
     extracted_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

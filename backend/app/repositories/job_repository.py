@@ -81,6 +81,7 @@ def _to_normalized_job(model: JobSourceRecordModel) -> NormalizedJob:
             NormalizedJobSkill(name=skill["name"], required=skill["required"])
             for skill in model.skills
         ],
+        skills_extracted_by=model.skills_extracted_by,
     )
 
 
@@ -191,7 +192,10 @@ class JobRepository:
         return _to_normalized_job(model) if model else None
 
     async def update_skills_for_canonical(
-        self, canonical_job_id: uuid.UUID, skills: list[NormalizedJobSkill]
+        self,
+        canonical_job_id: uuid.UUID,
+        skills: list[NormalizedJobSkill],
+        generated_by: str | None,
     ) -> None:
         """Saves LLM-extracted skills onto whichever source record scoring reads via
         get_normalized_job_for_canonical — same "most recently normalized" selection,
@@ -206,6 +210,7 @@ class JobRepository:
         if model is None:
             return
         model.skills = _skills_payload(skills)
+        model.skills_extracted_by = generated_by
         await self._session.flush()
 
     async def create_canonical_job(self, normalized: NormalizedJob) -> uuid.UUID:

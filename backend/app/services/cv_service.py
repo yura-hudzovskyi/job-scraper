@@ -113,9 +113,10 @@ class CvService:
                 "no LLM provider configured — set LLM_PROVIDER and its credentials"
             )
 
-        extracted = await self._llm_provider.structured_completion(
+        result = await self._llm_provider.structured_completion(
             _EXTRACTION_PROMPT.format(cv_text=cv_text), _ExtractedProfile
         )
+        extracted = result.data
 
         profile = CandidateProfile(
             id="",  # assigned by the repository on save
@@ -140,6 +141,7 @@ class CvService:
             achievements=extracted.achievements,
             domains=extracted.domains,
             ai_experience=extracted.ai_experience,
+            generated_by=result.model_label,
         )
         return await self._candidate_repository.save_candidate_profile(
             user_id, cv_document_id, profile

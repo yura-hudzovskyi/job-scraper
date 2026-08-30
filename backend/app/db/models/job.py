@@ -67,6 +67,7 @@ class JobSourceRecordModel(UUIDPrimaryKeyMixin, Base):
     seniority: Mapped[str | None] = mapped_column(default=None)
     required_experience_years: Mapped[float | None] = mapped_column(default=None)
     skills: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    skills_extracted_by: Mapped[str | None] = mapped_column(default=None)
 
     normalized_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

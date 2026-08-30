@@ -50,6 +50,7 @@ def _to_candidate_profile(model: CandidateProfileModel) -> CandidateProfile:
         achievements=list(model.achievements),
         domains=list(model.domains),
         ai_experience=list(model.ai_experience),
+        generated_by=model.generated_by,
     )
 
 
@@ -127,6 +128,7 @@ class CandidateRepository:
             achievements=profile.achievements,
             domains=profile.domains,
             ai_experience=profile.ai_experience,
+            generated_by=profile.generated_by,
         )
         self._session.add(model)
         await self._session.flush()

@@ -67,6 +67,7 @@ class NormalizedJob:
     seniority: str | None
     required_experience_years: float | None
     skills: list[NormalizedJobSkill] = field(default_factory=list)
+    skills_extracted_by: str | None = None  # which LLM extracted `skills`, if any
 
 
 @dataclass(frozen=True)
