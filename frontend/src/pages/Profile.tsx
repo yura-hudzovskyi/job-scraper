@@ -99,6 +99,11 @@ export function Profile() {
       {profileQuery.data && (
         <Card>
           <SectionTitle>Candidate profile</SectionTitle>
+          {profileQuery.data.generated_by && (
+            <p className="mb-3 -mt-2 text-xs text-slate-400">
+              Analyzed using {profileQuery.data.generated_by}
+            </p>
+          )}
           <dl className="grid grid-cols-2 gap-3 text-sm">
             <div>
               <dt className="text-slate-500">Experience</dt>

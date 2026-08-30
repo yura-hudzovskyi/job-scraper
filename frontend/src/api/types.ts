@@ -29,6 +29,7 @@ export interface CandidateProfile {
   achievements: string[];
   domains: string[];
   ai_experience: string[];
+  generated_by: string | null;
 }
 
 export interface ProfileSummary {
@@ -96,6 +97,7 @@ export interface JobMatch {
   strengths: string[];
   gaps: string[];
   recommendation: string | null;
+  skills_source: string | null;
 }
 
 export interface ConnectTelegramResponse {

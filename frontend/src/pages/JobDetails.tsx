@@ -153,6 +153,12 @@ export function JobDetails() {
               </div>
             )}
 
+            {matchQuery.data.skills_source && (
+              <p className="text-xs text-slate-400">
+                Skills identified using {matchQuery.data.skills_source}
+              </p>
+            )}
+
             <Button
               onClick={() => rescoreMutation.mutate()}
               disabled={rescoreMutation.isPending}
