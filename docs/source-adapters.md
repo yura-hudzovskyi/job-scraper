@@ -79,15 +79,47 @@ Each scrape execution is also recorded as a `ScrapeRun`:
 ```json
 {
   "source": "djinni",
+  "category": "Python",
   "started_at": "...",
   "finished_at": "...",
-  "pages": 4,
   "jobs_seen": 82,
-  "new": 13,
-  "updated": 4,
+  "new_count": 13,
   "errors": 0
 }
 ```
+
+## Category rotation
+
+Each scrape tick covers **one category**, not a source's entire default feed. Every
+category configured per source in `app/integrations/sources/categories.py` gets a
+turn: `JobRepository.get_least_recently_scraped_category` reads `scrape_runs` and
+picks whichever category has gone longest without a run (a category with no run at
+all always wins), via the pure `app/domain/jobs/scrape_rotation.py::pick_next_category`.
+
+This exists because the platform used to always scrape with empty keywords —
+DOU's and Djinni's *generic* default feed — even though both sites support
+filtering by category (`?category=Artist` on DOU, `?primary_keyword=Design` on
+Djinni). A candidate outside mainstream software roles (e.g. a 3D artist) would
+never see a relevant job, not because matching was bad, but because the scraper
+never asked the source for that category at all.
+
+Each run is capped at `Settings.scrape_max_jobs_per_run` listings
+(`JobIngestionService.ingest_source`'s `max_jobs` parameter) — a safety ceiling on
+per-run cost, not a precise "N new jobs" guarantee (already-known listings are
+still skipped for free within that cap). `Settings.scrape_interval_seconds`
+controls how often a tick fires per source.
+
+## Retention
+
+Higher category coverage means more jobs accumulate over time, so
+`retention.purge_stale_jobs` runs once daily and deletes any `canonical_jobs` row
+(and everything that references it — `job_matches`, `notifications`, `applications`,
+`job_source_records`, and now-orphaned `raw_jobs`) whose `last_seen_at` is older
+than `Settings.job_retention_days` (18 by default). See
+`app/services/job_retention_service.py` for the exact cross-table delete
+ordering — no foreign key in the schema sets `ondelete=`, so a child row must be
+deleted before its parent, and the service does that explicitly rather than
+relying on DB-level cascade behavior.
 
 ## Parser fixture tests
 

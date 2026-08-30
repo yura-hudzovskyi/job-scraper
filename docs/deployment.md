@@ -140,6 +140,21 @@ pull <model>` by hand, then update `.env` and restart the `api` container). If y
 on the smaller 12 GB VM.Standard.A1.Flex config, stick to `llama3.2:3b` — an 8B model
 plus Postgres can OOM the box under load.
 
+### Scraping volume and retention
+
+The scraper rotates through many categories per source instead of only a generic
+default feed (see `docs/source-adapters.md#category-rotation`), so it processes
+more jobs over time by default than earlier versions of this app did. Three
+settings control that volume, all with sensible defaults — you shouldn't need to
+touch them unless the free-tier VM is struggling:
+
+- `SCRAPE_INTERVAL_SECONDS=1800` — how often each source scrapes one category.
+  Lower it to cycle through all categories faster; raise it to reduce load.
+- `SCRAPE_MAX_JOBS_PER_RUN=100` — cap on listings processed per run.
+- `JOB_RETENTION_DAYS=18` — jobs (and their matches/notifications) not seen in a
+  scrape for this many days get deleted daily, so Postgres doesn't grow unbounded
+  on a small VM.
+
 ## Part 4 — Deploy the frontend (Cloudflare Pages)
 
 1. Cloudflare dashboard → Workers & Pages → Create → Pages → Connect to Git → pick
