@@ -38,6 +38,7 @@ matching = [
 llm = [
     "anthropic>=0.40",
     "openai>=1.50",
+    "google-genai>=2.0",
 ]
 dev = [
     "pytest>=8.3",
