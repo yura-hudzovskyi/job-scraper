@@ -7,7 +7,7 @@ docs/notifications.md.
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -73,6 +73,27 @@ class NotificationRepository:
         )
         delivered_at = result.scalar_one_or_none()
         return delivered_at is not None
+
+    async def delete_for_job_matches(self, job_match_ids: list[uuid.UUID]) -> None:
+        """Call before deleting the job_matches themselves — notification_deliveries
+        reference notifications, which reference job_matches, so both must go first."""
+        if not job_match_ids:
+            return
+        notification_ids_result = await self._session.execute(
+            select(NotificationModel.id).where(NotificationModel.job_match_id.in_(job_match_ids))
+        )
+        notification_ids = [row[0] for row in notification_ids_result.all()]
+
+        if notification_ids:
+            await self._session.execute(
+                delete(NotificationDeliveryModel).where(
+                    NotificationDeliveryModel.notification_id.in_(notification_ids)
+                )
+            )
+        await self._session.execute(
+            delete(NotificationModel).where(NotificationModel.job_match_id.in_(job_match_ids))
+        )
+        await self._session.flush()
 
     async def record_delivery(
         self, notification_id: uuid.UUID, channel: str, error: str | None = None

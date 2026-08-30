@@ -4,7 +4,7 @@ a job for a user updates the existing row instead of duplicating."""
 import uuid
 from dataclasses import asdict
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,3 +87,26 @@ class MatchRepository:
         )
         model = result.scalar_one_or_none()
         return _to_job_match(model) if model else None
+
+    async def find_ids_for_canonical_jobs(
+        self, canonical_job_ids: list[uuid.UUID]
+    ) -> list[uuid.UUID]:
+        """Read-only — lets the caller clean up notifications (which reference
+        job_matches, not canonical_jobs directly) before delete_for_canonical_jobs
+        actually removes the matches. See JobRetentionService for the ordering."""
+        if not canonical_job_ids:
+            return []
+        result = await self._session.execute(
+            select(JobMatchModel.id).where(JobMatchModel.canonical_job_id.in_(canonical_job_ids))
+        )
+        return [row[0] for row in result.all()]
+
+    async def delete_for_canonical_jobs(self, canonical_job_ids: list[uuid.UUID]) -> None:
+        """Call only after notifications referencing these matches are already
+        deleted (see find_ids_for_canonical_jobs + NotificationRepository)."""
+        if not canonical_job_ids:
+            return
+        await self._session.execute(
+            delete(JobMatchModel).where(JobMatchModel.canonical_job_id.in_(canonical_job_ids))
+        )
+        await self._session.flush()
