@@ -29,5 +29,9 @@ class JobMatchModel(UUIDPrimaryKeyMixin, Base):
     skills_source: Mapped[str | None] = mapped_column(default=None)
     llm_assessment: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
     scored_by: Mapped[str | None] = mapped_column(default=None)
+    # The user's own Approve/Reject verdict (see MatchDecision) — set once via the
+    # Telegram swipe buttons and deliberately excluded from MatchRepository.upsert's
+    # rescore path, so re-scoring a job never silently resets a decision already made.
+    decision: Mapped[str] = mapped_column(default="pending", server_default="pending")
 
     scored_at: Mapped[datetime] = mapped_column(server_default=func.now())

@@ -51,7 +51,8 @@ def _sample_notification() -> JobMatchNotification:
         match=match,
         job_title="Test notification",
         company="Job Intelligence Platform",
-        job_url="https://github.com",
+        source_links=[("dou", "https://github.com")],
+        pending_count=1,
     )
 
 

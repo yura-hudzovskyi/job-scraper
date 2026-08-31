@@ -31,25 +31,26 @@ score < 65                → no notification
 Notifications queued during quiet hours (e.g. 22:00–08:00) are held and delivered as a
 morning summary instead of interrupting the user overnight.
 
-## Message shape
+## Message shape — a swipe card, not a report
 
-Built by `_format_message` in `backend/app/integrations/notifications/telegram_provider.py`:
+Every match is a short, glanceable card with two buttons, deliberately modeled on a
+dating app's yes/no rather than a document to read through. Built by
+`_format_message` in `backend/app/integrations/notifications/telegram_provider.py`:
 
 ```text
 87% MATCH · APPLY
 
 Senior Full Stack Engineer — Acme Inc.
-
-💰 4000–5500 USD
-📍 Remote
-🎓 Senior · 3+ yrs required
+💰 4000–5500 USD · 📍 Remote · 🎓 Senior
 
 ✅ React, TypeScript, Python
 ⚠️ AWS (required), NestJS
 
-Requirement match: 76%    Practical fit: 87%
-
 🔗 DOU · Djinni
+
+📊 12 pending · 5 approved · 3 rejected
+
+[✅ Approve]  [❌ Reject]
 ```
 
 The two link labels above are HTML hyperlinks (`<a href="...">DOU</a>`), one per
@@ -57,13 +58,40 @@ source this canonical job is known under (see
 `JobRepository.list_source_links_for_canonical`) — a job posted on both DOU and
 Djinni links out to both by name instead of showing one raw URL. Scraped text
 (title, company, skill/gap labels) is HTML-escaped before being interpolated, since
-the message is sent with `parse_mode: HTML`.
+the message is sent with `parse_mode: HTML`. There's no separate
+"requirement match vs. practical fit" breakdown here — that level of detail lives
+on the Job Details page; a swipe decision only needs the headline score.
 
-No inline action buttons for now — there's no callback-query webhook handler wired
-up anywhere in the app yet, so `save`/`applied`/`not relevant` buttons would render
-in Telegram but silently do nothing on tap. Re-introduce them (and the
-`UserJobAction` mapping this section used to describe) once something actually
-handles the callback.
+The stats line (`📊 ...`) is the running total of every eligible match this user
+has ever had, grouped by `MatchDecision` (`pending`/`approved`/`rejected`) — see
+`MatchRepository.count_decisions`. It's the "how much is left, how am I doing"
+signal a dating app shows, computed fresh on every send.
+
+### Approve / Reject
+
+Tapping a button records a `MatchDecision` on the underlying `JobMatch`
+(`MatchRepository.set_decision`) — independent of and never overwritten by
+`Recommendation` (the pipeline's own opinion), and never reset by a rescore
+(`MatchRepository.upsert` deliberately excludes `decision` from what a rescore
+overwrites). Reject behaves like a dating app's "pass": a rejected job is hidden
+from the default Jobs list the same way a `SKIP` recommendation already is (see
+`MatchRepository.list_skipped_canonical_job_ids`). Approve is currently
+tracking-only — there's no application tracker yet to hand it off to (Phase 5, see
+docs/roadmap.md).
+
+**Why polling, not a webhook:** receiving button taps needs *something* to call
+this app back — either Telegram calls a public HTTPS webhook, or this app polls
+`getUpdates`. This deployment does have a public domain already (`API_DOMAIN`, see
+docs/deployment.md), so a webhook was possible — polling was still the simpler
+choice: no `secret_token` to generate/verify, no `setWebhook` registration step to
+run once per deployment, and it works identically in local dev (no public URL at
+all) and production without a code path difference. At this app's personal scale
+(one shared bot, a handful of users), the few seconds of added latency from
+polling is a non-issue. `workers/tasks/telegram_poll.py` runs a quick,
+non-blocking `getUpdates` call (`timeout=0`) on a short Celery Beat interval
+(`TELEGRAM_POLL_INTERVAL_SECONDS`, default 5s) and hands each `callback_query` to
+`TelegramCallbackService`. The update-id cursor lives in Redis
+(`telegram:update_offset`), not Postgres — it's polling mechanics, not domain data.
 
 ## Feedback → learning
 

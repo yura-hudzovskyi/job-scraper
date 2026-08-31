@@ -6,7 +6,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ from app.db.models.match import JobMatchModel
 from app.domain.matching.models import (
     JobMatch,
     LlmAssessment,
+    MatchDecision,
     MatchGap,
     MatchReason,
     Recommendation,
@@ -47,6 +48,7 @@ def _to_job_match(model: JobMatchModel) -> JobMatch:
         skills_source=model.skills_source,
         scored_by=model.scored_by,
         scored_at=model.scored_at,
+        decision=MatchDecision(model.decision),
     )
 
 
@@ -82,6 +84,13 @@ class MatchRepository:
             .values(
                 user_id=uuid.UUID(match.user_id),
                 canonical_job_id=uuid.UUID(match.canonical_job_id),
+                # Only used on first insert — deliberately absent from `common`
+                # (and thus from on_conflict_do_update's set_ below) so a rescore
+                # never resets a decision the user already made via the Telegram
+                # swipe buttons. MatchingService never sets JobMatch.decision to
+                # anything but the PENDING default, so this is always correct for
+                # a freshly-scored match.
+                decision=match.decision.value,
                 **common,
             )
             .on_conflict_do_update(
@@ -105,17 +114,51 @@ class MatchRepository:
         return [_to_job_match(model) for model in result.scalars()]
 
     async def list_skipped_canonical_job_ids(self, user_id: uuid.UUID) -> set[uuid.UUID]:
-        """Canonical job ids this user's matches recommend skipping — used by
-        JobService.list_jobs to hide them from the default jobs-list view (see
-        JobRepository.list_canonical_jobs's exclude_ids). Cheap at this app's
-        scale: a few hundred rows per user, one indexed query, no pagination."""
+        """Canonical job ids to hide from the default jobs-list view — either the
+        pipeline's own recommendation says skip, or the user already swiped reject
+        on it via Telegram (see JobService.list_jobs and
+        JobRepository.list_canonical_jobs's exclude_ids). A rejected match never
+        goes back to pending — same "pass" semantics as a dating app. Cheap at
+        this app's scale: a few hundred rows per user, one indexed query, no
+        pagination."""
         result = await self._session.execute(
             select(JobMatchModel.canonical_job_id).where(
                 JobMatchModel.user_id == user_id,
-                JobMatchModel.recommendation == Recommendation.SKIP.value,
+                (JobMatchModel.recommendation == Recommendation.SKIP.value)
+                | (JobMatchModel.decision == MatchDecision.REJECTED.value),
             )
         )
         return set(result.scalars())
+
+    async def set_decision(
+        self, user_id: uuid.UUID, canonical_job_id: uuid.UUID, decision: MatchDecision
+    ) -> JobMatch | None:
+        """Records the user's own Approve/Reject verdict — set via the Telegram
+        swipe buttons (see workers/tasks/telegram_poll.py). Returns None if this
+        user has no match for this job (nothing to update)."""
+        result = await self._session.execute(
+            select(JobMatchModel).where(
+                JobMatchModel.user_id == user_id,
+                JobMatchModel.canonical_job_id == canonical_job_id,
+            )
+        )
+        model = result.scalar_one_or_none()
+        if model is None:
+            return None
+        model.decision = decision.value
+        await self._session.flush()
+        return _to_job_match(model)
+
+    async def count_decisions(self, user_id: uuid.UUID) -> dict[MatchDecision, int]:
+        """Pending/approved/rejected counts across every eligible match this user
+        has — shown on each Telegram swipe card so the user can see overall
+        progress (see telegram_provider.py). Missing keys mean zero, not unknown."""
+        result = await self._session.execute(
+            select(JobMatchModel.decision, func.count())
+            .where(JobMatchModel.user_id == user_id, JobMatchModel.eligible.is_(True))
+            .group_by(JobMatchModel.decision)
+        )
+        return {MatchDecision(decision): count for decision, count in result.all()}
 
     async def list_for_canonical_jobs(
         self, user_id: uuid.UUID, canonical_job_ids: list[uuid.UUID]

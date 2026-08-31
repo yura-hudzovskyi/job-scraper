@@ -30,6 +30,13 @@ class JobMatchNotification:
     seniority: str | None = None
     required_experience_years: float | None = None
     remote: bool = False
+    # Running Approve/Reject totals across every match this user has, shown as a
+    # small progress footer on the swipe card (see telegram_provider.py) — same
+    # spirit as a dating app showing "12 to go, 5 liked." Includes this match
+    # itself (already pending at send time).
+    pending_count: int = 0
+    approved_count: int = 0
+    rejected_count: int = 0
 
 
 @dataclass(frozen=True)

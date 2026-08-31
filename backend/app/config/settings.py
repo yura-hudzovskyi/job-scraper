@@ -52,6 +52,11 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    # How often the swipe-card Approve/Reject buttons are checked for taps — see
+    # app/workers/tasks/telegram_poll.py. Short by design: each tick is a quick,
+    # non-blocking getUpdates call (timeout=0), not a long-poll, so a short
+    # interval doesn't tie up a worker slot the way a long-poll loop would.
+    telegram_poll_interval_seconds: int = 5
 
     # Each scrape tick covers one category (rotating through every configured
     # category over time — see app/integrations/sources/categories.py), capped at

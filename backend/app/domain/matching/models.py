@@ -13,6 +13,18 @@ class Recommendation(StrEnum):
     SKIP = "skip"
 
 
+class MatchDecision(StrEnum):
+    """The user's own swipe-style verdict on a match — independent of and never
+    overwritten by `Recommendation` (the pipeline's own opinion). Set via the
+    Telegram Approve/Reject buttons (see telegram_provider.py and
+    workers/tasks/telegram_poll.py); stays PENDING for matches never delivered
+    or not yet acted on."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 @dataclass(frozen=True)
 class ScoreBreakdown:
     skills: float
@@ -79,3 +91,4 @@ class JobMatch:
     skills_source: str | None = None  # which LLM extracted this job's skills, if any
     scored_by: str | None = None  # "AI (<model>)" when AiMatcher produced this score, else "deterministic"
     scored_at: datetime | None = None  # bumped on every rescore — lets the UI detect "rescore finished"
+    decision: MatchDecision = MatchDecision.PENDING

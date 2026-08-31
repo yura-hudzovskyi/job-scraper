@@ -8,6 +8,7 @@ import uuid
 
 from app.config.settings import get_settings
 from app.db.session import session_scope
+from app.domain.matching.models import MatchDecision
 from app.domain.notifications.models import JobMatchNotification
 from app.domain.notifications.policy import NotificationPolicy
 from app.integrations.notifications.factory import build_telegram_provider
@@ -43,6 +44,7 @@ async def _run(user_id: str, canonical_job_id: str) -> dict[str, bool | str]:
         source_links = await job_repository.list_source_links_for_canonical(
             uuid.UUID(canonical_job_id)
         )
+        decision_counts = await match_repository.count_decisions(uuid.UUID(user_id))
 
         policy_config = await notification_repository.get_notification_policy_config(
             uuid.UUID(user_id)
@@ -59,6 +61,9 @@ async def _run(user_id: str, canonical_job_id: str) -> dict[str, bool | str]:
             seniority=job.seniority,
             required_experience_years=job.required_experience_years,
             remote=job.location.remote,
+            pending_count=decision_counts.get(MatchDecision.PENDING, 0),
+            approved_count=decision_counts.get(MatchDecision.APPROVED, 0),
+            rejected_count=decision_counts.get(MatchDecision.REJECTED, 0),
         )
         sent = await service.notify_if_relevant(uuid.UUID(user_id), notification)
 

@@ -47,6 +47,18 @@ class NotificationRepository:
         row = result.first()
         return (row[0], row[1]) if row else None
 
+    async def get_user_id_for_chat_id(self, chat_id: str) -> uuid.UUID | None:
+        """Reverse lookup for incoming Telegram updates (see
+        workers/tasks/telegram_poll.py) — a callback_query only carries the chat
+        id, never our internal user id. All users share one bot token, so chat_id
+        alone is enough to disambiguate."""
+        result = await self._session.execute(
+            select(TelegramIntegrationModel.user_id).where(
+                TelegramIntegrationModel.chat_id == chat_id
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def get_notification_policy_config(self, user_id: uuid.UUID) -> NotificationPolicyConfig:
         """Always returns a usable config — NotificationPolicyConfig()'s hardcoded
         defaults when the user has never saved a row, their saved thresholds
