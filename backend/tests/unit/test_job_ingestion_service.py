@@ -99,3 +99,33 @@ async def test_no_max_jobs_processes_everything_discovered() -> None:
     assert adapter.detail_fetch_count == 5
     assert result.jobs_processed == 5
     assert result.jobs_seen == 5
+
+
+class _OneBadListingAdapter(_FakeAdapter):
+    """normalize() throws for exactly one listing — a stand-in for a real-world
+    parsing edge case (missing field, unexpected HTML shape) in one posting."""
+
+    def __init__(self, listing_count: int, bad_external_id: str):
+        super().__init__(listing_count)
+        self._bad_external_id = bad_external_id
+
+    def normalize(self, raw_job: RawJob) -> NormalizedJob:
+        if raw_job.external_id == self._bad_external_id:
+            raise ValueError("could not parse this listing")
+        return super().normalize(raw_job)
+
+
+@pytest.mark.asyncio
+async def test_one_bad_listing_does_not_stop_the_rest_of_the_batch() -> None:
+    # Regression test: ingest_source used to let one listing's exception (a
+    # detail-fetch or normalize failure) propagate out uncaught — since every
+    # listing in a batch shares one session/transaction (see scrape.fetch_source),
+    # that discarded every other listing already processed in the same batch too,
+    # not just the bad one.
+    adapter = _OneBadListingAdapter(listing_count=5, bad_external_id="2")
+    service = JobIngestionService(_FakeJobRepository())  # type: ignore[arg-type]
+
+    result = await service.ingest_source(adapter, JobSearchCriteria(keywords=["Python"]))
+
+    assert result.jobs_seen == 5
+    assert result.jobs_processed == 4

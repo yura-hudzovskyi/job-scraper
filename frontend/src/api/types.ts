@@ -122,6 +122,7 @@ export interface JobMatch {
   recommendation: string | null;
   llm_assessment: LlmAssessment | null;
   skills_source: string | null;
+  scored_by: string | null;
 }
 
 export interface ConnectTelegramResponse {

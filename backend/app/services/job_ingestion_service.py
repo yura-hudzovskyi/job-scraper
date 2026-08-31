@@ -5,8 +5,14 @@ Already-known jobs are skipped before any detail fetch — see docs/source-adapt
 ("detail HTML is only fetched for jobs not already seen"). Re-running this for a
 source is always safe: raw_jobs and job_source_records are upserted on
 (source, external_id), so nothing duplicates.
+
+One bad listing (a detail page that fails to fetch, or normalizes into something
+the adapter can't parse) must not sink the rest of the batch — see ingest_source,
+which isolates each listing's failure the same way scrape.fetch_source already
+isolates one source's failure from the rest of the platform.
 """
 
+import logging
 import uuid
 from dataclasses import dataclass
 
@@ -14,6 +20,8 @@ from app.domain.jobs.deduplication import DeduplicationService
 from app.domain.jobs.models import NormalizedJob, RawJob
 from app.integrations.sources.base import JobSearchCriteria, JobSourceAdapter
 from app.repositories.job_repository import JobRepository
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -50,8 +58,18 @@ class JobIngestionService:
             if await self._job_repository.raw_job_exists(listing.source, listing.external_id):
                 continue
 
-            detail_raw_job = await adapter.fetch_job_details(listing.external_id, listing.url)
-            canonical_job_id = await self._ingest_one(adapter, detail_raw_job)
+            try:
+                detail_raw_job = await adapter.fetch_job_details(listing.external_id, listing.url)
+                canonical_job_id = await self._ingest_one(adapter, detail_raw_job)
+            except Exception:
+                logger.warning(
+                    "failed to ingest listing %s/%s — skipping it, continuing with the rest "
+                    "of this batch",
+                    listing.source,
+                    listing.external_id,
+                    exc_info=True,
+                )
+                continue
             canonical_job_ids.append(str(canonical_job_id))
 
         return IngestionResult(

@@ -16,10 +16,14 @@ against them before it's merged.
 1. **Adapters, not special cases.** Job sources, LLM providers, embedding providers and
    notification channels are replaceable adapters behind narrow interfaces. Domain logic
    must never import DOU, Djinni, Telegram, OpenAI or FastAPI directly.
-2. **Deterministic-first hybrid matching.** A match score is never "ask an LLM for a
-   percentage." Hard filters and weighted deterministic scoring run first; semantic
-   embeddings add nuance; an LLM reranks only the top candidates. See
-   [docs/matching-engine.md](docs/matching-engine.md).
+2. **AI-primary, deterministic-fallback matching.** Hard filters (candidate-configured,
+   non-negotiable constraints — blacklists, salary floor, location, blocked stack) always
+   run first and are never left to an LLM to reinterpret. Past that gate, a single
+   structured LLM call (`AiMatcher`) decides the actual fit and returns the full score
+   breakdown as JSON. The older filters -> weighted-score -> semantic -> skill pipeline
+   only runs as a fallback, when no LLM is configured or the AI call fails/returns
+   something untrustworthy — so a scored, explainable match always comes out either way.
+   See [docs/matching-engine.md](docs/matching-engine.md).
 3. **Explainability is not optional.** Every score ships with a component breakdown,
    strengths, gaps, and critical gaps. A bare number is a bug.
 4. **Experience ≠ preference.** What the candidate can do (`CandidateProfile`, derived
@@ -114,7 +118,7 @@ backend/
         domain/            Framework-free business logic
             candidates/      CandidateProfile, UserPreferences
             jobs/            RawJob/NormalizedJob/CanonicalJob, deduplication
-            matching/        Hard filters, deterministic scoring, embedding skill matching, orchestration
+            matching/        Hard filters, AI matcher (primary), deterministic/embedding scoring (fallback), orchestration
             applications/    Application tracker state machine
             notifications/   Notification policy (thresholds, quiet hours)
         services/          Use-case orchestration between domain + repositories + integrations

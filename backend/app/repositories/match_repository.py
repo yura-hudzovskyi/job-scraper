@@ -44,6 +44,7 @@ def _to_job_match(model: JobMatchModel) -> JobMatch:
         recommendation=Recommendation(model.recommendation) if model.recommendation else None,
         llm_assessment=_to_llm_assessment(model.llm_assessment),
         skills_source=model.skills_source,
+        scored_by=model.scored_by,
     )
 
 
@@ -66,6 +67,7 @@ class MatchRepository:
                 else None
             ),
             "skills_source": match.skills_source,
+            "scored_by": match.scored_by,
         }
         stmt = (
             insert(JobMatchModel)

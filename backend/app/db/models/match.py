@@ -28,5 +28,6 @@ class JobMatchModel(UUIDPrimaryKeyMixin, Base):
     recommendation: Mapped[str | None] = mapped_column(default=None)
     skills_source: Mapped[str | None] = mapped_column(default=None)
     llm_assessment: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
+    scored_by: Mapped[str | None] = mapped_column(default=None)
 
     scored_at: Mapped[datetime] = mapped_column(server_default=func.now())

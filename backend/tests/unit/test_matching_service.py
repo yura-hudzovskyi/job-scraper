@@ -74,7 +74,11 @@ def _preferences(**overrides) -> UserPreference:
     return UserPreference(**defaults)
 
 
-def _matching_service(embedding_provider: object, llm_reranker: object | None = None) -> MatchingService:
+def _matching_service(
+    embedding_provider: object,
+    llm_reranker: object | None = None,
+    ai_matcher: object | None = None,
+) -> MatchingService:
     return MatchingService(
         HardFilterService(),
         DeterministicScorer(),
@@ -82,6 +86,7 @@ def _matching_service(embedding_provider: object, llm_reranker: object | None = 
         SkillMatcher(embedding_provider),  # type: ignore[arg-type]
         RoleMatcher(embedding_provider),  # type: ignore[arg-type]
         llm_reranker=llm_reranker,  # type: ignore[arg-type]
+        ai_matcher=ai_matcher,  # type: ignore[arg-type]
     )
 
 
@@ -311,6 +316,88 @@ async def test_domain_mismatch_gate_forces_skip_despite_superficial_skill_match(
     assert match.practical_fit == pytest.approx(70.0)
     assert match.recommendation == Recommendation.SKIP
     assert any(gap.label == "role/domain mismatch" for gap in match.gaps)
+
+
+class _FakeAiMatcher:
+    def __init__(self, result: JobMatch | None):
+        self._result = result
+        self.call_count = 0
+
+    async def assess(self, job, profile, preferences) -> JobMatch | None:
+        self.call_count += 1
+        return self._result
+
+
+_AI_MATCH = JobMatch(
+    id="",
+    user_id="",
+    canonical_job_id="",
+    eligible=True,
+    requirement_match=70.0,
+    practical_fit=91.0,
+    breakdown=ScoreBreakdown(95, 95, 95, 95, 95, 95, 95, 95),
+    recommendation=Recommendation.APPLY,
+    scored_by="AI (fake-model)",
+)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_uses_the_ai_matcher_when_it_succeeds(
+    matching_service: MatchingService,
+) -> None:
+    # AiMatcher is the primary path now — a successful AI verdict is returned
+    # as-is (stamped with the caller-supplied ids), the deterministic pipeline
+    # never runs at all.
+    ai_matcher = _FakeAiMatcher(_AI_MATCH)
+    service = _matching_service(_FakeEmbeddingProvider(), ai_matcher=ai_matcher)
+
+    match = await service.evaluate("canonical-1", _job(), _profile(), _preferences())
+
+    assert ai_matcher.call_count == 1
+    assert match.practical_fit == 91.0
+    assert match.scored_by == "AI (fake-model)"
+    assert match.user_id == "u1"
+    assert match.canonical_job_id == "canonical-1"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_falls_back_to_deterministic_when_the_ai_matcher_fails(
+    matching_service: MatchingService,
+) -> None:
+    # AiMatcher returns None (never raises) on a bad call — evaluate must fall
+    # back to the full deterministic pipeline rather than losing the score.
+    ai_matcher = _FakeAiMatcher(None)
+    service = _matching_service(_FakeEmbeddingProvider(), ai_matcher=ai_matcher)
+    job = _job(
+        skills=[
+            NormalizedJobSkill(name="Django", required=True),
+            NormalizedJobSkill(name="PostgreSQL", required=True),
+        ],
+    )
+    profile = _profile(skills=["Django", "PostgreSQL"])
+
+    match = await service.evaluate("canonical-1", job, profile, _preferences())
+
+    assert ai_matcher.call_count == 1
+    assert match.recommendation == Recommendation.APPLY
+    assert match.scored_by == "deterministic"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_never_calls_the_ai_matcher_for_an_ineligible_job(
+    matching_service: MatchingService,
+) -> None:
+    # Hard filters are non-negotiable candidate-configured constraints — never
+    # left to an LLM call to reinterpret, and no reason to spend one here.
+    ai_matcher = _FakeAiMatcher(_AI_MATCH)
+    service = _matching_service(_FakeEmbeddingProvider(), ai_matcher=ai_matcher)
+    job = _job(company="Blacklisted Corp")
+    preferences = _preferences(companies_blacklist=["Blacklisted Corp"])
+
+    match = await service.evaluate("canonical-1", job, preferences=preferences, profile=_profile())
+
+    assert ai_matcher.call_count == 0
+    assert match.eligible is False
 
 
 @pytest.mark.asyncio

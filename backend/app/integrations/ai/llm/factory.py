@@ -1,16 +1,21 @@
-"""Builds LLMProviders from Settings. Two entry points, not one, because the two
+"""Builds LLMProviders from Settings. Three entry points, not one, because the
 call sites in this app genuinely want different providers rather than one global
 choice — see docs/matching-engine.md:
 
-- build_quality_llm_provider: CV analysis. Gemini's free tier first (if
-  GEMINI_API_KEY is set), falling back to Ollama the moment Gemini returns a 429
-  (rate/quota exceeded) — never on other errors, so a broken API key surfaces
-  loudly instead of being silently masked. Falls back to today's exact
-  single-provider behavior (whatever llm_provider says) when Gemini isn't
+- build_quality_llm_provider: CV analysis and the "should I apply?" reranker.
+  Gemini's free tier first (if GEMINI_API_KEY is set), falling back to Ollama the
+  moment Gemini returns a 429 (rate/quota exceeded) — never on other errors, so a
+  broken API key surfaces loudly instead of being silently masked. Falls back to
+  build_configured_llm_provider (whatever llm_provider says) when Gemini isn't
   configured, so existing Ollama/OpenAI/Anthropic setups are unaffected.
 - build_bulk_llm_provider: job skill extraction, runs on every newly-scraped job.
   Always Ollama, unconditionally — this keeps Gemini's limited free-tier quota
-  reserved for CV analysis, the call site that benefits most from it.
+  reserved for CV analysis.
+- build_configured_llm_provider: whatever llm_provider says, no Gemini involved.
+  Used directly by AiMatcher (app/domain/matching/ai_matcher.py) — job matching
+  runs once per (job, user), too high-volume to route through Gemini's reserved
+  quota, but unlike skill extraction it should still honor a real OpenAI/Anthropic
+  choice rather than being hardcoded to Ollama.
 
 Returns None when the selected provider needs a credential that isn't set —
 callers decide whether that's fatal (e.g. CV analysis) or something to degrade
@@ -35,10 +40,12 @@ def _is_gemini_rate_limited(exc: Exception) -> bool:
     return getattr(exc, "code", None) == 429
 
 
-def _build_single_provider(settings: Settings, model_override: str | None = None) -> LLMProvider | None:
-    """Today's exact ollama/openai/anthropic selection, unchanged — used as-is by
-    build_quality_llm_provider when Gemini isn't configured, and always by
-    build_bulk_llm_provider's Ollama branch.
+def build_configured_llm_provider(
+    settings: Settings, model_override: str | None = None
+) -> LLMProvider | None:
+    """Whatever llm_provider says (ollama/openai/anthropic), no Gemini involved —
+    used as-is by build_quality_llm_provider when Gemini isn't configured, and
+    directly by AiMatcher's factory wiring (app/domain/matching/factory.py).
 
     model_override lets a single call site (currently: the "rescore all vacancies"
     admin action, see app/api/routes/jobs.py's POST /rescore-all) use a different
@@ -85,7 +92,7 @@ def build_quality_llm_provider(
         )
         return FallbackLLMProvider(gemini, ollama, is_retryable=_is_gemini_rate_limited)
 
-    return _build_single_provider(settings, model_override)
+    return build_configured_llm_provider(settings, model_override)
 
 
 def build_bulk_llm_provider(settings: Settings) -> LLMProvider:

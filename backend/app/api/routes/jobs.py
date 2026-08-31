@@ -75,6 +75,7 @@ class JobMatchResponse(BaseModel):
     recommendation: str | None
     llm_assessment: LlmAssessmentResponse | None
     skills_source: str | None
+    scored_by: str | None
 
 
 def _to_summary(job: CanonicalJob, match: JobMatch | None) -> JobSummaryResponse:
@@ -121,6 +122,7 @@ def _to_match_response(match: JobMatch) -> JobMatchResponse:
         recommendation=match.recommendation.value if match.recommendation else None,
         llm_assessment=_to_llm_assessment_response(match.llm_assessment),
         skills_source=match.skills_source,
+        scored_by=match.scored_by,
     )
 
 

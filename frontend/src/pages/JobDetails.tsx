@@ -153,6 +153,14 @@ export function JobDetails() {
               </div>
             )}
 
+            {matchQuery.data.scored_by && (
+              <p className="text-xs text-slate-400">
+                {matchQuery.data.scored_by.startsWith("AI (")
+                  ? `Scored using ${matchQuery.data.scored_by}`
+                  : "Scored using the deterministic pipeline (no AI match available for this job)"}
+              </p>
+            )}
+
             {matchQuery.data.skills_source && (
               <p className="text-xs text-slate-400">
                 Skills identified using {matchQuery.data.skills_source}

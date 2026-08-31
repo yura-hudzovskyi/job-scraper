@@ -1,5 +1,5 @@
 from app.config.settings import Settings
-from app.integrations.ai.llm.factory import _build_single_provider
+from app.integrations.ai.llm.factory import build_configured_llm_provider
 from app.integrations.ai.llm.ollama_provider import OllamaLLMProvider
 
 
@@ -8,14 +8,14 @@ def _settings(**overrides: object) -> Settings:
 
 
 def test_no_override_uses_the_configured_default_model() -> None:
-    provider = _build_single_provider(_settings())
+    provider = build_configured_llm_provider(_settings())
 
     assert isinstance(provider, OllamaLLMProvider)
     assert provider.model == "llama3.2:3b"
 
 
 def test_model_override_replaces_the_configured_default_for_this_call() -> None:
-    provider = _build_single_provider(_settings(), model_override="qwen2.5:14b")
+    provider = build_configured_llm_provider(_settings(), model_override="qwen2.5:14b")
 
     assert isinstance(provider, OllamaLLMProvider)
     assert provider.model == "qwen2.5:14b"

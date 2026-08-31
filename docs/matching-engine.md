@@ -1,23 +1,59 @@
 # Matching engine
 
-The matching engine is a **deterministic-first hybrid pipeline**, not
-"send CV + vacancy to an LLM and ask for a percentage." That approach is opaque,
-expensive at scale, unstable across runs, and impossible to unit test — so it's used
-only as a final reranking/reasoning step over a small, already-filtered shortlist.
+The matching engine is **AI-primary, deterministic-fallback**: hard, non-negotiable
+filters (blacklists, salary floor, location, blocked stack — things the candidate
+explicitly configured) always run first and are never left to an LLM to reinterpret
+or hallucinate past. Past that gate, a single structured LLM call (`AiMatcher`,
+`backend/app/domain/matching/ai_matcher.py`) decides the actual fit and returns the
+full score breakdown as JSON in one shot.
+
+The older filters -> weighted-score -> semantic -> skill pipeline (Stages 2-3 below)
+still exists, but only as the **fallback** — used when no LLM is configured, or when
+`AiMatcher`'s call fails or comes back with something untrustworthy (timeout,
+provider unreachable, malformed output). It never raises; it returns `None` and
+`MatchingService.evaluate` falls back automatically, so a scored, explainable
+`JobMatch` always comes out the other end either way. Every match records which
+path produced it (`JobMatch.scored_by` — `"AI (<model>)"` or `"deterministic"`).
 
 ## Pipeline
 
 ```text
 1000 scraped jobs
-   │ hard filters (cheap, deterministic)
+   │ hard filters (cheap, deterministic, non-negotiable)
 300 eligible candidates
-   │ deterministic weighted score
-80 candidates above threshold
-   │ semantic similarity (embeddings, local by default)
-20 top-ranked jobs
-   │ LLM reranking + gap analysis (top candidates only)
+   │ AiMatcher: one structured LLM call → full score + breakdown + recommendation
+   │   │ on failure/timeout/no LLM configured, falls back to:
+   │   └ deterministic weighted score → semantic similarity → skill matching
+300 scored, explainable matches
+   │ LLM "should I apply?" (APPLY-tier only, see below)
 final ranked list, delivered via notifications
 ```
+
+### AI matcher (primary path)
+
+`AiMatcher.assess` builds one prompt from the job posting and the candidate's
+profile + preferences, and asks for a single structured JSON verdict: the same
+`requirement_match` / `practical_fit` / 8-component `breakdown` /
+`strengths` / `gaps` / `recommendation` shape the deterministic pipeline produces
+(see `_AiVerdict` in `ai_matcher.py`) — the two paths are interchangeable from every
+caller's point of view. It never raises out of `assess()`: any exception (timeout,
+connection error, a model tag that isn't pulled, a response that fails schema
+validation) is caught, logged, and turned into `None` so `MatchingService.evaluate`
+falls back to the deterministic pipeline instead of losing the score for that job
+entirely.
+
+It's wired through `build_configured_llm_provider` (whatever `LLM_PROVIDER` says —
+Ollama by default), not through the Gemini-first `build_quality_llm_provider` used
+by CV analysis and the reranker below: this call runs once per (job, user) — every
+scored job, not just an already-filtered top shortlist — so routing it through
+Gemini's reserved free-tier quota would exhaust it fast. See
+`backend/app/domain/matching/factory.py`.
+
+### Fallback pipeline
+
+The stages below are unchanged from the original deterministic design and are
+already fully explainable on their own (no LLM involved) — they just no longer run
+unconditionally.
 
 ### Stage 1 — Hard filters
 
@@ -86,10 +122,11 @@ Embed the candidate's professional profile and the normalized vacancy
 `sentence-transformers` is the default provider — no API cost for this stage. See
 `backend/app/integrations/ai/embeddings/`.
 
-### Stage 4 — LLM rerank (top candidates only)
+### Stage 4 — "Should I apply?" (APPLY-tier only)
 
-The LLM only ever sees the shortlist that already survived filters + deterministic +
-semantic scoring. It must return **structured**, not prose:
+A separate, optional LLM call (`LlmReranker`) layered on top of an already-scored
+match — by either path above — for jobs the pipeline recommends `APPLY`. It must
+return **structured**, not prose:
 
 ```json
 {
@@ -108,21 +145,27 @@ semantic scoring. It must return **structured**, not prose:
 
 ## LLM provider policy: Gemini for quality, Ollama for volume
 
-Two independent LLM call sites exist outside the scoring pipeline itself — CV
-analysis (`backend/app/services/cv_service.py`, user-triggered, rare) and job skill
-extraction (`backend/app/services/job_skill_extraction_service.py`, once per
-newly-scraped job, high-volume). They deliberately use different providers:
+Three independent LLM call sites exist — CV analysis
+(`backend/app/services/cv_service.py`, user-triggered, rare), job skill extraction
+(`backend/app/services/job_skill_extraction_service.py`, once per newly-scraped job,
+high-volume), and the AI matcher itself (`ai_matcher.py`, once per (job, user) —
+the highest-volume of the three). They deliberately use different providers:
 
-- **CV analysis** — quality matters most here (it's the one artifact every match a
-  user sees depends on), and it happens rarely per user, so it can afford a
-  higher-quality provider. If `GEMINI_API_KEY` is set, this tries Google's free
-  Gemini tier first, falling back to Ollama automatically the instant Gemini
-  returns 429 (quota exceeded) — but never for other errors, so a misconfigured key
-  fails loudly instead of silently degrading. See
+- **CV analysis and "should I apply?"** — quality matters most here (CV analysis
+  is the one artifact every match a user sees depends on; "should I apply?" is
+  narrow-cast to APPLY-tier matches only), so both can afford a higher-quality
+  provider. If `GEMINI_API_KEY` is set, this tries Google's free Gemini tier
+  first, falling back to Ollama automatically the instant Gemini returns 429
+  (quota exceeded) — but never for other errors, so a misconfigured key fails
+  loudly instead of silently degrading. See
   `backend/app/integrations/ai/llm/fallback_provider.py`.
 - **Job skill extraction** — runs on every scraped job, so it always uses Ollama
   unconditionally, regardless of Gemini configuration. This keeps the (limited)
   free-tier quota available for CV analysis instead of being exhausted by volume.
+- **AI matching** — runs on every (job, user) pair, the highest call volume in the
+  app. Uses `build_configured_llm_provider` — whatever `LLM_PROVIDER` says (Ollama
+  by default), same reasoning as job skill extraction: this volume would exhaust
+  Gemini's reserved quota immediately.
 
 Whichever model actually produced a result is recorded (`LLMResult.model_label`,
 `backend/app/integrations/ai/llm/base.py`) and shown in the UI — a Gemini-quota
@@ -165,9 +208,10 @@ highest-leverage user-facing feature of the matching engine — implemented as
 `MatchingService.should_i_apply` (`backend/app/domain/matching/service.py`) plus
 `LlmReranker` (`backend/app/domain/matching/llm_reranker.py`).
 
-It's deliberately narrow-cast: only called for matches the deterministic pipeline
-already recommends `Recommendation.APPLY` — that's both where the question is
-actually worth asking and the main volume control on a personal-scale Gemini
+It's deliberately narrow-cast: only called for matches already recommended
+`Recommendation.APPLY` (by either the AI matcher or the deterministic fallback —
+see above) — that's both where the question is actually worth asking and the main
+volume control on a personal-scale Gemini
 free-tier key, on top of `LlmReranker`'s own daily call budget
 (`app/integrations/ai/llm/budget.py`, `LLM_RERANK_DAILY_LIMIT`), which caps
 usage independent of whatever the provider's own rate-limit/billing behavior is.

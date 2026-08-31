@@ -76,3 +76,4 @@ class JobMatch:
     recommendation: Recommendation | None = None
     llm_assessment: LlmAssessment | None = None
     skills_source: str | None = None  # which LLM extracted this job's skills, if any
+    scored_by: str | None = None  # "AI (<model>)" when AiMatcher produced this score, else "deterministic"
