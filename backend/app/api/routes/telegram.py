@@ -1,11 +1,12 @@
 """Telegram bot connection + test send — see docs/api.md and docs/notifications.md."""
 
 import uuid
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user_id, get_notification_repository
+from app.api.deps import get_current_user_id, get_match_repository, get_notification_repository
 from app.config.settings import get_settings
 from app.domain.matching.models import JobMatch, Recommendation, ScoreBreakdown
 from app.domain.notifications.models import JobMatchNotification
@@ -14,7 +15,10 @@ from app.integrations.notifications.telegram_provider import (
     TelegramApiError,
     TelegramNotificationProvider,
 )
+from app.integrations.notifications.telegram_webhook import resolve_webhook_secret
+from app.repositories.match_repository import MatchRepository
 from app.repositories.notification_repository import NotificationRepository
+from app.services.telegram_callback_service import TelegramCallbackService
 
 router = APIRouter(prefix="/api/integrations/telegram", tags=["telegram"])
 
@@ -124,3 +128,30 @@ async def test_telegram(
         raise HTTPException(status_code=502, detail=f"send failed: {exc}") from exc
 
     return {"status": "sent"}
+
+
+@router.post("/webhook")
+async def telegram_webhook(
+    request: Request,
+    match_repository: MatchRepository = Depends(get_match_repository),
+    notification_repository: NotificationRepository = Depends(get_notification_repository),
+) -> dict[str, str]:
+    """Receives Approve/Reject button taps as Telegram callback_query updates —
+    see docs/notifications.md and integrations/notifications/telegram_webhook.py
+    (registration). No JWT here: Telegram calls this directly, not a logged-in
+    browser session — authenticity instead comes from the
+    X-Telegram-Bot-Api-Secret-Token header Telegram echoes back on every call,
+    checked against the same secret this app registered the webhook with."""
+    settings = get_settings()
+    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != resolve_webhook_secret(settings):
+        raise HTTPException(status_code=401, detail="invalid webhook secret")
+
+    bot_token = settings.telegram_bot_token
+    if not bot_token:
+        return {"status": "ignored"}
+
+    update: dict[str, Any] = await request.json()
+    bot_provider = TelegramNotificationProvider(bot_token, chat_id="unused")
+    service = TelegramCallbackService(match_repository, notification_repository, bot_provider)
+    await service.handle_update(update)
+    return {"status": "ok"}

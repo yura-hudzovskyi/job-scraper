@@ -85,12 +85,17 @@ nano ~/job-scraper/.env
 ```
 
 At minimum set:
-- `API_DOMAIN=job-scraper-api.duckdns.org` (or your own domain, if you used one)
+- `API_DOMAIN=job-scraper-api.duckdns.org` (or your own domain, if you used one) —
+  Caddy uses this to get its TLS cert, and the backend itself also reads it to
+  register the Telegram webhook (see docs/notifications.md) against
+  `https://{API_DOMAIN}/api/integrations/telegram/webhook`.
 - `API_CORS_ORIGINS=` your Cloudflare Pages URL(s) — e.g.
   `https://job-scraper.pages.dev` once you know it from Part 4, comma-separated if
   you also add a custom domain there later
 - `SECRET_KEY` — any random string (`openssl rand -hex 32`)
-- `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — from @BotFather, same as local dev
+- `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — from @BotFather, same as local dev.
+  `TELEGRAM_WEBHOOK_SECRET` can stay blank — it's derived from `SECRET_KEY`
+  automatically if unset.
 - `LLM_PROVIDER=ollama` (the default) runs CV analysis on a local model in the
   `ollama` container in `docker-compose.prod.yml` — no API key, no per-token cost.
   Set `LLM_MODEL` too (see "Choosing an Ollama model" below). If you'd rather use a

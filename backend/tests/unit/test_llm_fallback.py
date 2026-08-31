@@ -68,3 +68,61 @@ async def test_propagates_a_non_retryable_error_without_falling_back() -> None:
         await provider.structured_completion("prompt", _Dummy)
 
     assert fallback.calls == 0
+
+
+class _FakeCircuitBreaker:
+    def __init__(self, open_: bool = False):
+        self.open = open_
+        self.record_failure_calls = 0
+
+    async def is_open(self) -> bool:
+        return self.open
+
+    async def record_failure(self) -> None:
+        self.record_failure_calls += 1
+        self.open = True
+
+
+@pytest.mark.asyncio
+async def test_skips_primary_entirely_when_the_circuit_breaker_is_already_open() -> None:
+    primary = _FakeProvider("primary")
+    fallback = _FakeProvider("fallback")
+    breaker = _FakeCircuitBreaker(open_=True)
+    provider = FallbackLLMProvider(
+        primary, fallback, is_retryable=_is_retryable, circuit_breaker=breaker  # type: ignore[arg-type]
+    )
+
+    result = await provider.structured_completion("prompt", _Dummy)
+
+    assert result.model_label == "fallback"
+    assert primary.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_retryable_failure_opens_the_circuit_breaker() -> None:
+    primary = _FakeProvider("primary", raises=_RetryableError())
+    fallback = _FakeProvider("fallback")
+    breaker = _FakeCircuitBreaker()
+    provider = FallbackLLMProvider(
+        primary, fallback, is_retryable=_is_retryable, circuit_breaker=breaker  # type: ignore[arg-type]
+    )
+
+    await provider.structured_completion("prompt", _Dummy)
+
+    assert breaker.record_failure_calls == 1
+    assert breaker.open is True
+
+
+@pytest.mark.asyncio
+async def test_a_non_retryable_failure_does_not_touch_the_circuit_breaker() -> None:
+    primary = _FakeProvider("primary", raises=_OtherError("bad api key"))
+    fallback = _FakeProvider("fallback")
+    breaker = _FakeCircuitBreaker()
+    provider = FallbackLLMProvider(
+        primary, fallback, is_retryable=_is_retryable, circuit_breaker=breaker  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(_OtherError):
+        await provider.structured_completion("prompt", _Dummy)
+
+    assert breaker.record_failure_calls == 0

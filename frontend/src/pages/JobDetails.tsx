@@ -198,10 +198,18 @@ export function JobDetails() {
               </p>
             )}
 
-            {matchQuery.data.skills_source && (
+            {matchQuery.data.skills_source ? (
               <p className="text-xs text-slate-400">
                 Skills identified using {matchQuery.data.skills_source}
               </p>
+            ) : (
+              !matchQuery.data.scored_by?.startsWith("AI (") && (
+                <p className="text-xs text-amber-600">
+                  ⚠️ No skills could be extracted for this job — Skills, Transferable
+                  skills and Preferences above are neutral placeholders, not a real
+                  assessment. This match is less reliable than usual.
+                </p>
+              )
             )}
 
             <Button

@@ -17,7 +17,6 @@ celery_app = Celery(
         "app.workers.tasks.notify",
         "app.workers.tasks.retention",
         "app.workers.tasks.backfill",
-        "app.workers.tasks.telegram_poll",
     ],
 )
 
@@ -39,9 +38,5 @@ celery_app.conf.beat_schedule = {
     "purge-stale-jobs": {
         "task": "retention.purge_stale_jobs",
         "schedule": 24 * 60 * 60,
-    },
-    "poll-telegram-updates": {
-        "task": "telegram.poll_updates",
-        "schedule": settings.telegram_poll_interval_seconds,
     },
 }

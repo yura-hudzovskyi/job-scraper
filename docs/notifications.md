@@ -79,19 +79,35 @@ from the default Jobs list the same way a `SKIP` recommendation already is (see
 tracking-only — there's no application tracker yet to hand it off to (Phase 5, see
 docs/roadmap.md).
 
-**Why polling, not a webhook:** receiving button taps needs *something* to call
-this app back — either Telegram calls a public HTTPS webhook, or this app polls
-`getUpdates`. This deployment does have a public domain already (`API_DOMAIN`, see
-docs/deployment.md), so a webhook was possible — polling was still the simpler
-choice: no `secret_token` to generate/verify, no `setWebhook` registration step to
-run once per deployment, and it works identically in local dev (no public URL at
-all) and production without a code path difference. At this app's personal scale
-(one shared bot, a handful of users), the few seconds of added latency from
-polling is a non-issue. `workers/tasks/telegram_poll.py` runs a quick,
-non-blocking `getUpdates` call (`timeout=0`) on a short Celery Beat interval
-(`TELEGRAM_POLL_INTERVAL_SECONDS`, default 5s) and hands each `callback_query` to
-`TelegramCallbackService`. The update-id cursor lives in Redis
-(`telegram:update_offset`), not Postgres — it's polling mechanics, not domain data.
+### Receiving button taps: a webhook
+
+Telegram calls this app back over a webhook rather than this app polling
+`getUpdates` — a first iteration used polling (a Celery Beat tick calling
+`getUpdates` every few seconds) to avoid standing up a public endpoint, but that
+tradeoff didn't actually pay off here: this deployment already has a public HTTPS
+domain (`API_DOMAIN`, fronted by Caddy — see docs/deployment.md) for the frontend
+to reach the API at all, so "no public endpoint needed" was never true, and
+polling only added latency and constant background chatter for no real benefit at
+this scale either. A webhook is simpler once you already have the domain.
+
+**Registration** (`backend/app/integrations/notifications/telegram_webhook.py`):
+on every API startup (FastAPI lifespan, see `app/main.py`), if `TELEGRAM_BOT_TOKEN`
+and `API_DOMAIN` are both set, the app calls Telegram's `setWebhook` with
+`https://{API_DOMAIN}/api/integrations/telegram/webhook`. Idempotent and
+best-effort — a transient failure (DNS not yet propagated, Telegram briefly down)
+is logged and never blocks the API from starting. No-ops entirely in local dev,
+where there's no public domain to register.
+
+**Receiving** (`POST /api/integrations/telegram/webhook` in
+`app/api/routes/telegram.py`): unauthenticated by JWT (Telegram calls this
+directly, not a logged-in browser), so authenticity instead comes from the
+`X-Telegram-Bot-Api-Secret-Token` header Telegram echoes back on every call,
+checked against `TELEGRAM_WEBHOOK_SECRET` (or, if that's unset, a secret derived
+from `SECRET_KEY` — see `resolve_webhook_secret` — so the endpoint is never left
+open just because nobody set one more env var). A mismatched or missing header is
+rejected with 401. Once validated, the update is handed to the same
+`TelegramCallbackService` a polling-based design would have used — the
+Approve/Reject business logic doesn't know or care which transport delivered it.
 
 ## Feedback → learning
 

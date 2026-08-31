@@ -1,8 +1,8 @@
 """Use case: apply one Approve/Reject button tap from a Telegram swipe card (see
 integrations/notifications/telegram_provider.py) to the underlying JobMatch.
-Called per-update by workers/tasks/telegram_poll.py's polling loop — kept as its
-own service, not inlined in the task, so it's testable with fakes the same way
-every other use case in this app is.
+Called per-update by the webhook route (api/routes/telegram.py's POST /webhook)
+— kept as its own service, not inlined in the route, so it's testable with fakes
+the same way every other use case in this app is.
 """
 
 import logging
@@ -43,9 +43,9 @@ class TelegramCallbackService:
 
     async def handle_update(self, update: dict[str, Any]) -> None:
         """No-ops (rather than raising) for anything that isn't a recognized
-        Approve/Reject tap — allowed_updates already filters getUpdates down to
-        callback_query, but a stray/malformed one should never take down the
-        whole polling tick (see workers/tasks/telegram_poll.py)."""
+        Approve/Reject tap — the webhook is registered with allowed_updates
+        limited to callback_query, but a stray/malformed one should never fail
+        the whole webhook request (see api/routes/telegram.py)."""
         callback_query = update.get("callback_query")
         if callback_query is None:
             return

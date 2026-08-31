@@ -105,11 +105,11 @@ async def test_bogus_bot_token_reaches_real_api_and_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_updates_with_a_bogus_token_is_rejected() -> None:
+async def test_set_webhook_with_a_bogus_token_is_rejected() -> None:
     provider = TelegramNotificationProvider("123456:fake-bot-token-for-smoke-test", "unused")
 
     with pytest.raises(TelegramApiError):
-        await provider.get_updates(offset=None)
+        await provider.set_webhook("https://example.com/webhook", "secret")
 
 
 @pytest.mark.asyncio

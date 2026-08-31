@@ -148,24 +148,34 @@ return **structured**, not prose:
 Three independent LLM call sites exist — CV analysis
 (`backend/app/services/cv_service.py`, user-triggered, rare), job skill extraction
 (`backend/app/services/job_skill_extraction_service.py`, once per newly-scraped job,
-high-volume), and the AI matcher itself (`ai_matcher.py`, once per (job, user) —
-the highest-volume of the three). They deliberately use different providers:
+high-volume, always automatic), and the AI matcher itself (`ai_matcher.py`, once
+per (job, user) — the highest-volume of the three).
 
-- **CV analysis and "should I apply?"** — quality matters most here (CV analysis
-  is the one artifact every match a user sees depends on; "should I apply?" is
-  narrow-cast to APPLY-tier matches only), so both can afford a higher-quality
-  provider. If `GEMINI_API_KEY` is set, this tries Google's free Gemini tier
-  first, falling back to Ollama automatically the instant Gemini returns 429
+- **CV analysis, "should I apply?", and AI matching** all go through
+  `build_quality_llm_provider`: if `GEMINI_API_KEY` is set, Google's free Gemini
+  tier first, falling back to Ollama automatically the instant Gemini returns 429
   (quota exceeded) — but never for other errors, so a misconfigured key fails
   loudly instead of silently degrading. See
-  `backend/app/integrations/ai/llm/fallback_provider.py`.
-- **Job skill extraction** — runs on every scraped job, so it always uses Ollama
-  unconditionally, regardless of Gemini configuration. This keeps the (limited)
-  free-tier quota available for CV analysis instead of being exhausted by volume.
-- **AI matching** — runs on every (job, user) pair, the highest call volume in the
-  app. Uses `build_configured_llm_provider` — whatever `LLM_PROVIDER` says (Ollama
-  by default), same reasoning as job skill extraction: this volume would exhaust
-  Gemini's reserved quota immediately.
+  `backend/app/integrations/ai/llm/fallback_provider.py`. Yes, this means AI
+  matching — the highest-volume call site — competes for Gemini's quota too;
+  see the circuit breaker note below for why that isn't as wasteful as it sounds.
+- **Job skill extraction's automatic per-scrape run** always uses Ollama
+  unconditionally (`build_bulk_llm_provider`), regardless of Gemini configuration
+  — this keeps at least *some* free-tier quota available for the other call
+  sites instead of every newly-scraped job burning through it immediately. The
+  user-triggered "rescore all vacancies" re-extraction is the exception — it goes
+  through `build_quality_llm_provider` like everything else above, since it's an
+  occasional explicit action, not automatic per-scrape volume.
+
+**Gemini circuit breaker** (`backend/app/integrations/ai/llm/circuit_breaker.py`):
+Gemini's free tier is capped at a small number of requests *per day* — cheap to
+exhaust once AI matching is also going through it. Retrying Gemini on every
+subsequent call after that would just pay for (and wait on) a network round trip
+guaranteed to fail again until the quota resets. `GeminiCircuitBreaker` (Redis,
+keyed per model) remembers the first 429 for the rest of that day and makes
+`FallbackLLMProvider` skip straight to Ollama for every call after — no proactive
+budget/quota-counting needed, this is purely reactive to what Gemini itself
+already said no to.
 
 Whichever model actually produced a result is recorded (`LLMResult.model_label`,
 `backend/app/integrations/ai/llm/base.py`) and shown in the UI — a Gemini-quota

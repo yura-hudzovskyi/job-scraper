@@ -6,11 +6,11 @@ same shape as a dating app's yes/no, not a document to study. Uses httpx directl
 the Bot API is a simple, stable REST API with no official Python SDK to
 standardize on (same reasoning as the Ollama provider). See docs/notifications.md.
 
-Button taps arrive as callback_query updates, which this class doesn't receive on
-its own — see workers/tasks/telegram_poll.py, which polls getUpdates on a Celery
-Beat schedule and calls answer_callback_query/clear_reply_markup below to close
-the loop. Polling, not a webhook, even though this deployment does have a public
-HTTPS domain (see docs/deployment.md) — see docs/notifications.md for why.
+Button taps arrive as callback_query updates via a Telegram webhook — see
+integrations/notifications/telegram_webhook.py (registration, at app startup) and
+api/routes/telegram.py's POST /webhook (the receiving endpoint), which calls
+answer_callback_query/clear_reply_markup below to close the loop. See
+docs/notifications.md for the webhook vs. polling tradeoff.
 """
 
 import html
@@ -64,23 +64,28 @@ class TelegramNotificationProvider:
         if not payload.get("ok"):
             raise TelegramApiError(payload.get("description", "unknown Telegram API error"))
 
-    # --- Bot-wide operations used by the update poller (workers/tasks/telegram_poll.py).
-    # Constructed the same way telegram_bot_info's route already does for verify() —
-    # chat_id is irrelevant to these, only the bot token matters.
+    # --- Bot-wide operations, used by webhook registration (telegram_webhook.py)
+    # and the webhook route (api/routes/telegram.py). Constructed the same way
+    # telegram_bot_info's route already does for verify() — chat_id is irrelevant
+    # to these, only the bot token matters.
 
-    async def get_updates(self, offset: int | None, timeout: int = 0) -> list[dict[str, Any]]:
-        """timeout=0 (the default) is a quick, non-blocking poll — the caller is a
-        Celery Beat tick, not a long-lived process, so a short poll re-run every
-        few seconds is a better fit than tying up a worker slot in a long-poll."""
-        params: dict[str, Any] = {"timeout": timeout, "allowed_updates": ["callback_query"]}
-        if offset is not None:
-            params["offset"] = offset
-        response = await self._client.get("/getUpdates", params=params)
+    async def set_webhook(self, url: str, secret_token: str) -> None:
+        """Idempotent — safe to call on every app startup even if already
+        registered at the same URL. allowed_updates narrows delivery to button
+        taps; secret_token is echoed back on every call in the
+        X-Telegram-Bot-Api-Secret-Token header so the webhook route can verify a
+        request actually came from Telegram."""
+        response = await self._client.post(
+            "/setWebhook",
+            json={
+                "url": url,
+                "secret_token": secret_token,
+                "allowed_updates": ["callback_query"],
+            },
+        )
         payload = response.json()
         if not payload.get("ok"):
             raise TelegramApiError(payload.get("description", "unknown Telegram API error"))
-        result: list[dict[str, Any]] = payload["result"]
-        return result
 
     async def answer_callback_query(self, callback_query_id: str, text: str) -> None:
         """Must be called for every callback_query received — otherwise the tapped

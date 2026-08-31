@@ -9,9 +9,12 @@ choice — see docs/matching-engine.md:
   so a broken API key surfaces loudly instead of being silently masked. This is
   also what "Gemini by default, local Ollama once we hit limits" actually means in
   practice for every one of these call sites — no separate budget/quota plumbing
-  needed on top. Falls back to build_configured_llm_provider (whatever
-  llm_provider says) when Gemini isn't configured, so existing
-  Ollama/OpenAI/Anthropic setups are unaffected.
+  needed on top. A GeminiCircuitBreaker (circuit_breaker.py) rides along: once a
+  429 is actually seen, every later call this same day skips straight to Ollama
+  instead of re-trying Gemini and paying for the same failed round trip on every
+  job scored. Falls back to build_configured_llm_provider (whatever llm_provider
+  says) when Gemini isn't configured, so existing Ollama/OpenAI/Anthropic setups
+  are unaffected.
 - build_bulk_llm_provider: automatic job skill extraction, runs once per
   newly-scraped job (workers/tasks/extract_job_skills.py). Always Ollama,
   unconditionally — this keeps Gemini's limited free-tier quota reserved for the
@@ -33,6 +36,8 @@ the optional [llm] extra (see pyproject.toml), and importing them unconditionall
 at module level would break app startup for anyone who installed without it, even
 if they configured Ollama (the always-available default).
 """
+
+import redis.asyncio as redis
 
 from app.config.settings import Settings
 from app.integrations.ai.llm.base import LLMProvider
@@ -88,6 +93,7 @@ def build_quality_llm_provider(
     settings: Settings, model_override: str | None = None
 ) -> LLMProvider | None:
     if settings.gemini_api_key:
+        from app.integrations.ai.llm.circuit_breaker import GeminiCircuitBreaker
         from app.integrations.ai.llm.fallback_provider import FallbackLLMProvider
         from app.integrations.ai.llm.gemini_provider import GeminiLLMProvider
 
@@ -97,7 +103,12 @@ def build_quality_llm_provider(
             model_override or settings.llm_model,
             num_ctx=settings.ollama_num_ctx,
         )
-        return FallbackLLMProvider(gemini, ollama, is_retryable=_is_gemini_rate_limited)
+        circuit_breaker = GeminiCircuitBreaker(
+            redis.from_url(settings.redis_url), settings.gemini_model
+        )
+        return FallbackLLMProvider(
+            gemini, ollama, is_retryable=_is_gemini_rate_limited, circuit_breaker=circuit_breaker
+        )
 
     return build_configured_llm_provider(settings, model_override)
 

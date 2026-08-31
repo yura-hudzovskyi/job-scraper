@@ -134,8 +134,8 @@ class MatchRepository:
         self, user_id: uuid.UUID, canonical_job_id: uuid.UUID, decision: MatchDecision
     ) -> JobMatch | None:
         """Records the user's own Approve/Reject verdict — set via the Telegram
-        swipe buttons (see workers/tasks/telegram_poll.py). Returns None if this
-        user has no match for this job (nothing to update)."""
+        swipe buttons (see the webhook route in api/routes/telegram.py). Returns
+        None if this user has no match for this job (nothing to update)."""
         result = await self._session.execute(
             select(JobMatchModel).where(
                 JobMatchModel.user_id == user_id,

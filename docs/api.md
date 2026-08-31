@@ -42,6 +42,8 @@ POST   /api/settings/preferences/ai-fill      suggests preferences from the anal
 GET    /api/integrations/telegram/bot-info    the one shared bot's @username, before connecting
 POST   /api/integrations/telegram/connect     chat_id only — the bot token is server-side (TELEGRAM_BOT_TOKEN)
 POST   /api/integrations/telegram/test
+POST   /api/integrations/telegram/webhook     Telegram calls this, not the frontend — see docs/notifications.md.
+                                               No JWT; authenticated via X-Telegram-Bot-Api-Secret-Token instead.
 ```
 
 `/api/profile` is a read-only summary (CVs on file, whether preferences are set) — it's

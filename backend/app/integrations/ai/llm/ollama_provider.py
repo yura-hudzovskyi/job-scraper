@@ -13,6 +13,19 @@ import httpx
 from app.integrations.ai.llm.base import LLMResult, T
 
 DEFAULT_MODEL = "llama3.1"
+
+
+class OllamaModelNotFound(RuntimeError):
+    """Ollama returns a bare 404 for both "no route" and "model not pulled" —
+    this app only ever hits documented routes, so a 404 here always means the
+    latter. Raised with the model name and a fix-it command so this doesn't read
+    as a generic HTTP error buried in a traceback (see structured_completion)."""
+
+    def __init__(self, model: str):
+        super().__init__(
+            f"Ollama model '{model}' is not available on this server — pull it first: "
+            f"docker compose exec ollama ollama pull {model}"
+        )
 # Ollama silently truncates the prompt to whatever context window it uses —
 # 2048-4096 tokens depending on version/model — unless a request explicitly asks
 # for more. Job descriptions (and CV text, for the Ollama fallback in CV
@@ -53,6 +66,8 @@ class OllamaLLMProvider:
                 "options": {"num_ctx": self._num_ctx},
             },
         )
+        if response.status_code == 404:
+            raise OllamaModelNotFound(self._model)
         response.raise_for_status()
         content = response.json()["message"]["content"]
         data = schema.model_validate_json(content)

@@ -16,8 +16,8 @@ class Recommendation(StrEnum):
 class MatchDecision(StrEnum):
     """The user's own swipe-style verdict on a match — independent of and never
     overwritten by `Recommendation` (the pipeline's own opinion). Set via the
-    Telegram Approve/Reject buttons (see telegram_provider.py and
-    workers/tasks/telegram_poll.py); stays PENDING for matches never delivered
+    Telegram Approve/Reject buttons (see telegram_provider.py and the webhook
+    route in api/routes/telegram.py); stays PENDING for matches never delivered
     or not yet acted on."""
 
     PENDING = "pending"

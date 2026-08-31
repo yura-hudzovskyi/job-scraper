@@ -52,11 +52,17 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
-    # How often the swipe-card Approve/Reject buttons are checked for taps — see
-    # app/workers/tasks/telegram_poll.py. Short by design: each tick is a quick,
-    # non-blocking getUpdates call (timeout=0), not a long-poll, so a short
-    # interval doesn't tie up a worker slot the way a long-poll loop would.
-    telegram_poll_interval_seconds: int = 5
+    # Public HTTPS hostname Caddy fronts this API on (see Caddyfile, docs/deployment.md) —
+    # also used, here in the Python app, to register the Telegram webhook
+    # (https://{api_domain}/api/integrations/telegram/webhook) at startup. None in
+    # local dev, where there's no public URL and the webhook is simply never registered.
+    api_domain: str | None = None
+    # Shared secret Telegram echoes back in the X-Telegram-Bot-Api-Secret-Token
+    # header on every webhook call — see integrations/notifications/telegram_webhook.py.
+    # Leave unset to derive one automatically from secret_key (still real
+    # protection, without another required env var); set explicitly to rotate it
+    # independently of secret_key.
+    telegram_webhook_secret: str | None = None
 
     # Each scrape tick covers one category (rotating through every configured
     # category over time — see app/integrations/sources/categories.py), capped at
