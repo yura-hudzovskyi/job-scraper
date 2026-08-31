@@ -2,8 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
-import { listJobs, rescoreJob } from "../api/endpoints";
-import { Button, Card, ErrorBanner, SectionTitle } from "../components/ui";
+import { listJobs, listOllamaModels, rescoreAllJobs, rescoreJob } from "../api/endpoints";
+import { Button, Card, ErrorBanner, Field, Modal, SectionTitle, inputClass } from "../components/ui";
 
 const PAGE_SIZE = 25;
 
@@ -11,6 +11,8 @@ export function Jobs() {
   const queryClient = useQueryClient();
   const [offset, setOffset] = useState(0);
   const [includeSkipped, setIncludeSkipped] = useState(false);
+  const [isRescoreAllOpen, setIsRescoreAllOpen] = useState(false);
+  const [rescoreAllModel, setRescoreAllModel] = useState("");
 
   const jobsQuery = useQuery({
     queryKey: ["jobs", offset, includeSkipped],
@@ -31,6 +33,20 @@ export function Jobs() {
     },
   });
 
+  const ollamaModelsQuery = useQuery({
+    queryKey: ["ollama-models"],
+    queryFn: listOllamaModels,
+    enabled: isRescoreAllOpen,
+  });
+
+  const rescoreAllMutation = useMutation({
+    mutationFn: () => rescoreAllJobs(rescoreAllModel || undefined),
+    onSuccess: () => {
+      setIsRescoreAllOpen(false);
+      setRescoreAllModel("");
+    },
+  });
+
   const hasPrevious = offset > 0;
   const hasNext = offset + PAGE_SIZE < total;
 
@@ -38,14 +54,31 @@ export function Jobs() {
     <Card>
       <div className="mb-3 flex items-center justify-between">
         <SectionTitle>Jobs</SectionTitle>
-        {unscoredJobIds.length > 0 && (
-          <Button onClick={() => scoreAllMutation.mutate()} disabled={scoreAllMutation.isPending}>
-            {scoreAllMutation.isPending
-              ? "Queuing…"
-              : `Score unscored on this page (${unscoredJobIds.length})`}
+        <div className="flex items-center gap-2">
+          {unscoredJobIds.length > 0 && (
+            <Button
+              onClick={() => scoreAllMutation.mutate()}
+              disabled={scoreAllMutation.isPending}
+            >
+              {scoreAllMutation.isPending
+                ? "Queuing…"
+                : `Score unscored on this page (${unscoredJobIds.length})`}
+            </Button>
+          )}
+          <Button
+            className="bg-slate-600 hover:bg-slate-500"
+            title="Recompute the deterministic score and LLM reranking for every vacancy in the database, not just this page. Runs in the background and can take a while; LLM reranking still respects the daily call budget and the APPLY-only gate."
+            onClick={() => setIsRescoreAllOpen(true)}
+          >
+            Rescore all vacancies…
           </Button>
-        )}
+        </div>
       </div>
+      {rescoreAllMutation.isSuccess && (
+        <p className="mb-3 text-sm text-green-700">
+          Queued — rescoring every vacancy in the background, this can take a while.
+        </p>
+      )}
       <label className="mb-3 flex w-fit items-center gap-2 text-sm text-slate-600">
         <input
           type="checkbox"
@@ -121,6 +154,69 @@ export function Jobs() {
             </Button>
           </div>
         </div>
+      )}
+
+      {isRescoreAllOpen && (
+        <Modal title="Rescore all vacancies" onClose={() => setIsRescoreAllOpen(false)}>
+          <p className="mb-3 text-sm text-slate-600">
+            Recomputes the deterministic score and LLM "should I apply?" reranking for every
+            vacancy currently in the database — not just this page. This runs in the background
+            and can take a while; LLM reranking still only applies to matches already
+            recommended APPLY, and still respects the daily call budget.
+          </p>
+          <Field label="LLM model for this run (optional)">
+            {ollamaModelsQuery.data && ollamaModelsQuery.data.models.length > 0 ? (
+              <select
+                className={inputClass}
+                value={rescoreAllModel}
+                onChange={(e) => setRescoreAllModel(e.target.value)}
+              >
+                <option value="">Server default</option>
+                {ollamaModelsQuery.data.models.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className={inputClass}
+                placeholder="Server default (leave blank), e.g. qwen2.5:14b"
+                value={rescoreAllModel}
+                onChange={(e) => setRescoreAllModel(e.target.value)}
+              />
+            )}
+          </Field>
+          {ollamaModelsQuery.isLoading && (
+            <p className="mt-1 text-xs text-slate-400">Loading available Ollama models…</p>
+          )}
+          {ollamaModelsQuery.data && ollamaModelsQuery.data.models.length === 0 && (
+            <p className="mt-1 text-xs text-slate-400">
+              No Ollama models detected on the server (or a non-Ollama provider is configured) —
+              leave blank to use the server default, or type a model tag manually.
+            </p>
+          )}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              className="bg-slate-600 hover:bg-slate-500"
+              onClick={() => setIsRescoreAllOpen(false)}
+              disabled={rescoreAllMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => rescoreAllMutation.mutate()}
+              disabled={rescoreAllMutation.isPending}
+            >
+              {rescoreAllMutation.isPending ? "Queuing…" : "Confirm"}
+            </Button>
+          </div>
+          {rescoreAllMutation.isError && (
+            <div className="mt-2">
+              <ErrorBanner message="Failed to queue rescore-all" />
+            </div>
+          )}
+        </Modal>
       )}
     </Card>
   );

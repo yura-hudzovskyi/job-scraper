@@ -5,6 +5,7 @@ from app.api.routes import (
     auth,
     cv,
     jobs,
+    llm,
     matches,
     profile,
     search_profiles,
@@ -26,5 +27,6 @@ for module in (
     applications,
     settings,
     telegram,
+    llm,
 ):
     api_router.include_router(module.router)

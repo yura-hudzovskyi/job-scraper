@@ -17,13 +17,15 @@ from app.integrations.ai.llm.budget import DailyCallBudget
 from app.integrations.ai.llm.factory import build_quality_llm_provider
 
 
-def build_matching_service(settings: Settings) -> MatchingService | None:
+def build_matching_service(
+    settings: Settings, llm_model_override: str | None = None
+) -> MatchingService | None:
     embedding_provider = build_embedding_provider(settings)
     if embedding_provider is None:
         return None
 
     llm_reranker = None
-    llm_provider = build_quality_llm_provider(settings)
+    llm_provider = build_quality_llm_provider(settings, llm_model_override)
     if llm_provider is not None:
         budget = DailyCallBudget(
             redis.from_url(settings.redis_url),

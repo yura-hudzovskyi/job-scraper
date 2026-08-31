@@ -4,14 +4,25 @@ import { useEffect, useState } from "react";
 import { ApiError } from "../api/client";
 import {
   connectTelegram,
+  getNotificationThresholds,
   getPreferences,
   getTelegramBotInfo,
   getTelegramStatus,
   testTelegram,
+  updateNotificationThresholds,
   updatePreferences,
 } from "../api/endpoints";
-import { EMPTY_PREFERENCES, type Preferences } from "../api/types";
+import { EMPTY_PREFERENCES, type NotificationThresholds, type Preferences } from "../api/types";
 import { Button, Card, ErrorBanner, Field, SectionTitle, inputClass } from "../components/ui";
+
+const DEFAULT_THRESHOLDS: NotificationThresholds = {
+  immediate_threshold: 85,
+  conditional_threshold: 75,
+  digest_threshold: 65,
+  strong_component_threshold: 90,
+  quiet_hours_start: 22,
+  quiet_hours_end: 8,
+};
 
 function listToText(values: string[]): string {
   return values.join(", ");
@@ -39,6 +50,25 @@ export function Settings() {
     mutationFn: () => updatePreferences(form),
     onSuccess: (data) => {
       queryClient.setQueryData(["preferences"], data);
+    },
+  });
+
+  const notificationThresholdsQuery = useQuery({
+    queryKey: ["notification-thresholds"],
+    queryFn: getNotificationThresholds,
+  });
+  const [thresholds, setThresholds] = useState<NotificationThresholds>(DEFAULT_THRESHOLDS);
+
+  useEffect(() => {
+    if (notificationThresholdsQuery.data) {
+      setThresholds(notificationThresholdsQuery.data);
+    }
+  }, [notificationThresholdsQuery.data]);
+
+  const saveThresholdsMutation = useMutation({
+    mutationFn: () => updateNotificationThresholds(thresholds),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["notification-thresholds"], data);
     },
   });
 
@@ -185,6 +215,113 @@ export function Settings() {
                 message={
                   saveMutation.error instanceof ApiError
                     ? saveMutation.error.message
+                    : "Save failed"
+                }
+              />
+            </div>
+          )}
+        </div>
+      </Card>
+
+      <Card>
+        <SectionTitle>Notification thresholds</SectionTitle>
+        <p className="mb-4 text-sm text-slate-600">
+          Controls when a scored match gets sent to Telegram instantly, folded into the (not yet
+          built) daily digest, or skipped entirely. See docs/notifications.md for the full policy.
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Instant notification threshold (practical fit %)">
+            <input
+              type="number"
+              min={0}
+              max={100}
+              className={inputClass}
+              value={thresholds.immediate_threshold}
+              onChange={(e) =>
+                setThresholds({ ...thresholds, immediate_threshold: Number(e.target.value) })
+              }
+            />
+          </Field>
+          <Field label="Conditional threshold (%, needs strong salary + location too)">
+            <input
+              type="number"
+              min={0}
+              max={100}
+              className={inputClass}
+              value={thresholds.conditional_threshold}
+              onChange={(e) =>
+                setThresholds({ ...thresholds, conditional_threshold: Number(e.target.value) })
+              }
+            />
+          </Field>
+          <Field label="Strong salary/location match bar (%)">
+            <input
+              type="number"
+              min={0}
+              max={100}
+              className={inputClass}
+              value={thresholds.strong_component_threshold}
+              onChange={(e) =>
+                setThresholds({
+                  ...thresholds,
+                  strong_component_threshold: Number(e.target.value),
+                })
+              }
+            />
+          </Field>
+          <Field label="Digest-only threshold (%, below this: no notification at all)">
+            <input
+              type="number"
+              min={0}
+              max={100}
+              className={inputClass}
+              value={thresholds.digest_threshold}
+              onChange={(e) =>
+                setThresholds({ ...thresholds, digest_threshold: Number(e.target.value) })
+              }
+            />
+          </Field>
+          <Field label="Quiet hours start (0-23, server time)">
+            <input
+              type="number"
+              min={0}
+              max={23}
+              className={inputClass}
+              value={thresholds.quiet_hours_start}
+              onChange={(e) =>
+                setThresholds({ ...thresholds, quiet_hours_start: Number(e.target.value) })
+              }
+            />
+          </Field>
+          <Field label="Quiet hours end (0-23, server time)">
+            <input
+              type="number"
+              min={0}
+              max={23}
+              className={inputClass}
+              value={thresholds.quiet_hours_end}
+              onChange={(e) =>
+                setThresholds({ ...thresholds, quiet_hours_end: Number(e.target.value) })
+              }
+            />
+          </Field>
+        </div>
+        <div className="mt-4">
+          <Button
+            onClick={() => saveThresholdsMutation.mutate()}
+            disabled={saveThresholdsMutation.isPending}
+          >
+            {saveThresholdsMutation.isPending ? "Saving…" : "Save thresholds"}
+          </Button>
+          {saveThresholdsMutation.isSuccess && (
+            <span className="ml-3 text-sm text-green-700">Saved.</span>
+          )}
+          {saveThresholdsMutation.isError && (
+            <div className="mt-2">
+              <ErrorBanner
+                message={
+                  saveThresholdsMutation.error instanceof ApiError
+                    ? saveThresholdsMutation.error.message
                     : "Save failed"
                 }
               />

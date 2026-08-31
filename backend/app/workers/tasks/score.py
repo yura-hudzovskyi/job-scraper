@@ -21,8 +21,10 @@ class ScoringUnavailable(RuntimeError):
     pass
 
 
-async def _run(user_id: str, canonical_job_id: str) -> dict[str, float | str]:
-    matching_service = build_matching_service(get_settings())
+async def _run(
+    user_id: str, canonical_job_id: str, llm_model: str | None = None
+) -> dict[str, float | str]:
+    matching_service = build_matching_service(get_settings(), llm_model)
     if matching_service is None:
         raise ScoringUnavailable("no embedding provider configured")
 
@@ -51,7 +53,9 @@ async def _run(user_id: str, canonical_job_id: str) -> dict[str, float | str]:
 
 
 @celery_app.task(name="score.score_job_for_user")
-def score_job_for_user(user_id: str, canonical_job_id: str) -> dict[str, float | str]:
-    result = asyncio.run(_run(user_id, canonical_job_id))
+def score_job_for_user(
+    user_id: str, canonical_job_id: str, llm_model: str | None = None
+) -> dict[str, float | str]:
+    result = asyncio.run(_run(user_id, canonical_job_id, llm_model))
     dispatch_match.delay(user_id, canonical_job_id)
     return result

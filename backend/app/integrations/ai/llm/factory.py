@@ -35,41 +35,60 @@ def _is_gemini_rate_limited(exc: Exception) -> bool:
     return getattr(exc, "code", None) == 429
 
 
-def _build_single_provider(settings: Settings) -> LLMProvider | None:
+def _build_single_provider(settings: Settings, model_override: str | None = None) -> LLMProvider | None:
     """Today's exact ollama/openai/anthropic selection, unchanged — used as-is by
     build_quality_llm_provider when Gemini isn't configured, and always by
-    build_bulk_llm_provider's Ollama branch."""
+    build_bulk_llm_provider's Ollama branch.
+
+    model_override lets a single call site (currently: the "rescore all vacancies"
+    admin action, see app/api/routes/jobs.py's POST /rescore-all) use a different
+    model than Settings.llm_model for that one run, without touching global config —
+    e.g. comparing qwen2.5:14b against the configured default across the whole
+    existing job backlog.
+    """
     if settings.llm_provider == "ollama":
-        return OllamaLLMProvider(settings.ollama_base_url, settings.llm_model)
+        return OllamaLLMProvider(
+            settings.ollama_base_url,
+            model_override or settings.llm_model,
+            num_ctx=settings.ollama_num_ctx,
+        )
 
     if settings.llm_provider == "openai":
         if not settings.openai_api_key:
             return None
         from app.integrations.ai.llm.openai_provider import OpenAILLMProvider
 
-        return OpenAILLMProvider(settings.openai_api_key, settings.llm_model)
+        return OpenAILLMProvider(settings.openai_api_key, model_override or settings.llm_model)
 
     if settings.llm_provider == "anthropic":
         if not settings.anthropic_api_key:
             return None
         from app.integrations.ai.llm.anthropic_provider import AnthropicLLMProvider
 
-        return AnthropicLLMProvider(settings.anthropic_api_key, settings.llm_model)
+        return AnthropicLLMProvider(settings.anthropic_api_key, model_override or settings.llm_model)
 
     return None
 
 
-def build_quality_llm_provider(settings: Settings) -> LLMProvider | None:
+def build_quality_llm_provider(
+    settings: Settings, model_override: str | None = None
+) -> LLMProvider | None:
     if settings.gemini_api_key:
         from app.integrations.ai.llm.fallback_provider import FallbackLLMProvider
         from app.integrations.ai.llm.gemini_provider import GeminiLLMProvider
 
         gemini = GeminiLLMProvider(settings.gemini_api_key, settings.gemini_model)
-        ollama = OllamaLLMProvider(settings.ollama_base_url, settings.llm_model)
+        ollama = OllamaLLMProvider(
+            settings.ollama_base_url,
+            model_override or settings.llm_model,
+            num_ctx=settings.ollama_num_ctx,
+        )
         return FallbackLLMProvider(gemini, ollama, is_retryable=_is_gemini_rate_limited)
 
-    return _build_single_provider(settings)
+    return _build_single_provider(settings, model_override)
 
 
 def build_bulk_llm_provider(settings: Settings) -> LLMProvider:
-    return OllamaLLMProvider(settings.ollama_base_url, settings.llm_model)
+    return OllamaLLMProvider(
+        settings.ollama_base_url, settings.llm_model, num_ctx=settings.ollama_num_ctx
+    )

@@ -38,3 +38,22 @@ class NotificationDeliveryModel(UUIDPrimaryKeyMixin, Base):
     channel: Mapped[str]
     delivered_at: Mapped[datetime | None] = mapped_column(default=None)
     error: Mapped[str | None] = mapped_column(default=None)
+
+
+class NotificationSettingsModel(UUIDPrimaryKeyMixin, Base):
+    """Per-user override of NotificationPolicyConfig's defaults (see
+    app/domain/notifications/policy.py) — one row per user, created on first save
+    from the Settings page. Absence of a row means "use NotificationPolicyConfig()'s
+    hardcoded defaults," not "notifications disabled" — see
+    NotificationRepository.get_notification_policy_config.
+    """
+
+    __tablename__ = "notification_settings"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), unique=True)
+    immediate_threshold: Mapped[float] = mapped_column(default=85.0)
+    conditional_threshold: Mapped[float] = mapped_column(default=75.0)
+    digest_threshold: Mapped[float] = mapped_column(default=65.0)
+    strong_component_threshold: Mapped[float] = mapped_column(default=90.0)
+    quiet_hours_start: Mapped[int] = mapped_column(default=22)
+    quiet_hours_end: Mapped[int] = mapped_column(default=8)

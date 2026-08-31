@@ -13,6 +13,7 @@ from app.db.models.match import JobMatchModel
 from app.db.models.notification import (
     NotificationDeliveryModel,
     NotificationModel,
+    NotificationSettingsModel,
     TelegramIntegrationModel,
 )
 from app.db.models.user import UserModel
@@ -26,6 +27,7 @@ __all__ = [
     "JobSourceRecordModel",
     "NotificationDeliveryModel",
     "NotificationModel",
+    "NotificationSettingsModel",
     "RawJobModel",
     "ScrapeRunModel",
     "TelegramIntegrationModel",

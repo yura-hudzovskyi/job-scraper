@@ -40,7 +40,12 @@ async def _run(user_id: str, canonical_job_id: str) -> dict[str, bool | str]:
         if provider is None:
             return {"sent": False, "reason": "no Telegram bot connected"}
 
-        service = NotificationService(NotificationPolicy(), provider, notification_repository)
+        policy_config = await notification_repository.get_notification_policy_config(
+            uuid.UUID(user_id)
+        )
+        service = NotificationService(
+            NotificationPolicy(policy_config), provider, notification_repository
+        )
         notification = JobMatchNotification(
             match=match, job_title=job.title, company=job.company, job_url=job.url
         )

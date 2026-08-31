@@ -13,6 +13,7 @@ from app.domain.jobs.models import CanonicalJob
 from app.domain.matching.models import JobMatch, LlmAssessment
 from app.repositories.match_repository import MatchRepository
 from app.services.job_service import JobService
+from app.workers.tasks.backfill import rescore_all_jobs
 from app.workers.tasks.score import score_job_for_user
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -168,6 +169,22 @@ async def rescore_job(
 ) -> dict[str, str]:
     score_job_for_user.delay(str(user_id), str(job_id))
     return {"status": "queued", "job_id": str(job_id)}
+
+
+class RescoreAllRequest(BaseModel):
+    # Overrides Settings.llm_model for this run only — lets the "Rescore all
+    # vacancies" admin action (Jobs page) pick a specific Ollama model to compare/
+    # adopt against the whole existing backlog without touching server config. None
+    # (the default) means "use whatever the server is already configured with."
+    llm_model: str | None = None
+
+
+@router.post("/rescore-all")
+async def rescore_all(
+    payload: RescoreAllRequest, user_id: uuid.UUID = Depends(get_current_user_id)
+) -> dict[str, str]:
+    rescore_all_jobs.delay(str(user_id), payload.llm_model)
+    return {"status": "queued"}
 
 
 @router.post("/{job_id}/save")

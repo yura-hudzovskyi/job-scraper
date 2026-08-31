@@ -6,8 +6,10 @@ import uuid
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_current_user_id, get_profile_service
+from app.api.deps import get_current_user_id, get_notification_repository, get_profile_service
 from app.domain.candidates.models import UserPreference
+from app.domain.notifications.policy import NotificationPolicyConfig
+from app.repositories.notification_repository import NotificationRepository
 from app.services.profile_service import ProfileService
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -59,3 +61,46 @@ async def update_settings_view(
     preferences = UserPreference(user_id=str(user_id), **payload.model_dump())
     updated = await profile_service.update_preferences(user_id, preferences)
     return _to_payload(updated)
+
+
+class NotificationThresholdsPayload(BaseModel):
+    # Mirrors NotificationPolicyConfig (app/domain/notifications/policy.py) field for
+    # field — see docs/notifications.md for what each threshold means. Percent-scale
+    # fields are bounded 0-100; hour fields are bounded to a 24h clock.
+    immediate_threshold: float = Field(85.0, ge=0, le=100)
+    conditional_threshold: float = Field(75.0, ge=0, le=100)
+    digest_threshold: float = Field(65.0, ge=0, le=100)
+    strong_component_threshold: float = Field(90.0, ge=0, le=100)
+    quiet_hours_start: int = Field(22, ge=0, le=23)
+    quiet_hours_end: int = Field(8, ge=0, le=23)
+
+
+def _to_thresholds_payload(config: NotificationPolicyConfig) -> NotificationThresholdsPayload:
+    return NotificationThresholdsPayload(
+        immediate_threshold=config.immediate_threshold,
+        conditional_threshold=config.conditional_threshold,
+        digest_threshold=config.digest_threshold,
+        strong_component_threshold=config.strong_component_threshold,
+        quiet_hours_start=config.quiet_hours_start,
+        quiet_hours_end=config.quiet_hours_end,
+    )
+
+
+@router.get("/notifications", response_model=NotificationThresholdsPayload)
+async def get_notification_thresholds(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    notification_repository: NotificationRepository = Depends(get_notification_repository),
+) -> NotificationThresholdsPayload:
+    config = await notification_repository.get_notification_policy_config(user_id)
+    return _to_thresholds_payload(config)
+
+
+@router.patch("/notifications", response_model=NotificationThresholdsPayload)
+async def update_notification_thresholds(
+    payload: NotificationThresholdsPayload,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    notification_repository: NotificationRepository = Depends(get_notification_repository),
+) -> NotificationThresholdsPayload:
+    config = NotificationPolicyConfig(**payload.model_dump())
+    saved = await notification_repository.save_notification_policy_config(user_id, config)
+    return _to_thresholds_payload(saved)

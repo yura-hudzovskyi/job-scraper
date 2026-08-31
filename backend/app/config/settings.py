@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     llm_provider: Literal["ollama", "openai", "anthropic"] = "ollama"
     llm_model: str = "llama3.1"
     ollama_base_url: str = "http://localhost:11434"
+    # Ollama silently truncates the prompt to this many tokens rather than erroring —
+    # see app/integrations/ai/llm/ollama_provider.py. Job descriptions and CV text are
+    # embedded in full (no truncation in the prompt-building code itself), so this has
+    # to comfortably cover the longest real postings/CVs, not just the typical case.
+    # qwen2.5:14b/qwen3:14b (the recommended default, see docs/deployment.md) natively
+    # support up to 32768 — raise toward that ceiling if truncation is still observed
+    # in practice, trading more KV-cache RAM and somewhat slower inference for it.
+    ollama_num_ctx: int = 16384
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
 

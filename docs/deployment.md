@@ -126,19 +126,35 @@ CV analysis is a manual, occasional action (you click "Analyze" once per CV, not
 something that runs per-job), so it doesn't need to be fast — a CPU-only response in
 10-30s on the A1 shape is fine. What matters is fitting comfortably in RAM alongside
 Postgres, the API/worker processes, and sentence-transformers, which together use
-roughly 2-3 GB.
+roughly 2-3 GB. Resident RAM during inference runs noticeably above the download
+size (weights + KV cache/context buffer, sized by `OLLAMA_NUM_CTX` — 16384 by
+default, see `.env.example`, up from an earlier 8192 that was too small for a long
+job posting or CV) — budget roughly 1.3-1.5x the download size at that context
+length, not the download size itself. A larger `OLLAMA_NUM_CTX` (up to the model's
+native ceiling — 32768 for qwen2.5:14b/qwen3:14b) trades more of that headroom for
+guaranteed no truncation on very long postings/CVs.
 
-| Model | Download / resident size | Free-tier fit |
-|---|---|---|
-| `llama3.2:3b` | ~2 GB | Comfortable even on a 12 GB VM; recommended default |
-| `llama3.1:8b` | ~4.7 GB | Fine on a 24 GB VM (4 OCPU / 24 GB shape); tight on 12 GB |
-| `qwen2.5:7b` | ~4.4 GB | Similar footprint to `llama3.1:8b`, often better structured-output adherence |
+| Model | Download size | ~Resident RAM in use (16384 ctx) | Free-tier fit |
+|---|---|---|---|
+| `llama3.2:3b` | ~2 GB | ~2.8 GB | Comfortable even on a 12 GB VM |
+| `qwen2.5:14b` / `qwen3:14b` | ~9 GB | ~13 GB | **Recommended default on the 24 GB (4 OCPU) shape** — meaningfully better structured-output quality than 3b, still leaves ~8 GB of headroom over Postgres/API/worker/beat/sentence-transformers |
+| `llama3.1:8b` / `qwen2.5:7b` | ~4.5-4.7 GB | ~6.5 GB | Fine on 24 GB; tight on 12 GB |
+
+**27B-32B-class models (`gemma3:27b`, `qwen3:32b`, `qwen2.5:32b`, and MoE variants
+like `qwen3:30b-a3b`) do not fit here, even on the 24 GB shape** — 17-20 GB of
+weights alone need ~22-26 GB resident, which is the *entire* VM before Postgres and
+everything else gets a byte, on a box with no swap configured by default. An MoE
+model like `qwen3:30b-a3b` (only ~3B active parameters per token) is faster per
+token on CPU than a same-size dense model, but every expert still has to be resident
+in RAM regardless of how many activate — MoE buys inference speed, not a smaller
+memory footprint, so it doesn't change this math. Stick to the 14B class above; it's
+the realistic ceiling for this VM.
 
 Set `LLM_MODEL` to whichever you pick before the second `./bootstrap.sh` run (or
 change it later and run `docker compose -f docker-compose.prod.yml exec ollama ollama
 pull <model>` by hand, then update `.env` and restart the `api` container). If you're
-on the smaller 12 GB VM.Standard.A1.Flex config, stick to `llama3.2:3b` — an 8B model
-plus Postgres can OOM the box under load.
+on the smaller 12 GB VM.Standard.A1.Flex config, stick to `llama3.2:3b` — a 14B model
+plus Postgres can OOM that smaller box under load.
 
 ### Scraping volume and retention
 

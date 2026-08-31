@@ -43,3 +43,26 @@ export function Field({ label, children }: PropsWithChildren<{ label: string }>)
 
 export const inputClass =
   "w-full rounded border border-slate-300 px-2.5 py-1.5 text-sm focus:border-slate-500 focus:outline-none";
+
+export function Modal({
+  title,
+  onClose,
+  children,
+}: PropsWithChildren<{ title: string; onClose: () => void }>) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="w-full max-w-md rounded-lg bg-white p-5 shadow-lg"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <SectionTitle>{title}</SectionTitle>
+        {children}
+      </div>
+    </div>
+  );
+}

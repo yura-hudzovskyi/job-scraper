@@ -14,8 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.notification import (
     NotificationDeliveryModel,
     NotificationModel,
+    NotificationSettingsModel,
     TelegramIntegrationModel,
 )
+from app.domain.notifications.policy import NotificationPolicyConfig
 
 
 class NotificationRepository:
@@ -44,6 +46,47 @@ class NotificationRepository:
         )
         row = result.first()
         return (row[0], row[1]) if row else None
+
+    async def get_notification_policy_config(self, user_id: uuid.UUID) -> NotificationPolicyConfig:
+        """Always returns a usable config — NotificationPolicyConfig()'s hardcoded
+        defaults when the user has never saved a row, their saved thresholds
+        otherwise. See app/api/routes/settings.py's GET/PATCH /api/settings/notifications
+        and app/workers/tasks/notify.py, which builds NotificationPolicy from this."""
+        result = await self._session.execute(
+            select(NotificationSettingsModel).where(NotificationSettingsModel.user_id == user_id)
+        )
+        model = result.scalar_one_or_none()
+        if model is None:
+            return NotificationPolicyConfig()
+        return NotificationPolicyConfig(
+            immediate_threshold=model.immediate_threshold,
+            conditional_threshold=model.conditional_threshold,
+            digest_threshold=model.digest_threshold,
+            strong_component_threshold=model.strong_component_threshold,
+            quiet_hours_start=model.quiet_hours_start,
+            quiet_hours_end=model.quiet_hours_end,
+        )
+
+    async def save_notification_policy_config(
+        self, user_id: uuid.UUID, config: NotificationPolicyConfig
+    ) -> NotificationPolicyConfig:
+        result = await self._session.execute(
+            select(NotificationSettingsModel).where(NotificationSettingsModel.user_id == user_id)
+        )
+        model = result.scalar_one_or_none()
+        if model is None:
+            model = NotificationSettingsModel(user_id=user_id)
+            self._session.add(model)
+
+        model.immediate_threshold = config.immediate_threshold
+        model.conditional_threshold = config.conditional_threshold
+        model.digest_threshold = config.digest_threshold
+        model.strong_component_threshold = config.strong_component_threshold
+        model.quiet_hours_start = config.quiet_hours_start
+        model.quiet_hours_end = config.quiet_hours_end
+
+        await self._session.flush()
+        return config
 
     async def get_or_create_notification(
         self, user_id: uuid.UUID, job_match_id: uuid.UUID, channel: str

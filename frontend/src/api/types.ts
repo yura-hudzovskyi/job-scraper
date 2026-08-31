@@ -148,3 +148,16 @@ export interface MeResponse {
   user_id: string;
   email: string;
 }
+
+export interface OllamaModelsResponse {
+  models: string[];
+}
+
+export interface NotificationThresholds {
+  immediate_threshold: number;
+  conditional_threshold: number;
+  digest_threshold: number;
+  strong_component_threshold: number;
+  quiet_hours_start: number;
+  quiet_hours_end: number;
+}

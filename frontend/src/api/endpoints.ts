@@ -7,6 +7,8 @@ import type {
   JobMatch,
   JobSummary,
   MeResponse,
+  NotificationThresholds,
+  OllamaModelsResponse,
   Preferences,
   ProfileSummary,
   SourceHealth,
@@ -59,3 +61,15 @@ export const getJob = (jobId: string) => apiClient.get<JobSummary>(`/api/jobs/${
 export const getJobMatch = (jobId: string) => apiClient.get<JobMatch>(`/api/jobs/${jobId}/match`);
 export const rescoreJob = (jobId: string) =>
   apiClient.post<{ status: string; job_id: string }>(`/api/jobs/${jobId}/rescore`);
+export const rescoreAllJobs = (llmModel?: string) =>
+  apiClient.post<{ status: string }>("/api/jobs/rescore-all", {
+    llm_model: llmModel || null,
+  });
+
+export const listOllamaModels = () =>
+  apiClient.get<OllamaModelsResponse>("/api/integrations/ollama/models");
+
+export const getNotificationThresholds = () =>
+  apiClient.get<NotificationThresholds>("/api/settings/notifications");
+export const updateNotificationThresholds = (thresholds: NotificationThresholds) =>
+  apiClient.patch<NotificationThresholds>("/api/settings/notifications", thresholds);

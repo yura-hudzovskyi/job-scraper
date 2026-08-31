@@ -13,13 +13,34 @@ import httpx
 from app.integrations.ai.llm.base import LLMResult, T
 
 DEFAULT_MODEL = "llama3.1"
+# Ollama silently truncates the prompt to whatever context window it uses —
+# 2048-4096 tokens depending on version/model — unless a request explicitly asks
+# for more. Job descriptions (and CV text, for the Ollama fallback in CV
+# analysis) routinely run past that: a real, wordy senior JD easily approaches or
+# exceeds it once the prompt wrapper and JSON-schema format constraint are added
+# on top, silently truncating the posting's back half (Required/Desired
+# Qualifications, most of the skill-dense text) before the model ever sees it —
+# not the same failure as the model simply choosing to extract nothing. This is
+# only the fallback used when a caller builds a provider directly without going
+# through Settings — every real call site (see
+# app/integrations/ai/llm/factory.py) passes Settings.ollama_num_ctx instead.
+DEFAULT_NUM_CTX = 16384
 
 
 class OllamaLLMProvider:
-    def __init__(self, base_url: str, model: str = DEFAULT_MODEL):
+    def __init__(self, base_url: str, model: str = DEFAULT_MODEL, num_ctx: int = DEFAULT_NUM_CTX):
         self._base_url = base_url.rstrip("/")
         self._model = model
-        self._client = httpx.AsyncClient(timeout=120.0)
+        self._num_ctx = num_ctx
+        # 14B-class CPU inference (the recommended default on the 24GB Oracle VM,
+        # see docs/deployment.md) routinely takes well past 60-90s per structured
+        # response — the old 120s timeout was sized for the 3B default and left
+        # almost no margin under real load.
+        self._client = httpx.AsyncClient(timeout=240.0)
+
+    @property
+    def model(self) -> str:
+        return self._model
 
     async def structured_completion(self, prompt: str, schema: type[T]) -> LLMResult[T]:
         response = await self._client.post(
@@ -29,6 +50,7 @@ class OllamaLLMProvider:
                 "messages": [{"role": "user", "content": prompt}],
                 "format": schema.model_json_schema(),
                 "stream": False,
+                "options": {"num_ctx": self._num_ctx},
             },
         )
         response.raise_for_status()
