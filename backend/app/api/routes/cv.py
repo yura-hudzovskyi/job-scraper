@@ -107,6 +107,19 @@ async def list_cvs(
     return [_to_response(document) for document in documents]
 
 
+@router.delete("/{cv_id}", status_code=204)
+async def delete_cv(
+    cv_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    cv_service: CvService = Depends(get_cv_service),
+) -> None:
+    """Deleting a CV never deletes a CandidateProfile already extracted from it —
+    see the ON DELETE SET NULL note on CandidateProfileModel.cv_document_id."""
+    deleted = await cv_service.delete_cv(user_id, cv_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="CV not found")
+
+
 @router.get("/profile", response_model=CandidateProfileResponse | None)
 async def get_latest_profile(
     user_id: uuid.UUID = Depends(get_current_user_id),

@@ -262,6 +262,24 @@ class JobRepository:
         model = result.scalar_one_or_none()
         return _to_normalized_job(model) if model else None
 
+    async def list_source_links_for_canonical(
+        self, canonical_job_id: uuid.UUID
+    ) -> list[tuple[str, str]]:
+        """(source, url) pairs for every source this canonical job is known under —
+        used by the Telegram notification to link out to DOU/Djinni/etc. by name
+        instead of a single, arbitrarily-chosen URL. One row per source (most
+        recently normalized wins if a source somehow has more than one record for
+        the same canonical job)."""
+        result = await self._session.execute(
+            select(JobSourceRecordModel.source, JobSourceRecordModel.url)
+            .where(JobSourceRecordModel.canonical_job_id == canonical_job_id)
+            .order_by(JobSourceRecordModel.normalized_at.desc())
+        )
+        links: dict[str, str] = {}
+        for source, url in result.all():
+            links.setdefault(source, url)
+        return list(links.items())
+
     async def update_skills_for_canonical(
         self,
         canonical_job_id: uuid.UUID,

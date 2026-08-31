@@ -67,7 +67,7 @@ export function Jobs() {
           )}
           <Button
             className="bg-slate-600 hover:bg-slate-500"
-            title="Recompute the deterministic score and LLM reranking for every vacancy in the database, not just this page. Runs in the background and can take a while; LLM reranking still respects the daily call budget and the APPLY-only gate."
+            title="Re-extract skills and recompute the AI match for every vacancy in the database, not just this page. Uses Gemini by default, falling back to local Ollama automatically once Gemini's rate limit is hit. Runs in the background and can take a while."
             onClick={() => setIsRescoreAllOpen(true)}
           >
             Rescore all vacancies…
@@ -159,12 +159,12 @@ export function Jobs() {
       {isRescoreAllOpen && (
         <Modal title="Rescore all vacancies" onClose={() => setIsRescoreAllOpen(false)}>
           <p className="mb-3 text-sm text-slate-600">
-            Recomputes the deterministic score and LLM "should I apply?" reranking for every
-            vacancy currently in the database — not just this page. This runs in the background
-            and can take a while; LLM reranking still only applies to matches already
-            recommended APPLY, and still respects the daily call budget.
+            Re-extracts skills and recomputes the AI match for every vacancy currently in the
+            database — not just this page. Uses Gemini by default; if Gemini's rate limit is
+            hit mid-run, it automatically falls back to local Ollama for the rest. This runs in
+            the background and can take a while for a large backlog.
           </p>
-          <Field label="LLM model for this run (optional)">
+          <Field label="Ollama model to fall back to (optional)">
             {ollamaModelsQuery.data && ollamaModelsQuery.data.models.length > 0 ? (
               <select
                 className={inputClass}
@@ -193,7 +193,8 @@ export function Jobs() {
           {ollamaModelsQuery.data && ollamaModelsQuery.data.models.length === 0 && (
             <p className="mt-1 text-xs text-slate-400">
               No Ollama models detected on the server (or a non-Ollama provider is configured) —
-              leave blank to use the server default, or type a model tag manually.
+              leave blank to use the server default, or type a model tag manually. Only used if
+              Gemini isn't configured or its rate limit is hit.
             </p>
           )}
           <div className="mt-4 flex justify-end gap-2">

@@ -2,20 +2,27 @@
 call sites in this app genuinely want different providers rather than one global
 choice — see docs/matching-engine.md:
 
-- build_quality_llm_provider: CV analysis and the "should I apply?" reranker.
-  Gemini's free tier first (if GEMINI_API_KEY is set), falling back to Ollama the
-  moment Gemini returns a 429 (rate/quota exceeded) — never on other errors, so a
-  broken API key surfaces loudly instead of being silently masked. Falls back to
-  build_configured_llm_provider (whatever llm_provider says) when Gemini isn't
-  configured, so existing Ollama/OpenAI/Anthropic setups are unaffected.
-- build_bulk_llm_provider: job skill extraction, runs on every newly-scraped job.
-  Always Ollama, unconditionally — this keeps Gemini's limited free-tier quota
-  reserved for CV analysis.
+- build_quality_llm_provider: CV analysis, AI job matching (ai_matcher.py) and the
+  "should I apply?" reranker — everywhere quality/reasoning matters most. Gemini's
+  free tier first (if GEMINI_API_KEY is set), falling back to Ollama automatically
+  the moment Gemini returns a 429 (rate/quota exceeded) — never on other errors,
+  so a broken API key surfaces loudly instead of being silently masked. This is
+  also what "Gemini by default, local Ollama once we hit limits" actually means in
+  practice for every one of these call sites — no separate budget/quota plumbing
+  needed on top. Falls back to build_configured_llm_provider (whatever
+  llm_provider says) when Gemini isn't configured, so existing
+  Ollama/OpenAI/Anthropic setups are unaffected.
+- build_bulk_llm_provider: automatic job skill extraction, runs once per
+  newly-scraped job (workers/tasks/extract_job_skills.py). Always Ollama,
+  unconditionally — this keeps Gemini's limited free-tier quota reserved for the
+  call sites above. The user-triggered "rescore all vacancies" action
+  (workers/tasks/backfill.py) re-extracts skills too, but through
+  build_quality_llm_provider instead — it's an occasional, explicit action, not
+  automatic per-scrape volume, so it can afford Gemini's quality the same way CV
+  analysis does.
 - build_configured_llm_provider: whatever llm_provider says, no Gemini involved.
-  Used directly by AiMatcher (app/domain/matching/ai_matcher.py) — job matching
-  runs once per (job, user), too high-volume to route through Gemini's reserved
-  quota, but unlike skill extraction it should still honor a real OpenAI/Anthropic
-  choice rather than being hardcoded to Ollama.
+  The base case build_quality_llm_provider falls back to when Gemini isn't
+  configured.
 
 Returns None when the selected provider needs a credential that isn't set —
 callers decide whether that's fatal (e.g. CV analysis) or something to degrade

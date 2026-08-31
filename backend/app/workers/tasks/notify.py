@@ -40,6 +40,10 @@ async def _run(user_id: str, canonical_job_id: str) -> dict[str, bool | str]:
         if provider is None:
             return {"sent": False, "reason": "no Telegram bot connected"}
 
+        source_links = await job_repository.list_source_links_for_canonical(
+            uuid.UUID(canonical_job_id)
+        )
+
         policy_config = await notification_repository.get_notification_policy_config(
             uuid.UUID(user_id)
         )
@@ -47,7 +51,14 @@ async def _run(user_id: str, canonical_job_id: str) -> dict[str, bool | str]:
             NotificationPolicy(policy_config), provider, notification_repository
         )
         notification = JobMatchNotification(
-            match=match, job_title=job.title, company=job.company, job_url=job.url
+            match=match,
+            job_title=job.title,
+            company=job.company,
+            source_links=source_links or [(job.source, job.url)],
+            salary=job.salary,
+            seniority=job.seniority,
+            required_experience_years=job.required_experience_years,
+            remote=job.location.remote,
         )
         sent = await service.notify_if_relevant(uuid.UUID(user_id), notification)
 

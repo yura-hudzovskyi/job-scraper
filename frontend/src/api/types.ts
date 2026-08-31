@@ -51,6 +51,10 @@ export interface Preferences {
   companies_blacklist: string[];
 }
 
+export interface SuggestedPreferences extends Preferences {
+  model_label: string;
+}
+
 export const EMPTY_PREFERENCES: Preferences = {
   desired_salary_usd: null,
   preferred_roles: [],
@@ -111,18 +115,29 @@ export interface LlmAssessment {
   model_label: string;
 }
 
+export interface MatchReason {
+  label: string;
+  detail: string;
+}
+
+export interface MatchGap {
+  label: string;
+  critical: boolean;
+}
+
 export interface JobMatch {
   id: string;
   eligible: boolean;
   requirement_match: number;
   practical_fit: number;
   breakdown: ScoreBreakdown;
-  strengths: string[];
-  gaps: string[];
+  strengths: MatchReason[];
+  gaps: MatchGap[];
   recommendation: string | null;
   llm_assessment: LlmAssessment | null;
   skills_source: string | null;
   scored_by: string | null;
+  scored_at: string | null;
 }
 
 export interface ConnectTelegramResponse {

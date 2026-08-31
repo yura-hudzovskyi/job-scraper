@@ -53,7 +53,10 @@ def _notification(practical_fit: float = 90.0) -> JobMatchNotification:
         recommendation=Recommendation.APPLY,
     )
     return JobMatchNotification(
-        match=match, job_title="Backend Engineer", company="Acme", job_url="https://x/1"
+        match=match,
+        job_title="Backend Engineer",
+        company="Acme",
+        source_links=[("dou", "https://x/1")],
     )
 
 

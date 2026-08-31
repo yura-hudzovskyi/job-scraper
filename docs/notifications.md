@@ -7,7 +7,7 @@ Business logic depends only on the `NotificationProvider` interface.
 
 ```python
 class NotificationProvider(Protocol):
-    async def send_job_match(self, match: JobMatch) -> None: ...
+    async def send_job_match(self, notification: JobMatchNotification) -> None: ...
 ```
 
 Implementations live in `backend/app/integrations/notifications/`
@@ -33,23 +33,37 @@ morning summary instead of interrupting the user overnight.
 
 ## Message shape
 
+Built by `_format_message` in `backend/app/integrations/notifications/telegram_provider.py`:
+
 ```text
-🔥 87% MATCH
+87% MATCH · APPLY
 
 Senior Full Stack Engineer — Acme Inc.
 
-💰 $4,000–5,500   🌍 Remote / Europe   🧑‍💻 3+ years
+💰 4000–5500 USD
+📍 Remote
+🎓 Senior · 3+ yrs required
 
-Strong match: React, TypeScript, Python, product ownership
-Gaps: AWS, NestJS
+✅ React, TypeScript, Python
+⚠️ AWS (required), NestJS
 
 Requirement match: 76%    Practical fit: 87%
 
-[Open vacancy] [Apply] [Save] [Not relevant]
+🔗 DOU · Djinni
 ```
 
-Inline actions map to `UserJobAction`: 👍 relevant, 👎 not relevant, ⭐ save,
-✅ applied, 🚫 hide company.
+The two link labels above are HTML hyperlinks (`<a href="...">DOU</a>`), one per
+source this canonical job is known under (see
+`JobRepository.list_source_links_for_canonical`) — a job posted on both DOU and
+Djinni links out to both by name instead of showing one raw URL. Scraped text
+(title, company, skill/gap labels) is HTML-escaped before being interpolated, since
+the message is sent with `parse_mode: HTML`.
+
+No inline action buttons for now — there's no callback-query webhook handler wired
+up anywhere in the app yet, so `save`/`applied`/`not relevant` buttons would render
+in Telegram but silently do nothing on tap. Re-introduce them (and the
+`UserJobAction` mapping this section used to describe) once something actually
+handles the callback.
 
 ## Feedback → learning
 

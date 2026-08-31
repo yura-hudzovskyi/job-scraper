@@ -11,6 +11,12 @@ malformed output, provider unreachable) — same "degrade gracefully, don't cras
 the pipeline" policy every other optional AI layer in this app already follows
 (see LlmReranker, JobSkillExtractionService). Returning None (never raising) on
 failure is what makes that fallback possible.
+
+Wired (see app/domain/matching/factory.py) through build_quality_llm_provider —
+Gemini's free tier by default, falling back to local Ollama automatically the
+instant Gemini hits its rate limit (see fallback_provider.py) — not
+build_configured_llm_provider's Ollama-by-default wiring, so a fresh scoring run
+actually gets Gemini's quality by default instead of silently downgrading.
 """
 
 import logging

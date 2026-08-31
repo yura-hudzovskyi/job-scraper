@@ -89,8 +89,9 @@ def get_cv_service(
 
 def get_profile_service(
     candidate_repository: CandidateRepository = Depends(get_candidate_repository),
+    llm_provider: LLMProvider | None = Depends(get_quality_llm_provider),
 ) -> ProfileService:
-    return ProfileService(candidate_repository)
+    return ProfileService(candidate_repository, llm_provider)
 
 
 def get_job_service(

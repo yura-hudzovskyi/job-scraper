@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
 import { ApiError } from "../api/client";
-import { analyzeCv, getCandidateProfile, listCvs, uploadCv } from "../api/endpoints";
+import { analyzeCv, deleteCv, getCandidateProfile, listCvs, uploadCv } from "../api/endpoints";
 import { Button, Card, ErrorBanner, SectionTitle } from "../components/ui";
 
 export function Profile() {
@@ -26,6 +26,11 @@ export function Profile() {
   const analyzeMutation = useMutation({
     mutationFn: analyzeCv,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["candidate-profile"] }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: deleteCv,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cvs"] }),
   });
 
   function handleFileChange() {
@@ -65,16 +70,39 @@ export function Profile() {
         <ul className="flex flex-col gap-2">
           {cvsQuery.data?.map((cv) => (
             <li key={cv.id} className="rounded border border-slate-200 p-3">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-3">
                 <span className="font-medium">{cv.filename}</span>
-                <span className="text-xs text-slate-500">
-                  {new Date(cv.uploaded_at).toLocaleString()}
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-slate-500">
+                    {new Date(cv.uploaded_at).toLocaleString()}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => deleteMutation.mutate(cv.id)}
+                    disabled={deleteMutation.isPending && deleteMutation.variables === cv.id}
+                    title="Delete this CV"
+                    aria-label={`Delete ${cv.filename}`}
+                    className="text-slate-400 transition hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
               <p className="mt-1 line-clamp-2 text-sm text-slate-600">{cv.text_preview}</p>
             </li>
           ))}
         </ul>
+        {deleteMutation.isError && (
+          <div className="mt-2">
+            <ErrorBanner
+              message={
+                deleteMutation.error instanceof ApiError
+                  ? deleteMutation.error.message
+                  : "Failed to delete CV"
+              }
+            />
+          </div>
+        )}
 
         {cvsQuery.data && cvsQuery.data.length > 0 && (
           <div className="mt-4">

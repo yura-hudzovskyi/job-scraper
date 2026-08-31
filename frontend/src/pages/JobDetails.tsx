@@ -1,9 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { ApiError } from "../api/client";
 import { getJob, getJobMatch, rescoreJob } from "../api/endpoints";
 import { Button, Card, ErrorBanner, SectionTitle } from "../components/ui";
+
+// Rescoring runs a background LLM call that can take anywhere from a couple of
+// seconds (Gemini) to 60-90s (a 14B-class Ollama fallback on CPU, see
+// docs/deployment.md) — polling briefly and giving up beats both "assume it's
+// done after a fixed 3s" (wrong: showed stale data) and polling forever.
+const RESCORE_POLL_INTERVAL_MS = 4000;
+const RESCORE_POLL_TIMEOUT_MS = 120_000;
 
 const BREAKDOWN_LABELS: Record<string, string> = {
   skills: "Skills",
@@ -21,17 +29,40 @@ export function JobDetails() {
   const queryClient = useQueryClient();
   if (!jobId) return null;
 
+  // Rescoring is a background Celery task, not a synchronous call — the button
+  // used to just wait a fixed 3s and invalidate once, which silently showed
+  // stale data whenever scoring took longer than that (routine now that scoring
+  // can fall back to a slow local Ollama call). Instead: poll until the match's
+  // scored_at timestamp actually moves past what it was before this rescore, or
+  // give up after RESCORE_POLL_TIMEOUT_MS.
+  const [pollDeadline, setPollDeadline] = useState<number | null>(null);
+  const scoredAtBeforeRescore = useRef<string | null>(null);
+
   const jobQuery = useQuery({ queryKey: ["job", jobId], queryFn: () => getJob(jobId) });
   const matchQuery = useQuery({
     queryKey: ["job-match", jobId],
     queryFn: () => getJobMatch(jobId),
     retry: false,
+    refetchInterval: pollDeadline !== null ? RESCORE_POLL_INTERVAL_MS : false,
   });
+
+  useEffect(() => {
+    if (pollDeadline === null) return;
+    const finished =
+      matchQuery.data !== undefined && matchQuery.data.scored_at !== scoredAtBeforeRescore.current;
+    if (finished || Date.now() >= pollDeadline) {
+      setPollDeadline(null);
+    }
+  }, [matchQuery.data, pollDeadline]);
+
+  const isRescoring = pollDeadline !== null;
 
   const rescoreMutation = useMutation({
     mutationFn: () => rescoreJob(jobId),
     onSuccess: () => {
-      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["job-match", jobId] }), 3000);
+      scoredAtBeforeRescore.current = matchQuery.data?.scored_at ?? null;
+      setPollDeadline(Date.now() + RESCORE_POLL_TIMEOUT_MS);
+      queryClient.invalidateQueries({ queryKey: ["job-match", jobId] });
     },
   });
 
@@ -62,14 +93,14 @@ export function JobDetails() {
             </p>
             <Button
               onClick={() => rescoreMutation.mutate()}
-              disabled={rescoreMutation.isPending}
+              disabled={rescoreMutation.isPending || isRescoring}
               className="w-fit"
             >
-              {rescoreMutation.isPending ? "Queuing…" : "Score this job"}
+              {rescoreMutation.isPending || isRescoring ? "Scoring…" : "Score this job"}
             </Button>
-            {rescoreMutation.isSuccess && (
-              <p className="text-sm text-green-700">
-                Queued — this runs in the background, refresh in a few seconds.
+            {isRescoring && (
+              <p className="text-sm text-slate-500">
+                Waiting for the score to come back — this can take up to a couple of minutes.
               </p>
             )}
             {rescoreMutation.isError && (
@@ -123,14 +154,15 @@ export function JobDetails() {
 
             {matchQuery.data.strengths.length > 0 && (
               <div>
-                <p className="mb-1 text-sm text-slate-500">Strengths</p>
+                <p className="mb-1 text-sm text-slate-500">Matched skills</p>
                 <div className="flex flex-wrap gap-1.5">
                   {matchQuery.data.strengths.map((strength) => (
                     <span
-                      key={strength}
+                      key={strength.label}
+                      title={strength.detail}
                       className="rounded-full bg-green-100 px-2.5 py-1 text-xs text-green-800"
                     >
-                      {strength}
+                      {strength.label}
                     </span>
                   ))}
                 </div>
@@ -143,10 +175,15 @@ export function JobDetails() {
                 <div className="flex flex-wrap gap-1.5">
                   {matchQuery.data.gaps.map((gap) => (
                     <span
-                      key={gap}
-                      className="rounded-full bg-amber-100 px-2.5 py-1 text-xs text-amber-800"
+                      key={gap.label}
+                      title={gap.critical ? "Required — a critical gap" : "Nice-to-have"}
+                      className={`rounded-full px-2.5 py-1 text-xs ${
+                        gap.critical
+                          ? "bg-red-100 text-red-800"
+                          : "bg-amber-100 text-amber-800"
+                      }`}
                     >
-                      {gap}
+                      {gap.label}
                     </span>
                   ))}
                 </div>
@@ -169,11 +206,16 @@ export function JobDetails() {
 
             <Button
               onClick={() => rescoreMutation.mutate()}
-              disabled={rescoreMutation.isPending}
+              disabled={rescoreMutation.isPending || isRescoring}
               className="w-fit bg-slate-600 hover:bg-slate-500"
             >
-              {rescoreMutation.isPending ? "Queuing…" : "Rescore"}
+              {rescoreMutation.isPending || isRescoring ? "Rescoring…" : "Rescore"}
             </Button>
+            {isRescoring && (
+              <p className="text-sm text-slate-500">
+                Waiting for the new score to come back — this can take up to a couple of minutes.
+              </p>
+            )}
             {rescoreMutation.isError && (
               <ErrorBanner
                 message={

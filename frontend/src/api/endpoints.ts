@@ -12,6 +12,7 @@ import type {
   Preferences,
   ProfileSummary,
   SourceHealth,
+  SuggestedPreferences,
   TelegramBotInfo,
   TelegramStatus,
   TokenResponse,
@@ -30,6 +31,7 @@ export function uploadCv(file: File): Promise<CvDocument> {
 }
 
 export const listCvs = () => apiClient.get<CvDocument[]>("/api/cv");
+export const deleteCv = (cvId: string) => apiClient.delete<void>(`/api/cv/${cvId}`);
 export const analyzeCv = () => apiClient.post<CandidateProfile>("/api/cv/analyze");
 export const getCandidateProfile = () => apiClient.get<CandidateProfile | null>("/api/cv/profile");
 export const getProfile = () => apiClient.get<ProfileSummary>("/api/profile");
@@ -37,6 +39,8 @@ export const getProfile = () => apiClient.get<ProfileSummary>("/api/profile");
 export const getPreferences = () => apiClient.get<Preferences | null>("/api/settings");
 export const updatePreferences = (preferences: Preferences) =>
   apiClient.patch<Preferences>("/api/settings", preferences);
+export const aiFillPreferences = () =>
+  apiClient.post<SuggestedPreferences>("/api/settings/preferences/ai-fill");
 
 export const getTelegramStatus = () =>
   apiClient.get<TelegramStatus>("/api/integrations/telegram/status");

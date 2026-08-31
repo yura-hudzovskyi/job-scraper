@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.candidate import CandidateProfileModel, CvDocumentModel, UserPreferenceModel
@@ -99,6 +99,20 @@ class CandidateRepository:
         )
         model = result.scalar_one_or_none()
         return _to_cv_document(model) if model else None
+
+    async def delete_cv_document(self, user_id: uuid.UUID, cv_document_id: uuid.UUID) -> bool:
+        """Returns False when there was no such CV for this user (nothing deleted) —
+        callers turn that into a 404. Any CandidateProfile already extracted from
+        this CV survives (cv_document_id ON DELETE SET NULL, see
+        app/db/models/candidate.py) since it's a self-contained snapshot, not a live
+        view of the CV text."""
+        result = await self._session.execute(
+            delete(CvDocumentModel).where(
+                CvDocumentModel.id == cv_document_id, CvDocumentModel.user_id == user_id
+            )
+        )
+        await self._session.flush()
+        return result.rowcount > 0
 
     async def save_candidate_profile(
         self, user_id: uuid.UUID, cv_document_id: uuid.UUID, profile: CandidateProfile

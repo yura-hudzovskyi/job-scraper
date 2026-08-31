@@ -4,6 +4,7 @@ save/apply/reject need the application tracker — Phase 5, see docs/roadmap.md.
 """
 
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -64,18 +65,29 @@ class LlmAssessmentResponse(BaseModel):
     model_label: str
 
 
+class MatchReasonResponse(BaseModel):
+    label: str
+    detail: str
+
+
+class MatchGapResponse(BaseModel):
+    label: str
+    critical: bool
+
+
 class JobMatchResponse(BaseModel):
     id: str
     eligible: bool
     requirement_match: float
     practical_fit: float
     breakdown: ScoreBreakdownResponse
-    strengths: list[str]
-    gaps: list[str]
+    strengths: list[MatchReasonResponse]
+    gaps: list[MatchGapResponse]
     recommendation: str | None
     llm_assessment: LlmAssessmentResponse | None
     skills_source: str | None
     scored_by: str | None
+    scored_at: datetime | None
 
 
 def _to_summary(job: CanonicalJob, match: JobMatch | None) -> JobSummaryResponse:
@@ -117,12 +129,16 @@ def _to_match_response(match: JobMatch) -> JobMatchResponse:
         requirement_match=match.requirement_match,
         practical_fit=match.practical_fit,
         breakdown=ScoreBreakdownResponse(**vars(match.breakdown)),
-        strengths=[reason.label for reason in match.strengths],
-        gaps=[gap.label for gap in match.gaps],
+        strengths=[
+            MatchReasonResponse(label=reason.label, detail=reason.detail)
+            for reason in match.strengths
+        ],
+        gaps=[MatchGapResponse(label=gap.label, critical=gap.critical) for gap in match.gaps],
         recommendation=match.recommendation.value if match.recommendation else None,
         llm_assessment=_to_llm_assessment_response(match.llm_assessment),
         skills_source=match.skills_source,
         scored_by=match.scored_by,
+        scored_at=match.scored_at,
     )
 
 
@@ -174,10 +190,12 @@ async def rescore_job(
 
 
 class RescoreAllRequest(BaseModel):
-    # Overrides Settings.llm_model for this run only — lets the "Rescore all
-    # vacancies" admin action (Jobs page) pick a specific Ollama model to compare/
-    # adopt against the whole existing backlog without touching server config. None
-    # (the default) means "use whatever the server is already configured with."
+    # Overrides Settings.llm_model for this run only — the "Rescore all vacancies"
+    # admin action (Jobs page) re-extracts skills and rescores every job through
+    # the Gemini-first quality provider (see workers/tasks/backfill.py); this only
+    # picks which Ollama model that provider falls back to if Gemini's rate limit
+    # is hit mid-run, without touching server config. None (the default) means
+    # "use whatever the server is already configured with."
     llm_model: str | None = None
 
 

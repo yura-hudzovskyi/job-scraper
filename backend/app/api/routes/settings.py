@@ -3,14 +3,14 @@ See docs/domain-model.md. Served at /api/settings per docs/api.md."""
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user_id, get_notification_repository, get_profile_service
 from app.domain.candidates.models import UserPreference
 from app.domain.notifications.policy import NotificationPolicyConfig
 from app.repositories.notification_repository import NotificationRepository
-from app.services.profile_service import ProfileService
+from app.services.profile_service import LlmNotConfigured, ProfileService
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -61,6 +61,31 @@ async def update_settings_view(
     preferences = UserPreference(user_id=str(user_id), **payload.model_dump())
     updated = await profile_service.update_preferences(user_id, preferences)
     return _to_payload(updated)
+
+
+class SuggestedPreferencesResponse(PreferencesPayload):
+    model_label: str
+
+
+@router.post("/preferences/ai-fill", response_model=SuggestedPreferencesResponse)
+async def ai_fill_preferences(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    profile_service: ProfileService = Depends(get_profile_service),
+) -> SuggestedPreferencesResponse:
+    """Suggests preferences from the candidate's analyzed CV profile — returned for
+    the Settings form to prefill, never saved automatically (see
+    ProfileService.suggest_preferences)."""
+    try:
+        suggestion = await profile_service.suggest_preferences(user_id)
+    except LlmNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return SuggestedPreferencesResponse(
+        **_to_payload(suggestion.preferences).model_dump(),
+        model_label=suggestion.model_label,
+    )
 
 
 class NotificationThresholdsPayload(BaseModel):

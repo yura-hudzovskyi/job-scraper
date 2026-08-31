@@ -3,6 +3,7 @@ a job for a user updates the existing row instead of duplicating."""
 
 import uuid
 from dataclasses import asdict
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -45,6 +46,7 @@ def _to_job_match(model: JobMatchModel) -> JobMatch:
         llm_assessment=_to_llm_assessment(model.llm_assessment),
         skills_source=model.skills_source,
         scored_by=model.scored_by,
+        scored_at=model.scored_at,
     )
 
 
@@ -68,6 +70,12 @@ class MatchRepository:
             ),
             "skills_source": match.skills_source,
             "scored_by": match.scored_by,
+            # Explicit, not the column's server_default — server_default only fires
+            # on INSERT, so without this a rescore's on_conflict_do_update left the
+            # original scored_at untouched forever, making it useless as a
+            # "did the rescore actually finish" signal for the frontend to poll on
+            # (see JobDetails.tsx).
+            "scored_at": datetime.now(UTC),
         }
         stmt = (
             insert(JobMatchModel)

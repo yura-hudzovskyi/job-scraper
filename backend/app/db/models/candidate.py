@@ -30,7 +30,13 @@ class CandidateProfileModel(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "candidate_profiles"
 
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
-    cv_document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("cv_documents.id"))
+    # Nullable + SET NULL: deleting the source CvDocument (see DELETE /api/cv/{cv_id})
+    # must never delete or break a profile already extracted from it — a
+    # CandidateProfile is a full point-in-time snapshot, it doesn't need the raw CV
+    # text to stay meaningful, so this just severs the now-stale backref.
+    cv_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("cv_documents.id", ondelete="SET NULL"), default=None
+    )
 
     experience_years: Mapped[float]
     roles: Mapped[list[str]] = mapped_column(JSONB, default=list)

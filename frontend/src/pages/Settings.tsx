@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import { ApiError } from "../api/client";
 import {
+  aiFillPreferences,
   connectTelegram,
   getNotificationThresholds,
   getPreferences,
@@ -53,6 +54,16 @@ export function Settings() {
     },
   });
 
+  const [aiFillModel, setAiFillModel] = useState<string | null>(null);
+  const aiFillMutation = useMutation({
+    mutationFn: aiFillPreferences,
+    onSuccess: (data) => {
+      const { model_label, ...suggested } = data;
+      setForm(suggested);
+      setAiFillModel(model_label);
+    },
+  });
+
   const notificationThresholdsQuery = useQuery({
     queryKey: ["notification-thresholds"],
     queryFn: getNotificationThresholds,
@@ -90,7 +101,33 @@ export function Settings() {
   return (
     <div className="flex flex-col gap-6">
       <Card>
-        <SectionTitle>Preferences</SectionTitle>
+        <div className="mb-3 flex items-center justify-between">
+          <SectionTitle>Preferences</SectionTitle>
+          <Button
+            onClick={() => aiFillMutation.mutate()}
+            disabled={aiFillMutation.isPending}
+            className="bg-slate-600 hover:bg-slate-500"
+            title="Fill this form from your analyzed CV — review before saving."
+          >
+            {aiFillMutation.isPending ? "Filling…" : "✨ Fill with AI"}
+          </Button>
+        </div>
+        {aiFillModel && (
+          <p className="mb-3 -mt-2 text-xs text-slate-400">
+            Suggested using {aiFillModel} — review before saving.
+          </p>
+        )}
+        {aiFillMutation.isError && (
+          <div className="mb-3">
+            <ErrorBanner
+              message={
+                aiFillMutation.error instanceof ApiError
+                  ? aiFillMutation.error.message
+                  : "Failed to generate suggestions"
+              }
+            />
+          </div>
+        )}
 
         <p className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
           Compensation &amp; experience

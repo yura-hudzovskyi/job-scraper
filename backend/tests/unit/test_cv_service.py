@@ -17,14 +17,18 @@ class _FakeLlmProvider:
 
 
 class _FakeCandidateRepository:
-    def __init__(self) -> None:
+    def __init__(self, deletable_cv_ids: set[uuid.UUID] | None = None) -> None:
         self.saved: tuple[uuid.UUID, uuid.UUID, CandidateProfile] | None = None
+        self._deletable_cv_ids = deletable_cv_ids or set()
 
     async def save_candidate_profile(
         self, user_id: uuid.UUID, cv_document_id: uuid.UUID, profile: CandidateProfile
     ) -> CandidateProfile:
         self.saved = (user_id, cv_document_id, profile)
         return profile
+
+    async def delete_cv_document(self, user_id: uuid.UUID, cv_document_id: uuid.UUID) -> bool:
+        return cv_document_id in self._deletable_cv_ids
 
 
 _EXTRACTED_PAYLOAD = {
@@ -79,3 +83,20 @@ async def test_analyze_cv_without_llm_provider_raises_clear_error() -> None:
 
     with pytest.raises(LlmNotConfigured):
         await service.analyze_cv(uuid.uuid4(), uuid.uuid4(), "some CV text")
+
+
+@pytest.mark.asyncio
+async def test_delete_cv_returns_true_when_the_repository_deleted_a_row() -> None:
+    user_id, cv_document_id = uuid.uuid4(), uuid.uuid4()
+    service = CvService(
+        _FakeCandidateRepository(deletable_cv_ids={cv_document_id}), llm_provider=None
+    )  # type: ignore[arg-type]
+
+    assert await service.delete_cv(user_id, cv_document_id) is True
+
+
+@pytest.mark.asyncio
+async def test_delete_cv_returns_false_for_a_cv_that_does_not_belong_to_this_user() -> None:
+    service = CvService(_FakeCandidateRepository(), llm_provider=None)  # type: ignore[arg-type]
+
+    assert await service.delete_cv(uuid.uuid4(), uuid.uuid4()) is False

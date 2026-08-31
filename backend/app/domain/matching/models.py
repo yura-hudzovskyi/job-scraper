@@ -3,6 +3,7 @@ docs/matching-engine.md ("Explainability is mandatory").
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -77,3 +78,4 @@ class JobMatch:
     llm_assessment: LlmAssessment | None = None
     skills_source: str | None = None  # which LLM extracted this job's skills, if any
     scored_by: str | None = None  # "AI (<model>)" when AiMatcher produced this score, else "deterministic"
+    scored_at: datetime | None = None  # bumped on every rescore — lets the UI detect "rescore finished"

@@ -8,9 +8,13 @@ is itself idempotent (upserts).
 """
 
 import asyncio
+import uuid
 
+from app.config.settings import get_settings
 from app.db.session import session_scope
+from app.integrations.ai.llm.factory import build_quality_llm_provider
 from app.repositories.job_repository import JobRepository
+from app.services.job_skill_extraction_service import JobSkillExtractionService
 from app.workers.celery_app import celery_app
 from app.workers.tasks.score import score_job_for_user
 
@@ -31,24 +35,54 @@ def score_existing_jobs_for_user(user_id: str) -> dict[str, int]:
     return {"jobs_queued": count}
 
 
+async def _run_reextract_and_rescore(user_id: str, canonical_job_id: str, llm_model: str | None) -> None:
+    """Re-extracts this job's skills through the *quality* provider (Gemini's free
+    tier first, falling back to Ollama on rate limit — same
+    build_quality_llm_provider CV analysis and AiMatcher use) before rescoring —
+    unlike the automatic per-scrape extraction in extract_job_skills.py, which is
+    always Ollama to protect that quota. This is a rare, explicit, user-triggered
+    action, so it can afford the same quality tier the rest of a "rescore all"
+    run already gets. Skips straight to scoring (degrading to whatever skills were
+    already stored) if no quality provider is configured at all."""
+    async with session_scope() as session:
+        job_repository = JobRepository(session)
+        extraction_service = JobSkillExtractionService(
+            job_repository, build_quality_llm_provider(get_settings(), llm_model)
+        )
+        await extraction_service.extract_and_save(uuid.UUID(canonical_job_id))
+
+    score_job_for_user.delay(user_id, canonical_job_id, llm_model)
+
+
+@celery_app.task(name="backfill.reextract_and_rescore_job")
+def reextract_and_rescore_job(
+    user_id: str, canonical_job_id: str, llm_model: str | None = None
+) -> dict[str, str]:
+    asyncio.run(_run_reextract_and_rescore(user_id, canonical_job_id, llm_model))
+    return {"canonical_job_id": canonical_job_id}
+
+
 async def _run_with_model(user_id: str, llm_model: str | None) -> int:
     async with session_scope() as session:
         canonical_job_ids = await JobRepository(session).list_all_canonical_job_ids()
 
     for canonical_job_id in canonical_job_ids:
-        score_job_for_user.delay(user_id, str(canonical_job_id), llm_model)
+        reextract_and_rescore_job.delay(user_id, str(canonical_job_id), llm_model)
 
     return len(canonical_job_ids)
 
 
 @celery_app.task(name="backfill.rescore_all_jobs")
 def rescore_all_jobs(user_id: str, llm_model: str | None = None) -> dict[str, int]:
-    """Explicit, user-initiated rescore of every canonical job for a user — see
-    POST /api/jobs/rescore-all. Unlike score_existing_jobs_for_user above (fired
-    automatically once right after a CV is analyzed), this is triggered manually
-    from the Jobs page, primarily to re-run the whole existing backlog against a
-    different LLM model (llm_model overrides Settings.llm_model for this run only —
-    see app/domain/matching/factory.py::build_matching_service) without changing
-    the server's configured default."""
+    """Explicit, user-initiated re-extraction + rescore of every canonical job for
+    a user — see POST /api/jobs/rescore-all. Unlike score_existing_jobs_for_user
+    above (fired automatically once right after a CV is analyzed, scoring only —
+    skills were already extracted at ingestion time), this is triggered manually
+    from the Jobs page to refresh both a job's extracted skills and its score
+    against the whole existing backlog — e.g. after a bad extraction run, or to
+    pick up a better model. llm_model overrides Settings.llm_model for this run
+    only (see app/domain/matching/factory.py::build_matching_service and
+    build_quality_llm_provider's Ollama-fallback leg) without changing the
+    server's configured default."""
     count = asyncio.run(_run_with_model(user_id, llm_model))
     return {"jobs_queued": count}
