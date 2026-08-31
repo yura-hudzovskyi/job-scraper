@@ -70,6 +70,7 @@ def build_configured_llm_provider(
             settings.ollama_base_url,
             model_override or settings.llm_model,
             num_ctx=settings.ollama_num_ctx,
+            timeout_seconds=settings.ollama_timeout_seconds,
         )
 
     if settings.llm_provider == "openai":
@@ -102,6 +103,7 @@ def build_quality_llm_provider(
             settings.ollama_base_url,
             model_override or settings.llm_model,
             num_ctx=settings.ollama_num_ctx,
+            timeout_seconds=settings.ollama_timeout_seconds,
         )
         circuit_breaker = GeminiCircuitBreaker(
             redis.from_url(settings.redis_url), settings.gemini_model
@@ -115,5 +117,8 @@ def build_quality_llm_provider(
 
 def build_bulk_llm_provider(settings: Settings) -> LLMProvider:
     return OllamaLLMProvider(
-        settings.ollama_base_url, settings.llm_model, num_ctx=settings.ollama_num_ctx
+        settings.ollama_base_url,
+        settings.llm_model,
+        num_ctx=settings.ollama_num_ctx,
+        timeout_seconds=settings.ollama_timeout_seconds,
     )

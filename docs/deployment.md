@@ -161,6 +161,28 @@ pull <model>` by hand, then update `.env` and restart the `api` container). If y
 on the smaller 12 GB VM.Standard.A1.Flex config, stick to `llama3.2:3b` — a 14B model
 plus Postgres can OOM that smaller box under load.
 
+### Ollama concurrency
+
+The RAM table above is sized for **one** inference at a time. It's no longer just
+CV analysis (manual, occasional) hitting Ollama — job skill extraction runs per
+scraped job, AI matching runs per (job, user), and "rescore all vacancies" fans
+out both across the entire backlog at once. Celery's worker pool runs several of
+those tasks concurrently by default (one per CPU core), and by default Ollama
+will happily try to run more than one of their requests' inferences **in
+parallel** rather than queueing them — two concurrent `qwen2.5:14b` inferences
+need ~26 GB combined on a 24 GB box, more than physically fits, so both threads
+thrash instead of one running cleanly.
+
+`docker-compose.prod.yml` sets `OLLAMA_NUM_PARALLEL=1` on the `ollama` service to
+force concurrent requests to queue instead of racing for the same RAM — each one
+still finishes in its normal ~60-90s once its turn comes up, it just waits behind
+whichever request got there first. `OLLAMA_TIMEOUT_SECONDS` (`.env.example`,
+default 600s) is sized to tolerate that queueing, not just one clean uncontended
+request. The practical consequence: a "rescore all vacancies" run over a large
+backlog is legitimately slow (one job's worth of LLM calls at a time, effectively
+serialized) — that's the expected tradeoff of one CPU-only 14B model shared by
+every LLM call site on a personal-scale box, not a bug to chase further.
+
 ### Scraping volume and retention
 
 The scraper rotates through many categories per source instead of only a generic

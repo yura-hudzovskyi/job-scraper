@@ -26,6 +26,8 @@ class OllamaModelNotFound(RuntimeError):
             f"Ollama model '{model}' is not available on this server — pull it first: "
             f"docker compose exec ollama ollama pull {model}"
         )
+
+
 # Ollama silently truncates the prompt to whatever context window it uses —
 # 2048-4096 tokens depending on version/model — unless a request explicitly asks
 # for more. Job descriptions (and CV text, for the Ollama fallback in CV
@@ -39,17 +41,33 @@ class OllamaModelNotFound(RuntimeError):
 # app/integrations/ai/llm/factory.py) passes Settings.ollama_num_ctx instead.
 DEFAULT_NUM_CTX = 16384
 
+# A single isolated 14B-class CPU inference (the recommended default on the 24GB
+# Oracle VM, see docs/deployment.md) routinely takes 60-90s. But Celery's worker
+# pool runs several tasks concurrently by default (one per CPU core), and every
+# one of them that needs an LLM call reaches the *same* Ollama instance — under
+# concurrent load those requests queue up (or, worse, run in parallel and thrash
+# for the same RAM/CPU) rather than each taking the isolated-case 60-90s. This
+# default is sized to tolerate a real queue building up during a bulk operation
+# like "rescore all vacancies", not just one clean, uncontended request — see
+# docs/deployment.md's "Ollama concurrency" note for the OLLAMA_NUM_PARALLEL=1
+# server-side setting that keeps concurrent requests from thrashing each other
+# in the first place. Only the fallback for a caller that builds a provider
+# directly; every real call site passes Settings.ollama_timeout_seconds instead.
+DEFAULT_TIMEOUT_SECONDS = 600.0
+
 
 class OllamaLLMProvider:
-    def __init__(self, base_url: str, model: str = DEFAULT_MODEL, num_ctx: int = DEFAULT_NUM_CTX):
+    def __init__(
+        self,
+        base_url: str,
+        model: str = DEFAULT_MODEL,
+        num_ctx: int = DEFAULT_NUM_CTX,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    ):
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._num_ctx = num_ctx
-        # 14B-class CPU inference (the recommended default on the 24GB Oracle VM,
-        # see docs/deployment.md) routinely takes well past 60-90s per structured
-        # response — the old 120s timeout was sized for the 3B default and left
-        # almost no margin under real load.
-        self._client = httpx.AsyncClient(timeout=240.0)
+        self._client = httpx.AsyncClient(timeout=timeout_seconds)
 
     @property
     def model(self) -> str:

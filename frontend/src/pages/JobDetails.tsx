@@ -24,6 +24,14 @@ const BREAKDOWN_LABELS: Record<string, string> = {
   preferences: "Preferences",
 };
 
+// These three components only carry a real signal when the job actually had
+// skills to check against (SkillMatcher's fallback for "nothing to extract" is
+// a fabricated 100 — see docs/matching-engine.md's "No extracted skills is not a
+// perfect match"). Showing that as a literal "100%" reads as a confident, fully-
+// assessed match when nothing was actually checked, which is worse than showing
+// nothing at all.
+const SKILL_DEPENDENT_KEYS = new Set(["skills", "transferable_skills", "preferences"]);
+
 export function JobDetails() {
   const { jobId } = useParams<{ jobId: string }>();
   const queryClient = useQueryClient();
@@ -144,12 +152,23 @@ export function JobDetails() {
             </div>
 
             <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-              {Object.entries(matchQuery.data.breakdown).map(([key, value]) => (
-                <div key={key} className="flex items-center justify-between">
-                  <span className="text-slate-600">{BREAKDOWN_LABELS[key] ?? key}</span>
-                  <span className="font-medium">{Number(value).toFixed(0)}%</span>
-                </div>
-              ))}
+              {Object.entries(matchQuery.data.breakdown).map(([key, value]) => {
+                const notActuallyAssessed =
+                  !matchQuery.data!.skills_source &&
+                  !matchQuery.data!.scored_by?.startsWith("AI (") &&
+                  SKILL_DEPENDENT_KEYS.has(key);
+                return (
+                  <div key={key} className="flex items-center justify-between">
+                    <span className="text-slate-600">{BREAKDOWN_LABELS[key] ?? key}</span>
+                    <span
+                      className={notActuallyAssessed ? "text-slate-400 italic" : "font-medium"}
+                      title={notActuallyAssessed ? "No skills extracted — not actually assessed" : undefined}
+                    >
+                      {notActuallyAssessed ? "N/A" : `${Number(value).toFixed(0)}%`}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
 
             {matchQuery.data.strengths.length > 0 && (
@@ -205,9 +224,8 @@ export function JobDetails() {
             ) : (
               !matchQuery.data.scored_by?.startsWith("AI (") && (
                 <p className="text-xs text-amber-600">
-                  ⚠️ No skills could be extracted for this job — Skills, Transferable
-                  skills and Preferences above are neutral placeholders, not a real
-                  assessment. This match is less reliable than usual.
+                  ⚠️ No skills could be extracted for this job — this match is less reliable
+                  than usual (see the N/A fields above).
                 </p>
               )
             )}

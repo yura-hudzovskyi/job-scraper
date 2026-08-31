@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     # support up to 32768 — raise toward that ceiling if truncation is still observed
     # in practice, trading more KV-cache RAM and somewhat slower inference for it.
     ollama_num_ctx: int = 16384
+    # How long to wait for one Ollama response — see
+    # app/integrations/ai/llm/ollama_provider.py's DEFAULT_TIMEOUT_SECONDS for why
+    # this needs headroom beyond a single isolated request's 60-90s: Celery's
+    # worker pool can have several tasks calling Ollama at once, and those queue
+    # up (or thrash for RAM/CPU) rather than each finishing in the uncontended
+    # case's time. Also set OLLAMA_NUM_PARALLEL=1 on the ollama container itself
+    # (docs/deployment.md) so concurrent requests queue cleanly instead of both
+    # running at once and starving each other of RAM.
+    ollama_timeout_seconds: float = 600.0
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
 
