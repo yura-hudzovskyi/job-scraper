@@ -22,11 +22,9 @@ are the retired `AiMatcher` path, left as-is).
 
 The matching engine briefly ran the other way around — a single structured LLM call
 (`AiMatcher`) decided the actual fit for every eligible job, with the deterministic
-pipeline as its fallback. That doesn't survive real per-job volume on a free-tier or
-local-only LLM budget: at even a modest daily job count, a slow local model (CPU-only
-Ollama) blows past any reasonable per-request time budget, and a fast hosted free
-tier (Groq) still has a daily/per-minute cap that a call-on-every-eligible-job
-pattern burns through fast. The deterministic pipeline — weighted scoring + skill/
+pipeline as its fallback. That doesn't survive real per-job volume on a free-tier
+LLM budget: even a fast hosted free tier (Groq, Gemini) has a daily/per-minute cap
+that a call-on-every-eligible-job pattern burns through fast. The deterministic pipeline — weighted scoring + skill/
 role embeddings + a local cross-encoder reranker (Stage 3) — is fast, free, and
 already fully explainable on its own; the LLM's value-add is judgment on *top* of a
 trustworthy score (seniority fit, day-to-day realities), not re-deriving the score
@@ -158,39 +156,34 @@ extraction (`backend/app/services/job_skill_extraction_service.py`, once per
 newly-scraped job *and* on every "rescore all vacancies" re-extraction), and the
 "should I apply?" reranker (`llm_reranker.py`, once per CONSIDER+APPLY (job, user)
 match — the highest-volume of all of them, now that scoring itself is fully
-deterministic). They split into two tiers by volume, each with its own hosted
-provider + local fallback + circuit breaker, wired in
+deterministic). They split into two tiers by volume, each ordering the same two
+free tiers differently, with a circuit breaker on its primary, wired in
 `backend/app/integrations/ai/llm/factory.py`:
 
 - **`build_quality_llm_provider`** — CV analysis and preferences AI-fill. Both
   are rare, user-triggered, and quality matters most (CV analysis is the one
-  artifact every match a user sees depends on). If `GEMINI_API_KEY` is set, tries
-  Google's free Gemini tier first, falling back to `LLM_MODEL` on Ollama the
-  instant Gemini returns 429 (quota exceeded) — never for other errors, so a
-  misconfigured key fails loudly instead of silently degrading. A
-  `GeminiCircuitBreaker` (see below) rides along.
+  artifact every match a user sees depends on), so this tries Gemini first and
+  falls back to Groq the instant Gemini returns 429 (quota exceeded) — never for
+  other errors, so a misconfigured key fails loudly instead of silently
+  degrading. A `GeminiCircuitBreaker` (see below) rides along.
 - **`build_job_llm_provider`** — job skill extraction (both the automatic
   per-scrape run and "rescore all vacancies") and the "should I apply?" reranker
   — the two call sites that run at real volume (once per job, once per
-  CONSIDER+APPLY (job, user) match). If `GROQ_API_KEY` is set, tries Groq's free
-  tier first — Groq runs open models on dedicated inference hardware, so a
-  response comes back in a second or two instead of the CPU-bound minutes a 14B+
-  model needs under Ollama, which is what actually makes processing a real
-  backlog (hundreds of jobs) practical — falling back to `OLLAMA_FALLBACK_MODEL`
-  the instant Groq returns 429. With `LLM_PROVIDER=ollama` and no
-  `GROQ_API_KEY` at all, this runs on `OLLAMA_FALLBACK_MODEL` directly — **not**
-  `LLM_MODEL`. The two are deliberately independent: `LLM_MODEL` is what CV
-  analysis/preferences AI-fill fall back to, so each call site can run its own
-  local model — e.g. a small, fast one here (this leg needs to finish quickly
-  under Celery's concurrent load, not be the best quality model available
-  locally) while CV analysis keeps a bigger one for its much rarer fallback, or
-  the reverse.
-- Both fall back to **`build_configured_llm_provider`** for the `openai`/
-  `anthropic` case, where there's no local-vs-hosted distinction to make.
+  CONSIDER+APPLY (job, user) match). The same two providers in the opposite
+  order: Groq first, since it runs open models on dedicated inference hardware
+  and answers in a second or two, which is what makes processing a real backlog
+  (hundreds of jobs) practical — falling back to Gemini the instant Groq returns
+  429, with a `FixedCooldownCircuitBreaker` riding along.
+- Both fall back to **`build_configured_llm_provider`** — the optional paid
+  OpenAI/Anthropic leg (`LLM_PROVIDER` + `LLM_MODEL`) — when only one free tier
+  is configured, or neither.
 
-These two tiers deliberately never share a quota: the job pipeline's volume would
-exhaust Gemini's much smaller free-tier cap immediately, and CV analysis doesn't
-need Groq's speed since it only runs when a user clicks "Analyze."
+The two tiers order the same providers differently rather than isolating quotas
+outright: the job pipeline normally stays on Groq and only spills onto Gemini once
+Groq's limit trips, so CV analysis usually still finds Gemini's much smaller quota
+intact — but a long backlog run can eat into it. `LLM_RERANK_DAILY_LIMIT` and the
+circuit breakers keep that bounded; per-capability budget reserves are Phase 3 of
+docs/ai-pipeline-v3.md.
 
 **Circuit breakers** (`backend/app/integrations/ai/llm/circuit_breaker.py`):
 retrying an exhausted provider on every subsequent call pays for — and waits
@@ -204,23 +197,20 @@ cooldown period instead:
   limits, and a 429 during normal use is far more likely to be the former (a
   burst during "rescore all vacancies", not the whole day's quota), so this uses
   a short, fixed cooldown (`GROQ_CIRCUIT_BREAKER_COOLDOWN_SECONDS`) instead of
-  parking every later call on the slower Ollama fallback until midnight over
-  what was probably transient.
+  parking every later call on the Gemini fallback until midnight over what was
+  probably transient.
 
 Both are purely reactive to what the provider itself already said no to — no
 proactive budget/quota-counting needed on top.
 
 ### Changing models at runtime
 
-`GROQ_MODEL`, `GEMINI_MODEL`, `LLM_MODEL` and `OLLAMA_FALLBACK_MODEL` are `.env`
-defaults, not the last word — the System page in the UI can override any of them
-without a redeploy. `app/config/runtime_settings.py::get_effective_settings`
+`GROQ_MODEL` and `GEMINI_MODEL` are `.env` defaults, not the last word — the
+System page in the UI can override either of them without a redeploy. `app/config/runtime_settings.py::get_effective_settings`
 layers whatever's persisted in Redis (`app/repositories/ai_settings_repository.py`)
 on top of the `Settings` instance right before a provider gets built, so a change
 saved through the UI takes effect on the very next call. `factory.py` itself never
-changes — it still just takes a plain `Settings`. Precedence, most to least
-specific: the one-off `model_override` a caller passes for a single run (e.g.
-"rescore all vacancies" comparing one alternate Ollama model) > the persisted UI
+changes — it still just takes a plain `Settings`. Precedence: the persisted UI
 override > the `.env` default.
 
 `POST /api/ai/models/test` fires one real, minimal completion straight at the raw
@@ -243,7 +233,7 @@ own console rather than trusting a number here indefinitely). `LlmReranker`'s
 prompt (full job description + candidate profile), run for every CONSIDER+APPLY
 match, is large enough that the token budget runs out before the request-count one
 does at any real job-pipeline volume — the result is constant 429s falling back to
-the slower Ollama leg, not an obviously "broken" model. `groq_circuit_open`/
+the Gemini leg, not an obviously "broken" model. `groq_circuit_open`/
 `gemini_circuit_open` on `GET /api/ai/models` and `JobMatch.llm_assessment.model_label`
 on a real match (recorded whenever the reranker actually ran) are how to tell which
 leg is actually serving traffic right now — `scored_by` no longer varies by
@@ -251,8 +241,8 @@ provider, since the score itself is always produced by the deterministic pipelin
 
 Whichever model actually produced a reranker result is recorded
 (`LLMResult.model_label`, `backend/app/integrations/ai/llm/base.py`, surfaced as
-`llm_assessment.model_label`) and shown in the UI — a quota-driven fallback to
-Ollama is never presented as if it were the primary provider.
+`llm_assessment.model_label`) and shown in the UI — a quota-driven fallback to the
+other provider is never presented as if it were the primary one.
 
 ## Two separate scores
 

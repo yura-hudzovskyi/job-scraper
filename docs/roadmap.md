@@ -26,7 +26,7 @@ each phase should be independently mergeable and demoable.
 
 ## Phase 4 — AI
 
-- LLM provider abstraction (Ollama default, OpenAI/Anthropic optional)
+- LLM provider abstraction (Groq + Gemini free tiers, OpenAI/Anthropic optional)
 - ~~Job requirement extraction~~ — done, moved earlier: runs once per scraped job
   (see `backend/app/services/job_skill_extraction_service.py`), not gated behind
   the rest of Phase 4

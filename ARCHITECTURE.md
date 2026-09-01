@@ -105,7 +105,7 @@ Every arrow above is a separate, independently retryable background task
 | Queue          | Redis + Celery (beat for scheduling)                            |
 | Scraping       | httpx, BeautifulSoup/lxml; Playwright only as a JS-required fallback |
 | Embeddings     | sentence-transformers (local, default), OpenAI (optional)       |
-| LLM            | Provider abstraction — Ollama (default/local), OpenAI, Anthropic (optional) |
+| LLM            | Provider abstraction — Groq + Gemini free tiers, OpenAI/Anthropic optional |
 | Notifications  | Telegram Bot API first; provider interface for future channels  |
 | Infra          | Docker, Docker Compose                                          |
 | Testing        | pytest, Vitest, Playwright (E2E)                                 |

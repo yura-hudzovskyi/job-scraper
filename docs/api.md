@@ -18,7 +18,7 @@ GET    /api/jobs/{id}
 GET    /api/jobs/{id}/match
 POST   /api/jobs/{id}/rescore
 POST   /api/jobs/rescore-all      re-extracts skills + rescores every canonical job for this
-                                   user; Gemini-first, falls back to Ollama on rate limit
+                                   user; Groq-first, falls back to Gemini on rate limit
 POST   /api/jobs/{id}/save
 POST   /api/jobs/{id}/apply
 POST   /api/jobs/{id}/reject
