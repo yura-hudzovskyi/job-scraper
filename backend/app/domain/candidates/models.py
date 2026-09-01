@@ -34,7 +34,6 @@ class SkillSource(StrEnum):
     survives re-analysis — see app/domain/candidates/skill_overrides.py."""
 
     LLM = "llm"
-    RULES = "rules"
     USER = "user"
 
 

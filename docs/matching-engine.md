@@ -95,6 +95,57 @@ components from the average and rescales the rest, so role/semantic mismatch (th
 signals that actually distinguish "wrong profession" from "right profession, no
 listed stack") determine the score instead of being drowned out.
 
+### Extraction and the skill vocabulary
+
+A posting is read once, by one call, which returns every technical requirement it
+names *and* how the posting framed each one
+(`backend/app/services/job_skill_extraction_service.py`):
+
+| Framing | Meaning | Counts as a gap when missing |
+|---|---|---|
+| `required_explicit` | stated as a must ("3+ years of X", "must have") | yes |
+| `required_inferred` | not labelled a must, but the role can't be done without it | yes |
+| `optional_explicit` | nice-to-have, bonus, plus | no |
+| `context` | the team's stack or product, not asked of the candidate | no |
+| `unknown` | mentioned, with no indication which of the above | no — and never reported as a confirmed gap |
+
+Each skill also carries the verbatim quote that justified its framing, and that
+quote is checked against the posting before it is stored: a model that paraphrases
+or invents its justification gets no evidence recorded rather than a claim the
+vacancy can't back up. The same call classifies the role
+(`backend/app/domain/categories.py`) — folding it in is what keeps categories from
+costing a second request per job.
+
+Names on both sides — postings and CVs — go through a small hand-kept ontology
+(`backend/app/domain/skills/`): canonical ids, aliases, and directed relations
+(TypeScript implies JavaScript, never the reverse). It exists next to
+embedding-based matching because embeddings can score "same thing?" but cannot
+give a skill a stable label to store as evidence, and have no direction. Skills
+outside the ontology are not dropped; they simply travel under their own name.
+
+**Without an LLM, extraction still happens.** The rules extractor
+(`backend/app/domain/skills/rule_extractor.py`) scans the posting for ontology
+aliases and reads the cue words around each mention ("required", "nice to have",
+and their Ukrainian equivalents). It finds less, says so through lower confidence,
+never produces `required_inferred`, and never overwrites requirements an LLM
+already extracted — but a job reaches scoring with real requirements instead of an
+empty list that would score as "nothing was checked".
+
+**A posting is not re-read for nothing.** Each extraction records the posting's own
+content hash plus `EXTRACTION_VERSION`; a later pass with the same key returns the
+stored requirements. "Rescore all vacancies" forces a fresh read, since that is the
+point of pressing it.
+
+### User corrections outrank extraction
+
+Skills the user edits on the Profile page are stored per user
+(`candidate_skill_overrides`), not inside a profile snapshot, and re-applied to
+every analysis: a removal stays removed, an edited level wins over the extractor,
+and an added skill appears even though the CV never named it. Each correction
+writes a new profile revision — snapshots are immutable, so matches scored against
+the previous one keep saying which revision they used, and undoing a removal means
+re-analyzing the CV.
+
 **Transferable skill engine:** a framework gap is not the same as a fundamental
 engineering gap. Rather than a hand-maintained `from → to` weight table (tried,
 dropped — it only ever covered a narrow slice of real postings and silently gave a

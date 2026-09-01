@@ -1421,7 +1421,7 @@ at every commit.
 
 - [x] Phase 0 - stabilize the baseline (Ollama removal, feature flags)
 - [x] Phase 1 - versioned contracts and provenance
-- [ ] Phase 2 - extraction v3 and skill ontology
+- [x] Phase 2 - extraction v3 and skill ontology
 - [ ] Phase 3 - capability router and quota manager
 - [ ] Phase 4 - multi-lane embeddings and retrieval
 - [ ] Phase 5 - reranking chain
@@ -1477,3 +1477,34 @@ Deviations from the plan text, all deliberate:
 - **`engine` reads `deterministic`.** `hybrid` and `llm_enriched` exist in the enum but
   only start being produced in phases 6 and 7 — reporting today's pipeline as either
   would be a lie in the one place built to stop lying about provenance.
+
+### Phase 2 notes
+
+Landed: the skill ontology and normalizer (`app/domain/skills/`), requirement framing
+plus verified evidence quotes, confidence and role category from the one extraction call
+that already reads each posting, the rules extractor for when no LLM is available, an
+extraction cache keyed on the posting hash plus `EXTRACTION_VERSION`, and user skill
+corrections that survive re-extraction (stored per user, re-applied on every analysis,
+editable from the Profile page). Backend suite 243 passed, `ruff` clean, frontend
+`tsc -b` clean, all four migrations generate valid SQL offline.
+
+Acceptance checked: categories and framing cost no extra request (same schema, same
+call); every extracted requirement carries its extractor label, framing, confidence and
+a quote verified against the posting; a removed or edited skill survives re-analysis
+(`tests/unit/test_cv_service.py`, `tests/unit/test_skill_overrides.py`). "Explicit skill
+precision" has no threshold to measure against yet — that needs the labelled set from
+phase 9, so it is deliberately unverified rather than declared met.
+
+Deviations from the plan text:
+
+- **Multi-CV discovery union deferred to phase 4.** There is no retrieval step to union
+  over yet — every eligible job is still scored for every user — so a "discovery union"
+  today would be code with no consumer. Per-CV profiles and `selected_profile_id` land
+  with retrieval, where the union is a real operation.
+- **CV skills carry `source`, not full field provenance.** `FieldProvenance` with
+  provider/model/confidence/evidence spans needs CV text offsets, and nothing consumes
+  them until the hybrid engine explains a match in phase 6. Job-side requirements already
+  carry evidence quotes today.
+- **Categories are extracted but not yet used.** The confidence-aware gate (B2) is phase
+  4 work; storing the category now is what makes that gate possible without re-reading
+  every posting.

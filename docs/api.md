@@ -9,6 +9,11 @@ GET    /api/cv
 DELETE /api/cv/{id}               deletes the CV document only — a CandidateProfile already
                                    extracted from it survives (cv_document_id set to null)
 POST   /api/cv/analyze
+GET    /api/cv/profile            the latest analyzed CandidateProfile (no LLM call)
+POST   /api/cv/profile/skills     add or correct one extracted skill; the correction is
+                                   remembered and re-applied on every later analysis
+DELETE /api/cv/profile/skills/{name}
+                                  "not one of my skills" — same, as a removal
 
 GET    /api/profile
 
