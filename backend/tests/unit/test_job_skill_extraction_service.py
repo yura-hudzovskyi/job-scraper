@@ -2,9 +2,15 @@ import uuid
 
 import pytest
 
-from app.domain.jobs.models import EmploymentType, JobLocation, NormalizedJob
+from app.domain.categories import JobCategory
+from app.domain.jobs.models import EmploymentType, JobLocation, NormalizedJob, RequirementType
 from app.integrations.ai.llm.base import LLMResult
 from app.services.job_skill_extraction_service import JobSkillExtractionService
+
+_DESCRIPTION = (
+    "We use Django and PostgreSQL. Docker is a nice to have. "
+    "Experience with Postgres tuning is required."
+)
 
 
 class _FakeLlmProvider:
@@ -20,14 +26,21 @@ class _FakeJobRepository:
     def __init__(self, job: NormalizedJob | None):
         self._job = job
         self.saved: tuple[uuid.UUID, list, str | None] | None = None
+        self.saved_category: tuple[JobCategory | None, float | None] | None = None
 
     async def get_normalized_job_for_canonical(self, canonical_job_id: uuid.UUID) -> NormalizedJob | None:
         return self._job
 
     async def update_skills_for_canonical(
-        self, canonical_job_id: uuid.UUID, skills: list, generated_by: str | None
+        self,
+        canonical_job_id: uuid.UUID,
+        skills: list,
+        generated_by: str | None,
+        category: JobCategory | None = None,
+        category_confidence: float | None = None,
     ) -> None:
         self.saved = (canonical_job_id, skills, generated_by)
+        self.saved_category = (category, category_confidence)
 
 
 def _job() -> NormalizedJob:
@@ -37,7 +50,7 @@ def _job() -> NormalizedJob:
         url="https://example.com/1",
         title="Backend Engineer",
         company="Acme",
-        description="We use Django and PostgreSQL.",
+        description=_DESCRIPTION,
         employment_type=EmploymentType.FULL_TIME,
         location=JobLocation(remote=True),
         salary=None,
@@ -48,15 +61,32 @@ def _job() -> NormalizedJob:
 
 _EXTRACTED_PAYLOAD = {
     "skills": [
-        {"name": "Django", "required": True},
-        {"name": "PostgreSQL", "required": True},
-        {"name": "Docker", "required": False},
-    ]
+        {
+            "name": "Django",
+            "requirement": "required_explicit",
+            "evidence": "We use Django and PostgreSQL.",
+            "confidence": 0.9,
+        },
+        {
+            "name": "PostgreSQL",
+            "requirement": "required_explicit",
+            "evidence": "We use Django and PostgreSQL.",
+            "confidence": 0.9,
+        },
+        {
+            "name": "Docker",
+            "requirement": "optional_explicit",
+            "evidence": "Docker is a nice to have.",
+            "confidence": 0.8,
+        },
+    ],
+    "category": "backend",
+    "category_confidence": 0.85,
 }
 
 
 @pytest.mark.asyncio
-async def test_extract_and_save_maps_llm_output_and_persists() -> None:
+async def test_extract_and_save_records_framing_evidence_and_category() -> None:
     repository = _FakeJobRepository(_job())
     service = JobSkillExtractionService(repository, _FakeLlmProvider(_EXTRACTED_PAYLOAD))  # type: ignore[arg-type]
     canonical_job_id = uuid.uuid4()
@@ -64,12 +94,66 @@ async def test_extract_and_save_maps_llm_output_and_persists() -> None:
     skills = await service.extract_and_save(canonical_job_id)
 
     assert skills is not None
-    assert [(s.name, s.required) for s in skills] == [
-        ("Django", True),
-        ("PostgreSQL", True),
-        ("Docker", False),
+    assert [(s.name, s.requirement, s.required) for s in skills] == [
+        ("Django", RequirementType.REQUIRED_EXPLICIT, True),
+        ("PostgreSQL", RequirementType.REQUIRED_EXPLICIT, True),
+        ("Docker", RequirementType.OPTIONAL_EXPLICIT, False),
     ]
+    assert skills[0].evidence == "We use Django and PostgreSQL."
     assert repository.saved == (canonical_job_id, skills, "fake-model")
+    assert repository.saved_category == (JobCategory.BACKEND, 0.85)
+
+
+@pytest.mark.asyncio
+async def test_aliases_collapse_and_the_stronger_framing_wins() -> None:
+    # The same posting calls it "PostgreSQL" in one line and "Postgres" in
+    # another: one requirement, and a "nice to have" mention must not downgrade
+    # the one that said "required".
+    repository = _FakeJobRepository(_job())
+    payload = {
+        "skills": [
+            {"name": "Postgres", "requirement": "optional_explicit", "evidence": None},
+            {
+                "name": "PostgreSQL",
+                "requirement": "required_explicit",
+                "evidence": "Experience with Postgres tuning is required.",
+            },
+        ]
+    }
+    service = JobSkillExtractionService(repository, _FakeLlmProvider(payload))  # type: ignore[arg-type]
+
+    skills = await service.extract_and_save(uuid.uuid4())
+
+    assert skills is not None
+    assert len(skills) == 1
+    assert skills[0].name == "PostgreSQL"
+    assert skills[0].canonical_id == "postgresql"
+    assert skills[0].requirement is RequirementType.REQUIRED_EXPLICIT
+    assert skills[0].evidence == "Experience with Postgres tuning is required."
+
+
+@pytest.mark.asyncio
+async def test_evidence_the_posting_does_not_contain_is_dropped() -> None:
+    # A justification that isn't in the vacancy is a hallucination — the skill is
+    # still recorded (the model may well be right), but nothing unverifiable is
+    # stored as if the posting had said it.
+    repository = _FakeJobRepository(_job())
+    payload = {
+        "skills": [
+            {
+                "name": "Kubernetes",
+                "requirement": "required_explicit",
+                "evidence": "Kubernetes experience is mandatory.",
+            }
+        ]
+    }
+    service = JobSkillExtractionService(repository, _FakeLlmProvider(payload))  # type: ignore[arg-type]
+
+    skills = await service.extract_and_save(uuid.uuid4())
+
+    assert skills is not None
+    assert skills[0].name == "Kubernetes"
+    assert skills[0].evidence is None
 
 
 @pytest.mark.asyncio

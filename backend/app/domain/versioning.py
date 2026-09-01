@@ -47,9 +47,10 @@ def content_hash(payload: Any) -> str:
 def job_content_hash(job: NormalizedJob) -> str:
     """Only what a match is actually derived from. Deliberately excluded:
     source/external_id/url (the same vacancy re-listed elsewhere requires the same
-    things) and skills_extracted_by (which model read the posting is provenance
-    about the *result*, not a change in the posting itself — it's recorded
-    separately in MatchProvenance)."""
+    things), skills_extracted_by (which model read the posting is provenance about
+    the *result*, not a change in the posting itself — it's recorded separately in
+    MatchProvenance), and the evidence quotes/confidences behind each requirement
+    (how a requirement was justified doesn't change what is required)."""
     return content_hash(
         {
             "title": job.title,
@@ -70,9 +71,9 @@ def job_content_hash(job: NormalizedJob) -> str:
             ),
             "seniority": job.seniority,
             "required_experience_years": job.required_experience_years,
+            "category": job.category.value if job.category else None,
             "skills": sorted(
-                ([skill.name, skill.required] for skill in job.skills),
-                key=lambda entry: (str(entry[0]), bool(entry[1])),
+                [skill.name, skill.requirement.value] for skill in job.skills
             ),
         }
     )

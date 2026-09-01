@@ -1,6 +1,6 @@
 import pytest
 
-from app.domain.jobs.models import NormalizedJobSkill
+from app.domain.jobs.models import NormalizedJobSkill, RequirementType
 from app.domain.matching.skill_matching import SkillMatcher
 
 
@@ -32,7 +32,7 @@ async def test_matching_skill_above_threshold_counts_as_strength() -> None:
     matcher = SkillMatcher(_FakeEmbeddingProvider(vectors), match_threshold=0.75)
 
     result = await matcher.assess(
-        job_skills=[NormalizedJobSkill(name="Django", required=True)],
+        job_skills=[NormalizedJobSkill(name="Django", requirement=RequirementType.REQUIRED_EXPLICIT)],
         candidate_skills=["django"],
         preferred_stack=[],
         acceptable_stack=[],
@@ -51,7 +51,7 @@ async def test_moderately_related_skill_is_a_gap_with_partial_transfer_credit() 
     matcher = SkillMatcher(_FakeEmbeddingProvider(vectors), match_threshold=0.75)
 
     result = await matcher.assess(
-        job_skills=[NormalizedJobSkill(name="FastAPI", required=True)],
+        job_skills=[NormalizedJobSkill(name="FastAPI", requirement=RequirementType.REQUIRED_EXPLICIT)],
         candidate_skills=["Django"],
         preferred_stack=[],
         acceptable_stack=[],
@@ -68,7 +68,7 @@ async def test_unrelated_required_skill_is_a_critical_gap_with_no_transfer_credi
     matcher = SkillMatcher(_FakeEmbeddingProvider(vectors))
 
     result = await matcher.assess(
-        job_skills=[NormalizedJobSkill(name="Rust", required=True)],
+        job_skills=[NormalizedJobSkill(name="Rust", requirement=RequirementType.REQUIRED_EXPLICIT)],
         candidate_skills=["Photoshop"],
         preferred_stack=[],
         acceptable_stack=[],
@@ -84,7 +84,7 @@ async def test_nice_to_have_gap_is_not_marked_required() -> None:
     matcher = SkillMatcher(_FakeEmbeddingProvider(vectors))
 
     result = await matcher.assess(
-        job_skills=[NormalizedJobSkill(name="Kubernetes", required=False)],
+        job_skills=[NormalizedJobSkill(name="Kubernetes", requirement=RequirementType.OPTIONAL_EXPLICIT)],
         candidate_skills=["Docker"],
         preferred_stack=[],
         acceptable_stack=[],
@@ -103,19 +103,19 @@ async def test_preferences_score_rewards_preferred_over_acceptable_stack() -> No
     matcher = SkillMatcher(_FakeEmbeddingProvider(vectors), match_threshold=0.75)
 
     preferred = await matcher.assess(
-        job_skills=[NormalizedJobSkill(name="React", required=True)],
+        job_skills=[NormalizedJobSkill(name="React", requirement=RequirementType.REQUIRED_EXPLICIT)],
         candidate_skills=["React"],
         preferred_stack=["React"],
         acceptable_stack=[],
     )
     acceptable = await matcher.assess(
-        job_skills=[NormalizedJobSkill(name="React", required=True)],
+        job_skills=[NormalizedJobSkill(name="React", requirement=RequirementType.REQUIRED_EXPLICIT)],
         candidate_skills=["React"],
         preferred_stack=["Vue"],
         acceptable_stack=["React"],
     )
     neither = await matcher.assess(
-        job_skills=[NormalizedJobSkill(name="React", required=True)],
+        job_skills=[NormalizedJobSkill(name="React", requirement=RequirementType.REQUIRED_EXPLICIT)],
         candidate_skills=["React"],
         preferred_stack=["Vue"],
         acceptable_stack=[],
@@ -132,7 +132,7 @@ async def test_preferences_score_neutral_when_no_stack_preference_set() -> None:
     matcher = SkillMatcher(_FakeEmbeddingProvider(vectors))
 
     result = await matcher.assess(
-        job_skills=[NormalizedJobSkill(name="React", required=True)],
+        job_skills=[NormalizedJobSkill(name="React", requirement=RequirementType.REQUIRED_EXPLICIT)],
         candidate_skills=["React"],
         preferred_stack=[],
         acceptable_stack=[],

@@ -19,6 +19,7 @@ from app.db.models.job import (
     RawJobModel,
     ScrapeRunModel,
 )
+from app.domain.categories import JobCategory
 from app.domain.jobs.models import (
     CanonicalJob,
     EmploymentType,
@@ -26,6 +27,7 @@ from app.domain.jobs.models import (
     NormalizedJob,
     NormalizedJobSkill,
     RawJob,
+    RequirementType,
     SalaryRange,
 )
 from app.domain.jobs.scrape_rotation import pick_next_category
@@ -62,7 +64,28 @@ def _canonical_candidate_view(model: CanonicalJobModel) -> NormalizedJob:
 
 
 def _skills_payload(skills: list[NormalizedJobSkill]) -> list[dict[str, Any]]:
-    return [{"name": skill.name, "required": skill.required} for skill in skills]
+    return [
+        {
+            "name": skill.name,
+            "requirement": skill.requirement.value,
+            "canonical_id": skill.canonical_id,
+            "evidence": skill.evidence,
+            "confidence": skill.confidence,
+        }
+        for skill in skills
+    ]
+
+
+def _requirement_from_payload(payload: dict[str, Any]) -> RequirementType:
+    stored = payload.get("requirement")
+    if stored is not None:
+        return RequirementType(stored)
+    # Rows written before requirement types existed only knew required yes/no.
+    return (
+        RequirementType.REQUIRED_EXPLICIT
+        if payload.get("required")
+        else RequirementType.OPTIONAL_EXPLICIT
+    )
 
 
 def _to_normalized_job(model: JobSourceRecordModel) -> NormalizedJob:
@@ -86,10 +109,18 @@ def _to_normalized_job(model: JobSourceRecordModel) -> NormalizedJob:
         seniority=model.seniority,
         required_experience_years=model.required_experience_years,
         skills=[
-            NormalizedJobSkill(name=skill["name"], required=skill["required"])
+            NormalizedJobSkill(
+                name=skill["name"],
+                requirement=_requirement_from_payload(skill),
+                canonical_id=skill.get("canonical_id"),
+                evidence=skill.get("evidence"),
+                confidence=skill.get("confidence"),
+            )
             for skill in model.skills
         ],
         skills_extracted_by=model.skills_extracted_by,
+        category=JobCategory(model.category) if model.category else None,
+        category_confidence=model.category_confidence,
     )
 
 
@@ -286,10 +317,14 @@ class JobRepository:
         canonical_job_id: uuid.UUID,
         skills: list[NormalizedJobSkill],
         generated_by: str | None,
+        category: JobCategory | None = None,
+        category_confidence: float | None = None,
     ) -> None:
-        """Saves LLM-extracted skills onto whichever source record scoring reads via
+        """Saves extracted requirements onto whichever source record scoring reads via
         get_normalized_job_for_canonical — same "most recently normalized" selection,
-        so extraction writes to exactly the row matching later reads from."""
+        so extraction writes to exactly the row matching later reads from. The
+        category comes from the same extraction call, so it is written here rather
+        than costing a second pass over the posting."""
         result = await self._session.execute(
             select(JobSourceRecordModel)
             .where(JobSourceRecordModel.canonical_job_id == canonical_job_id)
@@ -301,6 +336,9 @@ class JobRepository:
             return
         model.skills = _skills_payload(skills)
         model.skills_extracted_by = generated_by
+        if category is not None:
+            model.category = category.value
+            model.category_confidence = category_confidence
         await self._session.flush()
 
     async def refresh_canonical_content_version(

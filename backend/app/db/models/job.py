@@ -74,6 +74,9 @@ class JobSourceRecordModel(UUIDPrimaryKeyMixin, Base):
     required_experience_years: Mapped[float | None] = mapped_column(default=None)
     skills: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     skills_extracted_by: Mapped[str | None] = mapped_column(default=None)
+    # Role category from the same extraction call — see app/domain/categories.py.
+    category: Mapped[str | None] = mapped_column(default=None)
+    category_confidence: Mapped[float | None] = mapped_column(default=None)
 
     normalized_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

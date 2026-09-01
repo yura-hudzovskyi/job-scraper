@@ -15,6 +15,7 @@ from app.domain.jobs.models import (
     JobLocation,
     NormalizedJob,
     NormalizedJobSkill,
+    RequirementType,
     SalaryRange,
 )
 from app.domain.versioning import job_content_hash, profile_content_hash
@@ -33,7 +34,7 @@ def _job(**overrides: object) -> NormalizedJob:
         "salary": SalaryRange(min=4000, max=6000, currency="USD"),
         "seniority": "senior",
         "required_experience_years": 5.0,
-        "skills": [NormalizedJobSkill(name="Python", required=True)],
+        "skills": [NormalizedJobSkill(name="Python", requirement=RequirementType.REQUIRED_EXPLICIT)],
         "skills_extracted_by": "Groq (llama-3.3-70b-versatile)",
     }
     return NormalizedJob(**{**defaults, **overrides})  # type: ignore[arg-type]
@@ -84,14 +85,14 @@ def test_re_extracting_skills_with_another_model_keeps_the_hash() -> None:
 def test_skill_order_does_not_change_the_hash() -> None:
     one_order = _job(
         skills=[
-            NormalizedJobSkill(name="Python", required=True),
-            NormalizedJobSkill(name="Docker", required=False),
+            NormalizedJobSkill(name="Python", requirement=RequirementType.REQUIRED_EXPLICIT),
+            NormalizedJobSkill(name="Docker", requirement=RequirementType.OPTIONAL_EXPLICIT),
         ]
     )
     other_order = _job(
         skills=[
-            NormalizedJobSkill(name="Docker", required=False),
-            NormalizedJobSkill(name="Python", required=True),
+            NormalizedJobSkill(name="Docker", requirement=RequirementType.OPTIONAL_EXPLICIT),
+            NormalizedJobSkill(name="Python", requirement=RequirementType.REQUIRED_EXPLICIT),
         ]
     )
 
@@ -101,7 +102,7 @@ def test_skill_order_does_not_change_the_hash() -> None:
 def test_a_changed_requirement_changes_the_hash() -> None:
     assert job_content_hash(_job(required_experience_years=2.0)) != job_content_hash(_job())
     assert job_content_hash(
-        _job(skills=[NormalizedJobSkill(name="Python", required=False)])
+        _job(skills=[NormalizedJobSkill(name="Python", requirement=RequirementType.OPTIONAL_EXPLICIT)])
     ) != job_content_hash(_job())
     assert job_content_hash(_job(description="Django only.")) != job_content_hash(_job())
 

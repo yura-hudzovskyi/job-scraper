@@ -6,7 +6,13 @@ from app.domain.candidates.models import (
     SkillLevel,
     UserPreference,
 )
-from app.domain.jobs.models import EmploymentType, JobLocation, NormalizedJob, NormalizedJobSkill
+from app.domain.jobs.models import (
+    EmploymentType,
+    JobLocation,
+    NormalizedJob,
+    NormalizedJobSkill,
+    RequirementType,
+)
 from app.domain.matching.filters import HardFilterService
 from app.domain.matching.models import (
     JobMatch,
@@ -240,8 +246,8 @@ async def test_strong_match_recommends_apply(matching_service: MatchingService) 
     job = _job(
         description="We use Django and PostgreSQL.",
         skills=[
-            NormalizedJobSkill(name="Django", required=True),
-            NormalizedJobSkill(name="PostgreSQL", required=True),
+            NormalizedJobSkill(name="Django", requirement=RequirementType.REQUIRED_EXPLICIT),
+            NormalizedJobSkill(name="PostgreSQL", requirement=RequirementType.REQUIRED_EXPLICIT),
         ],
         skills_extracted_by="Groq (llama-3.3-70b-versatile)",
     )
@@ -268,7 +274,7 @@ async def test_practical_fit_exceeds_requirement_match_when_skills_are_only_tran
     job = _job(
         title="Backend Engineer",
         description="We use FastAPI.",
-        skills=[NormalizedJobSkill(name="FastAPI", required=True)],
+        skills=[NormalizedJobSkill(name="FastAPI", requirement=RequirementType.REQUIRED_EXPLICIT)],
     )
     profile = _profile(skills=["Django"])  # no FastAPI, but transfers via Django
 
@@ -338,7 +344,7 @@ async def test_domain_mismatch_gate_forces_skip_despite_superficial_skill_match(
     job = _job(
         title="Account Manager",
         description="Manage client relationships.",
-        skills=[NormalizedJobSkill(name="Excel", required=True)],
+        skills=[NormalizedJobSkill(name="Excel", requirement=RequirementType.REQUIRED_EXPLICIT)],
     )
     profile = CandidateProfile(
         id="p1",
@@ -371,8 +377,8 @@ async def test_weak_match_recommends_skip() -> None:
         title="Backend Engineer",
         description="We use Rust and Kafka.",
         skills=[
-            NormalizedJobSkill(name="Rust", required=True),
-            NormalizedJobSkill(name="Kafka", required=True),
+            NormalizedJobSkill(name="Rust", requirement=RequirementType.REQUIRED_EXPLICIT),
+            NormalizedJobSkill(name="Kafka", requirement=RequirementType.REQUIRED_EXPLICIT),
         ],
     )
     profile = _profile(skills=["Photoshop"])
