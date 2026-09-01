@@ -34,11 +34,4 @@ docker compose -f docker-compose.prod.yml up -d
 echo "==> Running migrations"
 docker compose -f docker-compose.prod.yml run --rm api alembic upgrade head
 
-if grep -q '^LLM_PROVIDER=ollama' .env; then
-    model=$(grep '^LLM_MODEL=' .env | cut -d= -f2)
-    model="${model:-llama3.2:3b}"
-    echo "==> Pulling Ollama model '$model' (only needed once — this can take a while)"
-    docker compose -f docker-compose.prod.yml exec ollama ollama pull "$model"
-fi
-
 echo "==> Done. Check status with: docker compose -f docker-compose.prod.yml ps"
