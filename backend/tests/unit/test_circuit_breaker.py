@@ -1,7 +1,10 @@
 import pytest
 import redis.asyncio as redis
 
-from app.integrations.ai.llm.circuit_breaker import GeminiCircuitBreaker
+from app.integrations.ai.llm.circuit_breaker import (
+    FixedCooldownCircuitBreaker,
+    GeminiCircuitBreaker,
+)
 
 
 class _FakeRedis:
@@ -62,6 +65,57 @@ async def test_fails_open_on_a_redis_error() -> None:
     # might still be able to serve — a Redis hiccup must never look like an
     # exhausted quota.
     breaker = GeminiCircuitBreaker(_FailingRedis(), model="gemini-2.0-flash")  # type: ignore[arg-type]
+
+    assert await breaker.is_open() is False
+    await breaker.record_failure()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_fixed_cooldown_breaker_is_closed_before_any_failure() -> None:
+    breaker = FixedCooldownCircuitBreaker(
+        _FakeRedis(), key="groq_exhausted:llama-3.3-70b-versatile", cooldown_seconds=60  # type: ignore[arg-type]
+    )
+
+    assert await breaker.is_open() is False
+
+
+@pytest.mark.asyncio
+async def test_fixed_cooldown_breaker_opens_with_exactly_the_given_cooldown() -> None:
+    redis_client = _FakeRedis()
+    breaker = FixedCooldownCircuitBreaker(
+        redis_client, key="groq_exhausted:llama-3.3-70b-versatile", cooldown_seconds=60  # type: ignore[arg-type]
+    )
+
+    await breaker.record_failure()
+
+    assert await breaker.is_open() is True
+    assert redis_client.last_ex == 60
+
+
+@pytest.mark.asyncio
+async def test_fixed_cooldown_breaker_keys_are_caller_controlled() -> None:
+    # Unlike GeminiCircuitBreaker (which builds its own per-model key),
+    # FixedCooldownCircuitBreaker takes the full key as-is — a Groq cooldown must
+    # never collide with an unrelated provider's cooldown sharing the same Redis.
+    redis_client = _FakeRedis()
+    groq_breaker = FixedCooldownCircuitBreaker(
+        redis_client, key="groq_exhausted:llama-3.3-70b-versatile", cooldown_seconds=60  # type: ignore[arg-type]
+    )
+    other_breaker = FixedCooldownCircuitBreaker(
+        redis_client, key="groq_exhausted:some-other-model", cooldown_seconds=60  # type: ignore[arg-type]
+    )
+
+    await groq_breaker.record_failure()
+
+    assert await groq_breaker.is_open() is True
+    assert await other_breaker.is_open() is False
+
+
+@pytest.mark.asyncio
+async def test_fixed_cooldown_breaker_fails_open_on_a_redis_error() -> None:
+    breaker = FixedCooldownCircuitBreaker(
+        _FailingRedis(), key="groq_exhausted:llama-3.3-70b-versatile", cooldown_seconds=60  # type: ignore[arg-type]
+    )
 
     assert await breaker.is_open() is False
     await breaker.record_failure()  # must not raise

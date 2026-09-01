@@ -127,17 +127,26 @@ with a valid certificate, rather than an error.
 
 ### Choosing an Ollama model
 
-CV analysis is a manual, occasional action (you click "Analyze" once per CV, not
-something that runs per-job), so it doesn't need to be fast — a CPU-only response in
-10-30s on the A1 shape is fine. What matters is fitting comfortably in RAM alongside
-Postgres, the API/worker processes, and sentence-transformers, which together use
-roughly 2-3 GB. Resident RAM during inference runs noticeably above the download
-size (weights + KV cache/context buffer, sized by `OLLAMA_NUM_CTX` — 16384 by
-default, see `.env.example`, up from an earlier 8192 that was too small for a long
-job posting or CV) — budget roughly 1.3-1.5x the download size at that context
-length, not the download size itself. A larger `OLLAMA_NUM_CTX` (up to the model's
-native ceiling — 32768 for qwen2.5:14b/qwen3:14b) trades more of that headroom for
-guaranteed no truncation on very long postings/CVs.
+Ollama is a fallback tier now, not the primary workhorse — see
+docs/matching-engine.md's "LLM provider policy". `LLM_MODEL` (this section's
+table) is what CV analysis and preferences AI-fill fall back to if
+`GEMINI_API_KEY` isn't set, or the moment Gemini's quota trips; both are rare,
+manual, user-triggered actions, so a CPU-only response in 10-30s+ on the A1 shape
+is fine. `OLLAMA_FALLBACK_MODEL` (default `llama3.1:8b`, see `.env.example`) is
+the separate, smaller model the job pipeline (skill extraction, AI matching)
+falls back to once `GROQ_API_KEY`'s rate limit trips — that one deliberately
+stays small, since it needs to actually finish in reasonable time under Celery's
+concurrent load rather than being the best-quality model available locally.
+
+What matters for whichever model(s) you pull is fitting comfortably in RAM
+alongside Postgres, the API/worker processes, and sentence-transformers, which
+together use roughly 2-3 GB. Resident RAM during inference runs noticeably above
+the download size (weights + KV cache/context buffer, sized by `OLLAMA_NUM_CTX`
+— 16384 by default, see `.env.example`, up from an earlier 8192 that was too
+small for a long job posting or CV) — budget roughly 1.3-1.5x the download size
+at that context length, not the download size itself. A larger `OLLAMA_NUM_CTX`
+(up to the model's native ceiling — 32768 for qwen2.5:14b/qwen3:14b) trades more
+of that headroom for guaranteed no truncation on very long postings/CVs.
 
 | Model | Download size | ~Resident RAM in use (16384 ctx) | Free-tier fit |
 |---|---|---|---|
@@ -163,25 +172,29 @@ plus Postgres can OOM that smaller box under load.
 
 ### Ollama concurrency
 
-The RAM table above is sized for **one** inference at a time. It's no longer just
-CV analysis (manual, occasional) hitting Ollama — job skill extraction runs per
-scraped job, AI matching runs per (job, user), and "rescore all vacancies" fans
-out both across the entire backlog at once. Celery's worker pool runs several of
-those tasks concurrently by default (one per CPU core), and by default Ollama
-will happily try to run more than one of their requests' inferences **in
-parallel** rather than queueing them — two concurrent `qwen2.5:14b` inferences
-need ~26 GB combined on a 24 GB box, more than physically fits, so both threads
-thrash instead of one running cleanly.
+The RAM table above is sized for **one** inference at a time. With Groq
+configured (`GROQ_API_KEY`, see docs/matching-engine.md), Ollama is mostly a
+fallback now, not the thing every job/match call hits directly — but it's still
+possible for more than one Ollama call to land at once (Groq's circuit breaker
+open for a stretch while CV analysis's own Gemini fallback also fires, or
+`LLM_PROVIDER=ollama` with no hosted provider configured at all, back to every
+call going through Ollama directly). Celery's worker pool runs several tasks
+concurrently by default (one per CPU core), and by default Ollama will happily
+try to run more than one of their requests' inferences **in parallel** rather
+than queueing them — two concurrent `qwen2.5:14b` inferences need ~26 GB combined
+on a 24 GB box, more than physically fits, so both threads thrash instead of one
+running cleanly.
 
 `docker-compose.prod.yml` sets `OLLAMA_NUM_PARALLEL=1` on the `ollama` service to
 force concurrent requests to queue instead of racing for the same RAM — each one
-still finishes in its normal ~60-90s once its turn comes up, it just waits behind
+still finishes in its normal time once its turn comes up, it just waits behind
 whichever request got there first. `OLLAMA_TIMEOUT_SECONDS` (`.env.example`,
 default 600s) is sized to tolerate that queueing, not just one clean uncontended
-request. The practical consequence: a "rescore all vacancies" run over a large
-backlog is legitimately slow (one job's worth of LLM calls at a time, effectively
-serialized) — that's the expected tradeoff of one CPU-only 14B model shared by
-every LLM call site on a personal-scale box, not a bug to chase further.
+request. If you're running without Groq at all (every job-pipeline call going
+straight to Ollama), a large "rescore all vacancies" run is legitimately slow —
+one job's worth of LLM calls at a time, effectively serialized — that's the
+expected tradeoff of a CPU-only model on a personal-scale box, not a bug to
+chase further.
 
 ### Scraping volume and retention
 

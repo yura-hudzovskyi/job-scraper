@@ -1,5 +1,6 @@
 from app.config.settings import Settings
-from app.integrations.ai.llm.factory import build_configured_llm_provider
+from app.integrations.ai.llm.factory import build_configured_llm_provider, build_job_llm_provider
+from app.integrations.ai.llm.fallback_provider import FallbackLLMProvider
 from app.integrations.ai.llm.ollama_provider import OllamaLLMProvider
 
 
@@ -19,3 +20,33 @@ def test_model_override_replaces_the_configured_default_for_this_call() -> None:
 
     assert isinstance(provider, OllamaLLMProvider)
     assert provider.model == "qwen2.5:14b"
+
+
+def test_build_job_llm_provider_falls_back_to_configured_provider_without_groq() -> None:
+    provider = build_job_llm_provider(_settings(groq_api_key=None))
+
+    assert isinstance(provider, OllamaLLMProvider)
+    assert provider.model == "llama3.2:3b"
+
+
+def test_build_job_llm_provider_wraps_groq_with_the_ollama_fallback_model() -> None:
+    provider = build_job_llm_provider(
+        _settings(groq_api_key="gsk_fake", ollama_fallback_model="llama3.1:8b")
+    )
+
+    assert isinstance(provider, FallbackLLMProvider)
+    fallback = provider._fallback  # type: ignore[attr-defined]
+    assert isinstance(fallback, OllamaLLMProvider)
+    assert fallback.model == "llama3.1:8b"
+
+
+def test_build_job_llm_provider_model_override_replaces_the_ollama_fallback_model() -> None:
+    provider = build_job_llm_provider(
+        _settings(groq_api_key="gsk_fake", ollama_fallback_model="llama3.1:8b"),
+        model_override="qwen2.5:14b",
+    )
+
+    assert isinstance(provider, FallbackLLMProvider)
+    fallback = provider._fallback  # type: ignore[attr-defined]
+    assert isinstance(fallback, OllamaLLMProvider)
+    assert fallback.model == "qwen2.5:14b"

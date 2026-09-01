@@ -38,22 +38,42 @@ class Settings(BaseSettings):
     # (docs/deployment.md) so concurrent requests queue cleanly instead of both
     # running at once and starving each other of RAM.
     ollama_timeout_seconds: float = 600.0
+    # The job pipeline's local fallback model (build_job_llm_provider) — separate
+    # from llm_model/Settings.llm_model, which is what a direct LLM_PROVIDER=ollama
+    # setup or CV analysis's fallback uses. Deliberately small: this only gets
+    # called once Groq's rate limit trips, so it needs to actually finish in
+    # reasonable time under Celery's concurrent load, not be the best quality
+    # model available locally — see docs/matching-engine.md.
+    ollama_fallback_model: str = "llama3.1:8b"
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
 
-    # Optional: when set, CV analysis (the "quality matters" call site) uses
-    # Gemini's free tier first, falling back to Ollama on rate limit — see
-    # app/integrations/ai/llm/factory.py::build_quality_llm_provider. Job skill
-    # extraction always uses Ollama regardless of this, to keep the free-tier quota
-    # for CV analysis.
+    # Optional: when set, CV analysis and preferences AI-fill (the "quality
+    # matters most, low volume" call sites) use Gemini's free tier first, falling
+    # back to Ollama (llm_model) on rate limit — see
+    # app/integrations/ai/llm/factory.py::build_quality_llm_provider.
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"
 
+    # Optional: when set, the job pipeline (skill extraction, AI matching, "should
+    # I apply?") uses Groq's free tier first — fast enough to actually churn
+    # through a real backlog, unlike CPU-only Ollama — falling back to a small
+    # local model (ollama_fallback_model) on rate limit. See
+    # app/integrations/ai/llm/factory.py::build_job_llm_provider and
+    # docs/matching-engine.md.
+    groq_api_key: str | None = None
+    groq_model: str = "llama-3.3-70b-versatile"
+    # Groq enforces both per-minute and per-day limits; a 429 during normal use is
+    # far more likely to be the former, so this is a short, fixed cooldown rather
+    # than GeminiCircuitBreaker's until-midnight one — see circuit_breaker.py.
+    groq_circuit_breaker_cooldown_seconds: int = 60
+
     # Hard daily ceiling on LlmReranker calls (see app/integrations/ai/llm/budget.py
-    # and app/domain/matching/llm_reranker.py) — independent of whatever Gemini's
-    # own rate-limit/billing behavior is. Conservative default; tune to your actual
-    # Gemini plan (free-tier daily quotas vary by model/tier and change over time,
-    # so this isn't a number guaranteed correct for any particular plan).
+    # and app/domain/matching/llm_reranker.py) — independent of whatever the
+    # configured quality/job provider's own rate-limit/billing behavior is.
+    # Conservative default; tune to your actual plan (free-tier daily quotas vary
+    # by provider/model/tier and change over time, so this isn't a number
+    # guaranteed correct for any particular plan).
     llm_rerank_daily_limit: int = 30
 
     embedding_provider: Literal["sentence_transformers", "openai"] = "sentence_transformers"

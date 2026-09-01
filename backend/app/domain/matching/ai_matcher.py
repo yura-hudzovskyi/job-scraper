@@ -12,11 +12,13 @@ the pipeline" policy every other optional AI layer in this app already follows
 (see LlmReranker, JobSkillExtractionService). Returning None (never raising) on
 failure is what makes that fallback possible.
 
-Wired (see app/domain/matching/factory.py) through build_quality_llm_provider —
-Gemini's free tier by default, falling back to local Ollama automatically the
-instant Gemini hits its rate limit (see fallback_provider.py) — not
-build_configured_llm_provider's Ollama-by-default wiring, so a fresh scoring run
-actually gets Gemini's quality by default instead of silently downgrading.
+Wired (see app/domain/matching/factory.py) through build_job_llm_provider —
+Groq's free tier by default (fast enough to actually churn through a real job
+backlog, unlike CPU-only Ollama), falling back to a small local Ollama model
+automatically the instant Groq hits its rate limit (see fallback_provider.py).
+Deliberately not build_quality_llm_provider's Gemini-backed wiring — that one's
+reserved for CV analysis and preferences AI-fill, whose volume Gemini's much
+smaller free-tier quota can actually sustain; see docs/matching-engine.md.
 """
 
 import logging

@@ -71,17 +71,21 @@ correct and fine at this scale.
 
 **Phase 3** — NotificationPolicy (score thresholds, quiet hours) gates delivery
 through a real Telegram Bot API provider (verified live), with idempotent delivery
-tracking so nothing sends twice. `score → notify` is a real Celery chain. Daily-digest
-delivery and inline-button (save/applied/reject) callback handling are not built yet —
-the buttons render, but tapping them doesn't do anything server-side.
+tracking so nothing sends twice. `score → notify` is a real Celery chain. Each match
+is a swipe-style card with real Approve/Reject buttons — tapping one records a
+`MatchDecision` via a Telegram webhook (`api/routes/telegram.py`), not just a
+rendered no-op. Daily-digest delivery is still not built.
 
 **Phase 4** — job requirement extraction has run since Phase 2 (moved earlier, see
 `job_skill_extraction_service.py`). LLM reranking / "should I apply?" is now real
-too: `MatchingService.should_i_apply` calls an LLM (Gemini-first with Ollama
-fallback, same policy as CV analysis) for matches the deterministic pipeline
-already recommends APPLY, gated by a configurable daily call budget
-(`LLM_RERANK_DAILY_LIMIT`) independent of the provider's own rate limits — see
-`app/domain/matching/llm_reranker.py` and `app/integrations/ai/llm/budget.py`.
+too: `MatchingService.should_i_apply` calls an LLM for matches the deterministic
+(or AI-matcher) pipeline already recommends APPLY, gated by a configurable daily
+call budget (`LLM_RERANK_DAILY_LIMIT`) independent of the provider's own rate
+limits — see `app/domain/matching/llm_reranker.py` and
+`app/integrations/ai/llm/budget.py`. The matching pipeline itself now runs
+primarily through an LLM too (`AiMatcher`, one structured call per job/user),
+with the original deterministic pipeline kept as the fallback — see
+`docs/matching-engine.md` for the full Gemini/Groq/Ollama provider policy.
 Batch reranking over a shortlist (`rerank_shortlist`) is still deferred — no
 shortlist view or digest batching exists to feed it yet.
 

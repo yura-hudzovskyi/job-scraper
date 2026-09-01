@@ -42,12 +42,14 @@ validation) is caught, logged, and turned into `None` so `MatchingService.evalua
 falls back to the deterministic pipeline instead of losing the score for that job
 entirely.
 
-It's wired through `build_configured_llm_provider` (whatever `LLM_PROVIDER` says —
-Ollama by default), not through the Gemini-first `build_quality_llm_provider` used
-by CV analysis and the reranker below: this call runs once per (job, user) — every
-scored job, not just an already-filtered top shortlist — so routing it through
-Gemini's reserved free-tier quota would exhaust it fast. See
-`backend/app/domain/matching/factory.py`.
+It's wired through `build_job_llm_provider` — Groq's free tier by default (fast
+enough to actually churn through real volume), falling back to a small local
+Ollama model on rate limit — not through the Gemini-first
+`build_quality_llm_provider` used by CV analysis and preferences AI-fill: this
+call runs once per (job, user) — every scored job, not just an already-filtered
+top shortlist — so routing it through Gemini's much smaller reserved free-tier
+quota would exhaust it in minutes. See `backend/app/domain/matching/factory.py`
+and the "LLM provider policy" section below.
 
 ### Fallback pipeline
 
@@ -143,42 +145,62 @@ return **structured**, not prose:
 }
 ```
 
-## LLM provider policy: Gemini for quality, Ollama for volume
+## LLM provider policy: two tiers, split by volume
 
 Three independent LLM call sites exist — CV analysis
-(`backend/app/services/cv_service.py`, user-triggered, rare), job skill extraction
-(`backend/app/services/job_skill_extraction_service.py`, once per newly-scraped job,
-high-volume, always automatic), and the AI matcher itself (`ai_matcher.py`, once
-per (job, user) — the highest-volume of the three).
+(`backend/app/services/cv_service.py`, user-triggered, rare), preferences AI-fill
+(`backend/app/services/profile_service.py`, also user-triggered, rare), job skill
+extraction (`backend/app/services/job_skill_extraction_service.py`, once per
+newly-scraped job *and* on every "rescore all vacancies" re-extraction), and the
+AI matcher itself (`ai_matcher.py`, once per (job, user) — the highest-volume of
+all of them). They split into two tiers by volume, each with its own hosted
+provider + local fallback + circuit breaker, wired in
+`backend/app/integrations/ai/llm/factory.py`:
 
-- **CV analysis, "should I apply?", and AI matching** all go through
-  `build_quality_llm_provider`: if `GEMINI_API_KEY` is set, Google's free Gemini
-  tier first, falling back to Ollama automatically the instant Gemini returns 429
-  (quota exceeded) — but never for other errors, so a misconfigured key fails
-  loudly instead of silently degrading. See
-  `backend/app/integrations/ai/llm/fallback_provider.py`. Yes, this means AI
-  matching — the highest-volume call site — competes for Gemini's quota too;
-  see the circuit breaker note below for why that isn't as wasteful as it sounds.
-- **Job skill extraction's automatic per-scrape run** always uses Ollama
-  unconditionally (`build_bulk_llm_provider`), regardless of Gemini configuration
-  — this keeps at least *some* free-tier quota available for the other call
-  sites instead of every newly-scraped job burning through it immediately. The
-  user-triggered "rescore all vacancies" re-extraction is the exception — it goes
-  through `build_quality_llm_provider` like everything else above, since it's an
-  occasional explicit action, not automatic per-scrape volume.
+- **`build_quality_llm_provider`** — CV analysis and preferences AI-fill. Both
+  are rare, user-triggered, and quality matters most (CV analysis is the one
+  artifact every match a user sees depends on). If `GEMINI_API_KEY` is set, tries
+  Google's free Gemini tier first, falling back to `LLM_MODEL` on Ollama the
+  instant Gemini returns 429 (quota exceeded) — never for other errors, so a
+  misconfigured key fails loudly instead of silently degrading. A
+  `GeminiCircuitBreaker` (see below) rides along.
+- **`build_job_llm_provider`** — job skill extraction (both the automatic
+  per-scrape run and "rescore all vacancies") and the AI matcher — the two
+  call sites that run at real volume (once per job, once per (job, user)). If
+  `GROQ_API_KEY` is set, tries Groq's free tier first — Groq runs open models on
+  dedicated inference hardware, so a response comes back in a second or two
+  instead of the CPU-bound minutes a 14B+ model needs under Ollama, which is what
+  actually makes processing a real backlog (hundreds of jobs) practical — falling
+  back to `OLLAMA_FALLBACK_MODEL` (deliberately small/fast, not the best-quality
+  local model, since this leg needs to finish quickly under Celery's concurrent
+  load) the instant Groq returns 429.
+- Both fall back to **`build_configured_llm_provider`** (whatever `LLM_PROVIDER`
+  says) when their preferred hosted provider isn't configured at all.
 
-**Gemini circuit breaker** (`backend/app/integrations/ai/llm/circuit_breaker.py`):
-Gemini's free tier is capped at a small number of requests *per day* — cheap to
-exhaust once AI matching is also going through it. Retrying Gemini on every
-subsequent call after that would just pay for (and wait on) a network round trip
-guaranteed to fail again until the quota resets. `GeminiCircuitBreaker` (Redis,
-keyed per model) remembers the first 429 for the rest of that day and makes
-`FallbackLLMProvider` skip straight to Ollama for every call after — no proactive
-budget/quota-counting needed, this is purely reactive to what Gemini itself
-already said no to.
+These two tiers deliberately never share a quota: the job pipeline's volume would
+exhaust Gemini's much smaller free-tier cap immediately, and CV analysis doesn't
+need Groq's speed since it only runs when a user clicks "Analyze."
+
+**Circuit breakers** (`backend/app/integrations/ai/llm/circuit_breaker.py`):
+retrying an exhausted provider on every subsequent call pays for — and waits
+on — a network round trip that's guaranteed to fail again, so once a 429 is
+actually observed, `FallbackLLMProvider` skips straight to the fallback for a
+cooldown period instead:
+
+- `GeminiCircuitBreaker` — Gemini's free tier is a *daily* cap, so the cooldown
+  runs until the next UTC midnight.
+- `FixedCooldownCircuitBreaker` — Groq enforces both per-minute and per-day
+  limits, and a 429 during normal use is far more likely to be the former (a
+  burst during "rescore all vacancies", not the whole day's quota), so this uses
+  a short, fixed cooldown (`GROQ_CIRCUIT_BREAKER_COOLDOWN_SECONDS`) instead of
+  parking every later call on the slower Ollama fallback until midnight over
+  what was probably transient.
+
+Both are purely reactive to what the provider itself already said no to — no
+proactive budget/quota-counting needed on top.
 
 Whichever model actually produced a result is recorded (`LLMResult.model_label`,
-`backend/app/integrations/ai/llm/base.py`) and shown in the UI — a Gemini-quota
+`backend/app/integrations/ai/llm/base.py`) and shown in the UI — a quota-driven
 fallback to Ollama is never presented as if it were the primary provider.
 
 ## Two separate scores
@@ -220,13 +242,12 @@ highest-leverage user-facing feature of the matching engine — implemented as
 
 It's deliberately narrow-cast: only called for matches already recommended
 `Recommendation.APPLY` (by either the AI matcher or the deterministic fallback —
-see above) — that's both where the question is actually worth asking and the main
-volume control on a personal-scale Gemini
-free-tier key, on top of `LlmReranker`'s own daily call budget
-(`app/integrations/ai/llm/budget.py`, `LLM_RERANK_DAILY_LIMIT`), which caps
-usage independent of whatever the provider's own rate-limit/billing behavior is.
-Batch reranking over an explicit shortlist (`rerank_shortlist`) is still
-deferred — see docs/roadmap.md.
+see above) — that's both where the question is actually worth asking and a
+volume control on top of `LlmReranker`'s own daily call budget
+(`app/integrations/ai/llm/budget.py`, `LLM_RERANK_DAILY_LIMIT`), which caps usage
+independent of whatever the configured provider's own rate-limit/billing
+behavior is. Batch reranking over an explicit shortlist (`rerank_shortlist`) is
+still deferred — see docs/roadmap.md.
 
 ## What the LLM must never own
 

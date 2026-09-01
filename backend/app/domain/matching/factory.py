@@ -16,7 +16,7 @@ from app.domain.matching.service import MatchingService
 from app.domain.matching.skill_matching import SkillMatcher
 from app.integrations.ai.embeddings.factory import build_embedding_provider
 from app.integrations.ai.llm.budget import DailyCallBudget
-from app.integrations.ai.llm.factory import build_quality_llm_provider
+from app.integrations.ai.llm.factory import build_job_llm_provider
 
 
 def build_matching_service(
@@ -27,13 +27,15 @@ def build_matching_service(
         return None
 
     # Both the primary AI-matching path (ai_matcher.py) and the "should I apply?"
-    # reranker share one quality provider: Gemini's free tier first (if
-    # GEMINI_API_KEY is set), automatically falling back to Ollama the instant
-    # Gemini returns 429 (quota exceeded) — see
-    # app/integrations/ai/llm/fallback_provider.py. That fallback is what actually
-    # implements "Gemini by default, local Ollama once we hit limits" for every AI
-    # call site here, with no extra plumbing needed.
-    llm_provider = build_quality_llm_provider(settings, llm_model_override)
+    # reranker share one job-pipeline provider: Groq's free tier first (if
+    # GROQ_API_KEY is set — fast enough for real volume, unlike CPU-only Ollama),
+    # automatically falling back to a small local Ollama model the instant Groq
+    # returns 429 (rate limit) — see app/integrations/ai/llm/fallback_provider.py.
+    # That fallback is what actually implements "Groq by default, local Ollama
+    # once we hit limits" for every AI call site here, with no extra plumbing
+    # needed. See docs/matching-engine.md — CV analysis and preferences AI-fill
+    # are the separate, Gemini-backed call sites (build_quality_llm_provider).
+    llm_provider = build_job_llm_provider(settings, llm_model_override)
 
     ai_matcher = AiMatcher(llm_provider) if llm_provider is not None else None
 
