@@ -39,16 +39,18 @@ def score_existing_jobs_for_user(user_id: str) -> dict[str, int]:
 async def _run_reextract_and_rescore(user_id: str, canonical_job_id: str) -> None:
     """Re-extracts this job's skills through the same job-pipeline provider
     (Groq first, Gemini on rate limit — see build_job_llm_provider) that the
-    automatic per-scrape extraction already uses, then rescores. Skips straight
-    to scoring (degrading to whatever skills were already stored) if no job
-    provider is configured at all."""
+    automatic per-scrape extraction already uses, then rescores. force=True: this
+    is the explicit "refresh everything" action, so it re-reads the posting even
+    when nothing about it changed — that is the point of pressing the button.
+    Skips straight to scoring (degrading to whatever skills were already stored)
+    if no job provider is configured at all."""
     settings = await get_effective_settings(get_settings())
     async with session_scope() as session:
         job_repository = JobRepository(session)
         extraction_service = JobSkillExtractionService(
             job_repository, build_job_llm_provider(settings)
         )
-        await extraction_service.extract_and_save(uuid.UUID(canonical_job_id))
+        await extraction_service.extract_and_save(uuid.UUID(canonical_job_id), force=True)
 
     score_job_for_user.delay(user_id, canonical_job_id)
 

@@ -319,6 +319,7 @@ class JobRepository:
         generated_by: str | None,
         category: JobCategory | None = None,
         category_confidence: float | None = None,
+        extraction_key: str | None = None,
     ) -> None:
         """Saves extracted requirements onto whichever source record scoring reads via
         get_normalized_job_for_canonical — same "most recently normalized" selection,
@@ -336,10 +337,23 @@ class JobRepository:
             return
         model.skills = _skills_payload(skills)
         model.skills_extracted_by = generated_by
+        model.skills_extraction_key = extraction_key
         if category is not None:
             model.category = category.value
             model.category_confidence = category_confidence
         await self._session.flush()
+
+    async def get_extraction_key(self, canonical_job_id: uuid.UUID) -> str | None:
+        """What the last extraction for this job was keyed on (posting hash +
+        extraction version), or None if it was never extracted — see
+        JobSkillExtractionService."""
+        result = await self._session.execute(
+            select(JobSourceRecordModel.skills_extraction_key)
+            .where(JobSourceRecordModel.canonical_job_id == canonical_job_id)
+            .order_by(JobSourceRecordModel.normalized_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def refresh_canonical_content_version(
         self, canonical_job_id: uuid.UUID

@@ -12,8 +12,9 @@ from app.domain.jobs.models import (
     RequirementType,
 )
 from app.domain.skills import rule_extractor
+from app.domain.versioning import job_posting_hash
 from app.integrations.ai.llm.base import LLMResult
-from app.services.job_skill_extraction_service import JobSkillExtractionService
+from app.services.job_skill_extraction_service import EXTRACTION_VERSION, JobSkillExtractionService
 
 _DESCRIPTION = (
     "We use Django and PostgreSQL. Docker is a nice to have. "
@@ -31,13 +32,18 @@ class _FakeLlmProvider:
 
 
 class _FakeJobRepository:
-    def __init__(self, job: NormalizedJob | None):
+    def __init__(self, job: NormalizedJob | None, extraction_key: str | None = None):
         self._job = job
+        self.extraction_key = extraction_key
         self.saved: tuple[uuid.UUID, list, str | None] | None = None
         self.saved_category: tuple[JobCategory | None, float | None] | None = None
+        self.saved_extraction_key: str | None = None
 
     async def get_normalized_job_for_canonical(self, canonical_job_id: uuid.UUID) -> NormalizedJob | None:
         return self._job
+
+    async def get_extraction_key(self, canonical_job_id: uuid.UUID) -> str | None:
+        return self.extraction_key
 
     async def update_skills_for_canonical(
         self,
@@ -46,9 +52,11 @@ class _FakeJobRepository:
         generated_by: str | None,
         category: JobCategory | None = None,
         category_confidence: float | None = None,
+        extraction_key: str | None = None,
     ) -> None:
         self.saved = (canonical_job_id, skills, generated_by)
         self.saved_category = (category, category_confidence)
+        self.saved_extraction_key = extraction_key
 
 
 def _named(skills, name):
@@ -235,3 +243,53 @@ async def test_a_rules_fallback_never_overwrites_an_existing_llm_extraction() ->
 
     assert skills == already_extracted
     assert repository.saved is None
+
+
+class _NeverCalledLlmProvider:
+    async def structured_completion(self, prompt, schema):
+        raise AssertionError("the posting hasn't changed — it must not be read again")
+
+
+def _current_key(job: NormalizedJob) -> str:
+    return f"{job_posting_hash(job)}:{EXTRACTION_VERSION}"
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_posting_is_not_read_again() -> None:
+    # Spending a request to re-derive an answer already on the row is exactly the
+    # quota this pipeline can't afford (docs/ai-pipeline-v3.md, 8).
+    job = replace(_job(), skills=[NormalizedJobSkill(name="Django")], skills_extracted_by="fake-model")
+    repository = _FakeJobRepository(job, extraction_key=_current_key(job))
+    service = JobSkillExtractionService(repository, _NeverCalledLlmProvider())  # type: ignore[arg-type]
+
+    skills = await service.extract_and_save(uuid.uuid4())
+
+    assert skills == job.skills
+    assert repository.saved is None
+
+
+@pytest.mark.asyncio
+async def test_force_re_reads_a_posting_that_has_not_changed() -> None:
+    # "Rescore all vacancies" is an explicit refresh — e.g. after switching
+    # models — so it must not be answered from the cache.
+    job = _job()
+    repository = _FakeJobRepository(job, extraction_key=_current_key(job))
+    service = JobSkillExtractionService(repository, _FakeLlmProvider(_EXTRACTED_PAYLOAD))  # type: ignore[arg-type]
+
+    skills = await service.extract_and_save(uuid.uuid4(), force=True)
+
+    assert [skill.name for skill in skills] == ["Django", "PostgreSQL", "Docker"]
+    assert repository.saved is not None
+
+
+@pytest.mark.asyncio
+async def test_an_edited_posting_is_read_again() -> None:
+    job = _job()
+    stale_key = f"{job_posting_hash(replace(job, description='Old text.'))}:{EXTRACTION_VERSION}"
+    repository = _FakeJobRepository(job, extraction_key=stale_key)
+    service = JobSkillExtractionService(repository, _FakeLlmProvider(_EXTRACTED_PAYLOAD))  # type: ignore[arg-type]
+
+    await service.extract_and_save(uuid.uuid4())
+
+    assert repository.saved is not None
+    assert repository.saved_extraction_key == _current_key(job)

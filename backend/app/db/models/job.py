@@ -77,6 +77,10 @@ class JobSourceRecordModel(UUIDPrimaryKeyMixin, Base):
     # Role category from the same extraction call — see app/domain/categories.py.
     category: Mapped[str | None] = mapped_column(default=None)
     category_confidence: Mapped[float | None] = mapped_column(default=None)
+    # What the stored extraction was keyed on: the posting's own hash plus the
+    # extraction version. Re-reading a posting that hasn't changed costs an LLM
+    # call for an answer already on this row — see JobSkillExtractionService.
+    skills_extraction_key: Mapped[str | None] = mapped_column(default=None)
 
     normalized_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

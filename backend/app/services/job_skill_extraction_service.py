@@ -22,6 +22,13 @@ One thing the fallback must not do is overwrite a richer extraction with a poore
 one: if the job already has LLM-extracted requirements and this run degraded to
 rules, the stored ones stay.
 
+Re-reading a posting that hasn't changed would spend a request on an answer
+already stored, so each extraction records what it was keyed on — the posting's
+own hash plus EXTRACTION_VERSION (docs/ai-pipeline-v3.md, 8) — and a later pass
+with the same key returns the stored requirements untouched. `force=True` is how
+the explicit "Rescore all vacancies" action still gets a genuinely fresh read,
+e.g. after switching models.
+
 Evidence is verified, not trusted: a quote the posting doesn't contain is dropped
 rather than stored, so a hallucinated justification can't end up presented to the
 user as if it came from the vacancy (docs/ai-pipeline-v3.md, 3.3).
@@ -38,10 +45,16 @@ from pydantic import BaseModel, Field
 from app.domain.categories import JobCategory
 from app.domain.jobs.models import NormalizedJob, NormalizedJobSkill, RequirementType
 from app.domain.skills import requirements, rule_extractor
+from app.domain.versioning import job_posting_hash
 from app.integrations.ai.llm.base import LLMProvider
 from app.repositories.job_repository import JobRepository
 
 logger = logging.getLogger(__name__)
+
+# Bump when the prompt or the extracted schema changes: every job then re-reads
+# itself on its next pass instead of keeping an answer the current pipeline
+# wouldn't have given.
+EXTRACTION_VERSION = "1"
 
 _MAX_EVIDENCE_CHARS = 160
 
@@ -151,10 +164,16 @@ class JobSkillExtractionService:
         self._job_repository = job_repository
         self._llm_provider = llm_provider
 
-    async def extract_and_save(self, canonical_job_id: uuid.UUID) -> list[NormalizedJobSkill]:
+    async def extract_and_save(
+        self, canonical_job_id: uuid.UUID, force: bool = False
+    ) -> list[NormalizedJobSkill]:
         job = await self._job_repository.get_normalized_job_for_canonical(canonical_job_id)
         if job is None:
             raise LookupError(f"canonical job {canonical_job_id} has no normalized source record")
+
+        extraction_key = f"{job_posting_hash(job)}:{EXTRACTION_VERSION}"
+        if not force and await self._job_repository.get_extraction_key(canonical_job_id) == extraction_key:
+            return job.skills
 
         extraction = await self._extract_with_llm(job)
         if extraction is None:
@@ -176,6 +195,7 @@ class JobSkillExtractionService:
             extraction.label,
             category=extraction.category,
             category_confidence=extraction.category_confidence,
+            extraction_key=extraction_key,
         )
         return extraction.skills
 

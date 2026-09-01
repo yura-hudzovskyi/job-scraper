@@ -44,37 +44,50 @@ def content_hash(payload: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:_HASH_LENGTH]
 
 
+def _posting_payload(job: NormalizedJob) -> dict[str, Any]:
+    """The vacancy as published, before anything was extracted from it.
+    Deliberately excluded: source/external_id/url — the same vacancy re-listed
+    elsewhere asks for the same things."""
+    return {
+        "title": job.title,
+        "company": job.company,
+        "description": job.description,
+        "employment_type": job.employment_type.value,
+        "remote": job.location.remote,
+        "countries": sorted(job.location.countries),
+        "cities": sorted(job.location.cities),
+        "salary": (
+            None
+            if job.salary is None
+            else {
+                "min": job.salary.min,
+                "max": job.salary.max,
+                "currency": job.salary.currency,
+            }
+        ),
+        "seniority": job.seniority,
+        "required_experience_years": job.required_experience_years,
+    }
+
+
+def job_posting_hash(job: NormalizedJob) -> str:
+    """Identity of the posting text alone — what extraction keys off, since
+    job_content_hash also covers extraction's own output and so can never answer
+    "has the vacancy itself changed since we last read it"."""
+    return content_hash(_posting_payload(job))
+
+
 def job_content_hash(job: NormalizedJob) -> str:
-    """Only what a match is actually derived from. Deliberately excluded:
-    source/external_id/url (the same vacancy re-listed elsewhere requires the same
-    things), skills_extracted_by (which model read the posting is provenance about
-    the *result*, not a change in the posting itself — it's recorded separately in
-    MatchProvenance), and the evidence quotes/confidences behind each requirement
+    """Everything a match is derived from: the posting plus what was extracted
+    from it. Deliberately excluded: skills_extracted_by (which model read the
+    posting is provenance about the *result* — it's recorded separately in
+    MatchProvenance) and the evidence quotes/confidences behind each requirement
     (how a requirement was justified doesn't change what is required)."""
     return content_hash(
         {
-            "title": job.title,
-            "company": job.company,
-            "description": job.description,
-            "employment_type": job.employment_type.value,
-            "remote": job.location.remote,
-            "countries": sorted(job.location.countries),
-            "cities": sorted(job.location.cities),
-            "salary": (
-                None
-                if job.salary is None
-                else {
-                    "min": job.salary.min,
-                    "max": job.salary.max,
-                    "currency": job.salary.currency,
-                }
-            ),
-            "seniority": job.seniority,
-            "required_experience_years": job.required_experience_years,
+            **_posting_payload(job),
             "category": job.category.value if job.category else None,
-            "skills": sorted(
-                [skill.name, skill.requirement.value] for skill in job.skills
-            ),
+            "skills": sorted([skill.name, skill.requirement.value] for skill in job.skills),
         }
     )
 
