@@ -8,7 +8,8 @@ from pydantic import BaseModel
 
 from app.api.deps import get_current_user_id, get_cv_service
 from app.domain.candidates.models import CandidateProfile, CvDocument
-from app.services.cv_service import CvService, LlmNotConfigured, UnsupportedCvFormat
+from app.services.ai_errors import LlmCallFailed, LlmNotConfigured
+from app.services.cv_service import CvService, UnsupportedCvFormat
 from app.workers.tasks.backfill import score_existing_jobs_for_user
 
 router = APIRouter(prefix="/api/cv", tags=["cv"])
@@ -145,6 +146,8 @@ async def analyze_cv(
         profile = await cv_service.analyze_cv(user_id, uuid.UUID(latest.id), latest.raw_text)
     except LlmNotConfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LlmCallFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     # Score this (newly analyzed or re-analyzed) profile against every existing
     # job, not just ones scraped from now on — see workers/tasks/backfill.py.

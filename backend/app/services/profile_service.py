@@ -9,6 +9,7 @@ matters (edited/saved values are always literally what the user set, an AI
 suggestion is just a form-filling convenience the user can freely edit or discard).
 """
 
+import logging
 import uuid
 from dataclasses import dataclass
 
@@ -17,6 +18,9 @@ from pydantic import BaseModel, Field
 from app.domain.candidates.models import CvDocument, UserPreference
 from app.integrations.ai.llm.base import LLMProvider
 from app.repositories.candidate_repository import CandidateRepository
+from app.services.ai_errors import LlmCallFailed, LlmNotConfigured
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -24,10 +28,6 @@ class ProfileSummary:
     user_id: str
     cv_documents: list[CvDocument]
     has_preferences: bool
-
-
-class LlmNotConfigured(RuntimeError):
-    pass
 
 
 class _SuggestedPreferences(BaseModel):
@@ -126,7 +126,12 @@ class ProfileService:
             domains=", ".join(profile.domains) or "none listed",
             achievements=", ".join(profile.achievements) or "none listed",
         )
-        result = await self._llm_provider.structured_completion(prompt, _SuggestedPreferences)
+        try:
+            result = await self._llm_provider.structured_completion(prompt, _SuggestedPreferences)
+        except Exception as exc:
+            # Same rule as CV analysis: the provider's own text stays in the log.
+            logger.warning("preferences AI-fill failed for user %s", user_id, exc_info=True)
+            raise LlmCallFailed() from exc
         suggested = result.data
 
         return SuggestedPreferences(

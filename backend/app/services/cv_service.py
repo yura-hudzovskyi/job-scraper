@@ -3,6 +3,7 @@ structured CandidateProfile via an LLMProvider. See docs/matching-engine.md.
 """
 
 import io
+import logging
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -20,13 +21,12 @@ from app.domain.candidates.models import (
 )
 from app.integrations.ai.llm.base import LLMProvider
 from app.repositories.candidate_repository import CandidateRepository
+from app.services.ai_errors import LlmCallFailed, LlmNotConfigured
+
+logger = logging.getLogger(__name__)
 
 
 class UnsupportedCvFormat(ValueError):
-    pass
-
-
-class LlmNotConfigured(RuntimeError):
     pass
 
 
@@ -116,9 +116,16 @@ class CvService:
                 "no LLM provider configured — set LLM_PROVIDER and its credentials"
             )
 
-        result = await self._llm_provider.structured_completion(
-            _EXTRACTION_PROMPT.format(cv_text=cv_text), _ExtractedProfile
-        )
+        try:
+            result = await self._llm_provider.structured_completion(
+                _EXTRACTION_PROMPT.format(cv_text=cv_text), _ExtractedProfile
+            )
+        except Exception as exc:
+            # The provider's own message can carry account ids, rate-limit headers
+            # and request ids — it goes to the log, never to the HTTP response
+            # (see app/services/ai_errors.py).
+            logger.warning("CV analysis failed for user %s", user_id, exc_info=True)
+            raise LlmCallFailed() from exc
         extracted = result.data
 
         profile = CandidateProfile(

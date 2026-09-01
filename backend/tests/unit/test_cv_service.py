@@ -4,7 +4,8 @@ import pytest
 
 from app.domain.candidates.models import CandidateProfile
 from app.integrations.ai.llm.base import LLMResult
-from app.services.cv_service import CvService, LlmNotConfigured
+from app.services.ai_errors import LlmCallFailed, LlmNotConfigured
+from app.services.cv_service import CvService
 
 
 class _FakeLlmProvider:
@@ -100,3 +101,22 @@ async def test_delete_cv_returns_false_for_a_cv_that_does_not_belong_to_this_use
     service = CvService(_FakeCandidateRepository(), llm_provider=None)  # type: ignore[arg-type]
 
     assert await service.delete_cv(uuid.uuid4(), uuid.uuid4()) is False
+
+
+class _FailingLlmProvider:
+    async def structured_completion(self, prompt, schema):
+        raise RuntimeError("groq: 401 invalid api key gsk_secret account acct_42")
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_never_reaches_the_caller_verbatim() -> None:
+    # CV analysis answers straight back over HTTP, so the provider's own message
+    # (account ids, rate-limit headers, keys) must not travel with the error —
+    # see app/services/ai_errors.py.
+    service = CvService(_FakeCandidateRepository(), llm_provider=_FailingLlmProvider())  # type: ignore[arg-type]
+
+    with pytest.raises(LlmCallFailed) as raised:
+        await service.analyze_cv(uuid.uuid4(), uuid.uuid4(), "CV text")
+
+    assert "gsk_secret" not in str(raised.value)
+    assert "acct_42" not in str(raised.value)
