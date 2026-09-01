@@ -125,6 +125,34 @@ export interface MatchGap {
   critical: boolean;
 }
 
+export interface DocumentVersion {
+  version: number;
+  content_hash: string;
+}
+
+export interface PipelineVersions {
+  scorer: string;
+  match_prompt: string;
+  skill_taxonomy: string;
+  calibration: string | null;
+}
+
+/** How a match was produced — stored with the result, so it keeps naming the
+ *  models that really ran even after the System page changes them. */
+export interface MatchProvenance {
+  engine: string;
+  analysis_level: string;
+  profile: DocumentVersion | null;
+  job: DocumentVersion | null;
+  embedding_model: string | null;
+  cross_encoder_model: string | null;
+  skills_model: string | null;
+  match_model: string | null;
+  fallback_reason: string | null;
+  versions: PipelineVersions;
+  generated_at: string | null;
+}
+
 export interface JobMatch {
   id: string;
   eligible: boolean;
@@ -135,8 +163,7 @@ export interface JobMatch {
   gaps: MatchGap[];
   recommendation: string | null;
   llm_assessment: LlmAssessment | null;
-  skills_source: string | null;
-  scored_by: string | null;
+  provenance: MatchProvenance | null;
   scored_at: string | null;
 }
 
