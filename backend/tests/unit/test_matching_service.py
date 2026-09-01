@@ -220,7 +220,7 @@ async def test_strong_match_recommends_apply(matching_service: MatchingService) 
             NormalizedJobSkill(name="Django", required=True),
             NormalizedJobSkill(name="PostgreSQL", required=True),
         ],
-        skills_extracted_by="Ollama (llama3.2:3b)",
+        skills_extracted_by="Groq (llama-3.3-70b-versatile)",
     )
     profile = _profile(skills=["Django", "PostgreSQL"])
 
@@ -229,7 +229,7 @@ async def test_strong_match_recommends_apply(matching_service: MatchingService) 
     assert match.eligible is True
     assert match.recommendation == Recommendation.APPLY
     assert match.practical_fit > 80
-    assert match.skills_source == "Ollama (llama3.2:3b)"
+    assert match.skills_source == "Groq (llama-3.3-70b-versatile)"
     assert any(reason.label == "Django" for reason in match.strengths)
 
 

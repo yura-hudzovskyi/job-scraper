@@ -4,7 +4,8 @@ A swipe-card UX, not a long report: each match is a short card (score, title,
 company, a couple of quick-read facts) with two buttons — Approve / Reject — the
 same shape as a dating app's yes/no, not a document to study. Uses httpx directly:
 the Bot API is a simple, stable REST API with no official Python SDK to
-standardize on (same reasoning as the Ollama provider). See docs/notifications.md.
+standardize on (same reasoning as every other HTTP integration here). See
+docs/notifications.md.
 
 Button taps arrive as callback_query updates via a Telegram webhook — see
 integrations/notifications/telegram_webhook.py (registration, at app startup) and

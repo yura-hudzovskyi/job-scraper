@@ -19,10 +19,11 @@ import redis.asyncio as redis
 
 _KEY = "ai:model_overrides"
 
-# Exactly the four "which model" knobs Settings exposes — provider *selection*
-# (LLM_PROVIDER, EMBEDDING_PROVIDER) and API keys stay .env-only/out of Redis on
-# purpose: those are infra/secrets decisions, not something to flip at runtime.
-OVERRIDABLE_FIELDS = ("groq_model", "gemini_model", "llm_model", "ollama_fallback_model")
+# Exactly the two "which model" knobs the pipeline actually runs on — provider
+# *selection* (LLM_PROVIDER, EMBEDDING_PROVIDER) and API keys stay .env-only/out
+# of Redis on purpose: those are infra/secrets decisions, not something to flip
+# at runtime.
+OVERRIDABLE_FIELDS = ("groq_model", "gemini_model")
 
 
 class UnknownAiSettingField(ValueError):

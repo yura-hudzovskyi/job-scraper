@@ -94,15 +94,15 @@ async def test_extract_and_save_raises_when_job_not_found() -> None:
 
 class _FailingLlmProvider:
     async def structured_completion(self, prompt, schema):
-        raise RuntimeError("Ollama unreachable")
+        raise RuntimeError("provider unreachable")
 
 
 @pytest.mark.asyncio
 async def test_extract_and_save_returns_none_when_the_llm_call_fails() -> None:
     # Regression test: extract_job_skills.delay's Celery task fans out
     # score_job_for_user for every onboarded user right after extract_and_save
-    # returns — if a bad LLM response (timeout, unreachable Ollama, a model tag
-    # that isn't actually pulled) raised out of here instead of degrading to None,
+    # returns — if a bad LLM response (timeout, provider outage, a response that
+    # doesn't match the schema) raised out of here instead of degrading to None,
     # the whole task would fail and silently skip scoring for every user on that
     # job. See job_skill_extraction_service.py's module docstring.
     repository = _FakeJobRepository(_job())

@@ -189,25 +189,13 @@ async def rescore_job(
     return {"status": "queued", "job_id": str(job_id)}
 
 
-class RescoreAllRequest(BaseModel):
-    # Overrides the Ollama fallback model for this run only — the "Rescore all
-    # vacancies" admin action (Jobs page) re-extracts skills and rescores every
-    # job through the Groq-first job-pipeline provider (see
-    # workers/tasks/backfill.py, app/integrations/ai/llm/factory.py::
-    # build_job_llm_provider), same as automatic per-scrape extraction; this only
-    # picks which local Ollama model that provider falls back to once Groq's rate
-    # limit is hit mid-run, without touching server config. None (the default)
-    # means "use whatever the server/System page is already configured with."
-    # See app/api/routes/ai_settings.py for changing Groq's own model
-    # persistently instead of per-run.
-    llm_model: str | None = None
-
-
 @router.post("/rescore-all")
-async def rescore_all(
-    payload: RescoreAllRequest, user_id: uuid.UUID = Depends(get_current_user_id)
-) -> dict[str, str]:
-    rescore_all_jobs.delay(str(user_id), payload.llm_model)
+async def rescore_all(user_id: uuid.UUID = Depends(get_current_user_id)) -> dict[str, str]:
+    """Re-extracts skills and rescores every canonical job for this user (see
+    workers/tasks/backfill.py::rescore_all_jobs). Which models that runs on comes
+    from the server config / System page (app/api/routes/ai_settings.py), never
+    from the request."""
+    rescore_all_jobs.delay(str(user_id))
     return {"status": "queued"}
 
 

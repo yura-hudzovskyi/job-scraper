@@ -44,16 +44,12 @@ class ModelFieldStatus(BaseModel):
 
 
 class AiModelsResponse(BaseModel):
-    llm_provider: str
     groq_configured: bool
     groq_model: ModelFieldStatus
     groq_circuit_open: bool
     gemini_configured: bool
     gemini_model: ModelFieldStatus
     gemini_circuit_open: bool
-    llm_model: ModelFieldStatus
-    ollama_fallback_model: ModelFieldStatus
-    ollama_base_url: str
 
 
 @router.get("/models", response_model=AiModelsResponse)
@@ -86,16 +82,12 @@ async def get_ai_models(
         gemini_circuit_open = await gemini_breaker.is_open()
 
     return AiModelsResponse(
-        llm_provider=settings.llm_provider,
         groq_configured=bool(settings.groq_api_key),
         groq_model=_field("groq_model"),
         groq_circuit_open=groq_circuit_open,
         gemini_configured=bool(settings.gemini_api_key),
         gemini_model=_field("gemini_model"),
         gemini_circuit_open=gemini_circuit_open,
-        llm_model=_field("llm_model"),
-        ollama_fallback_model=_field("ollama_fallback_model"),
-        ollama_base_url=settings.ollama_base_url,
     )
 
 
@@ -104,8 +96,6 @@ class AiModelsUpdateRequest(BaseModel):
     # AiSettingsRepository.set_override. Omitting a field leaves it unchanged.
     groq_model: str | None = None
     gemini_model: str | None = None
-    llm_model: str | None = None
-    ollama_fallback_model: str | None = None
 
 
 @router.patch("/models", response_model=AiModelsResponse)

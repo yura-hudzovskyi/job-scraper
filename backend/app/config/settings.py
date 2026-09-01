@@ -18,51 +18,26 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
 
-    llm_provider: Literal["ollama", "openai", "anthropic"] = "ollama"
-    llm_model: str = "llama3.1"
-    ollama_base_url: str = "http://localhost:11434"
-    # Ollama silently truncates the prompt to this many tokens rather than erroring —
-    # see app/integrations/ai/llm/ollama_provider.py. Job descriptions and CV text are
-    # embedded in full (no truncation in the prompt-building code itself), so this has
-    # to comfortably cover the longest real postings/CVs, not just the typical case.
-    # qwen2.5:14b/qwen3:14b (the recommended default, see docs/deployment.md) natively
-    # support up to 32768 — raise toward that ceiling if truncation is still observed
-    # in practice, trading more KV-cache RAM and somewhat slower inference for it.
-    ollama_num_ctx: int = 16384
-    # How long to wait for one Ollama response — see
-    # app/integrations/ai/llm/ollama_provider.py's DEFAULT_TIMEOUT_SECONDS for why
-    # this needs headroom beyond a single isolated request's 60-90s: Celery's
-    # worker pool can have several tasks calling Ollama at once, and those queue
-    # up (or thrash for RAM/CPU) rather than each finishing in the uncontended
-    # case's time. Also set OLLAMA_NUM_PARALLEL=1 on the ollama container itself
-    # (docs/deployment.md) so concurrent requests queue cleanly instead of both
-    # running at once and starving each other of RAM.
-    ollama_timeout_seconds: float = 600.0
-    # The job pipeline's own Ollama model (build_job_llm_provider) — used
-    # directly when GROQ_API_KEY isn't set, or as the fallback once Groq's rate
-    # limit trips when it is. Deliberately independent of llm_model, which is
-    # what CV analysis/preferences AI-fill fall back to instead
-    # (build_quality_llm_provider): the two call sites can run different local
-    # models — e.g. something small/fast here for per-job volume (this needs to
-    # actually finish in reasonable time under Celery's concurrent load, not be
-    # the best quality model available locally) while CV analysis's fallback
-    # stays on something bigger, since that one's rare enough to afford it. See
-    # docs/matching-engine.md.
-    ollama_fallback_model: str = "llama3.1:8b"
+    # Optional paid LLM leg (see app/integrations/ai/llm/factory.py::
+    # build_configured_llm_provider) — used only when both are set, and only
+    # after the Gemini/Groq free tiers. The pipeline runs on those two alone by
+    # default; this exists for deployments that would rather not depend on a
+    # free tier at all.
+    llm_provider: Literal["openai", "anthropic"] | None = None
+    llm_model: str | None = None
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
 
     # Optional: when set, CV analysis and preferences AI-fill (the "quality
     # matters most, low volume" call sites) use Gemini's free tier first, falling
-    # back to Ollama (llm_model) on rate limit — see
+    # back to Groq on rate limit — see
     # app/integrations/ai/llm/factory.py::build_quality_llm_provider.
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"
 
     # Optional: when set, the job pipeline (skill extraction, AI matching, "should
     # I apply?") uses Groq's free tier first — fast enough to actually churn
-    # through a real backlog, unlike CPU-only Ollama — falling back to a small
-    # local model (ollama_fallback_model) on rate limit. See
+    # through a real backlog — falling back to Gemini on rate limit. See
     # app/integrations/ai/llm/factory.py::build_job_llm_provider and
     # docs/matching-engine.md.
     groq_api_key: str | None = None

@@ -1,10 +1,10 @@
 """A hard, explicit ceiling on how many times an expensive/quota-limited
 operation may run per day — independent of whatever the provider's own rate-limit
 or billing behavior is. Built for LlmReranker (app/domain/matching/llm_reranker.py):
-FallbackLLMProvider's existing 429->Ollama fallback only degrades quality on a
-Gemini rate-limit response, it doesn't actually protect the free-tier quota, and
-doesn't protect against a billing-enabled Google Cloud project not hard-capping
-at 429 at all. This gives a direct, user-configurable cap instead.
+FallbackLLMProvider's existing 429->next-leg fallback only swaps providers on a
+rate-limit response, it doesn't actually protect a free-tier quota, and doesn't
+protect against a billing-enabled account not hard-capping at 429 at all. This
+gives a direct, user-configurable cap instead.
 """
 
 from datetime import UTC, datetime

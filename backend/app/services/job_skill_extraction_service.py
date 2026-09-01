@@ -7,8 +7,8 @@ philosophy as CV analysis, so a missing LLM doesn't fail the scrape pipeline.
 The LLM call itself is also wrapped in a try/except (returns None instead of
 raising): extract_job_skills.delay's task fans out score_job_for_user for every
 onboarded user right after this call, so letting a bad response (timeout,
-unreachable Ollama, a model that isn't actually pulled, malformed JSON against the
-schema) propagate out of here would fail the whole Celery task and silently skip
+provider outage, malformed JSON against the schema) propagate out of here would
+fail the whole Celery task and silently skip
 scoring for every user on that job — extraction failing is a reason to score with
 an empty skill list (DeterministicScorer handles that fine), not a reason to not
 score at all.

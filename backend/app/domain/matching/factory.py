@@ -12,14 +12,15 @@ from app.domain.matching.role_matching import RoleMatcher
 from app.domain.matching.scoring import DeterministicScorer, SemanticScorer
 from app.domain.matching.service import MatchingService
 from app.domain.matching.skill_matching import SkillMatcher
-from app.integrations.ai.embeddings.factory import build_cross_encoder_provider, build_embedding_provider
+from app.integrations.ai.embeddings.factory import (
+    build_cross_encoder_provider,
+    build_embedding_provider,
+)
 from app.integrations.ai.llm.budget import DailyCallBudget
 from app.integrations.ai.llm.factory import build_job_llm_provider
 
 
-def build_matching_service(
-    settings: Settings, llm_model_override: str | None = None
-) -> MatchingService | None:
+def build_matching_service(settings: Settings) -> MatchingService | None:
     embedding_provider = build_embedding_provider(settings)
     if embedding_provider is None:
         return None
@@ -28,12 +29,12 @@ def build_matching_service(
 
     # The "should I apply?" reranker (the only job-tier LLM call site now that
     # scoring is fully deterministic) uses Groq's free tier first (if
-    # GROQ_API_KEY is set — fast enough for real volume, unlike CPU-only Ollama),
-    # automatically falling back to a small local Ollama model the instant Groq
-    # returns 429 (rate limit) — see app/integrations/ai/llm/fallback_provider.py.
-    # See docs/matching-engine.md — CV analysis and preferences AI-fill are the
-    # separate, Gemini-backed call sites (build_quality_llm_provider).
-    llm_provider = build_job_llm_provider(settings, llm_model_override)
+    # GROQ_API_KEY is set — fast enough for real volume), automatically falling
+    # back to Gemini the instant Groq returns 429 (rate limit) — see
+    # app/integrations/ai/llm/factory.py and fallback_provider.py. CV analysis and
+    # preferences AI-fill are the separate, Gemini-first call sites
+    # (build_quality_llm_provider).
+    llm_provider = build_job_llm_provider(settings)
 
     llm_reranker = None
     if llm_provider is not None:
