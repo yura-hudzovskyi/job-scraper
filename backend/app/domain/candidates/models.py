@@ -58,6 +58,11 @@ class CandidateProfile:
     domains: list[str] = field(default_factory=list)
     ai_experience: list[str] = field(default_factory=list)
     generated_by: str | None = None  # which LLM produced this, e.g. "Gemini (gemini-2.0-flash)"
+    # Which revision of this user's CV this is — see app/domain/versioning.py. The
+    # defaults describe a profile that hasn't been saved yet; CandidateRepository
+    # fills both in on save.
+    version: int = 1
+    content_hash: str | None = None
 
 
 @dataclass(frozen=True)

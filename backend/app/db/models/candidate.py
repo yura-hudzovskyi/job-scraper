@@ -46,6 +46,11 @@ class CandidateProfileModel(UUIDPrimaryKeyMixin, Base):
     domains: Mapped[list[str]] = mapped_column(JSONB, default=list)
     ai_experience: Mapped[list[str]] = mapped_column(JSONB, default=list)
     generated_by: Mapped[str | None] = mapped_column(default=None)
+    # Which revision of this user's CV this snapshot is: `version` counts up per
+    # user (each analysis inserts a new row), `content_hash` is the real identity
+    # — see app/domain/versioning.py.
+    version: Mapped[int] = mapped_column(default=1, server_default="1")
+    content_hash: Mapped[str | None] = mapped_column(default=None)
 
     extracted_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

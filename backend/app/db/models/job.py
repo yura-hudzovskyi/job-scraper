@@ -32,6 +32,12 @@ class CanonicalJobModel(UUIDPrimaryKeyMixin, Base):
     title: Mapped[str]
     company: Mapped[str]
     description: Mapped[str]
+    # Identity of the analysis-relevant content behind this vacancy — see
+    # app/domain/versioning.py and JobRepository.refresh_canonical_content_version.
+    # NULL until the job is scored once; `content_version` counts material changes
+    # so a stored match can say which revision of the posting produced it.
+    content_hash: Mapped[str | None] = mapped_column(default=None)
+    content_version: Mapped[int] = mapped_column(default=1, server_default="1")
     first_seen_at: Mapped[datetime] = mapped_column(server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

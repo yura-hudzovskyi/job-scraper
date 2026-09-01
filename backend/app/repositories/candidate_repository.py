@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.candidate import CandidateProfileModel, CvDocumentModel, UserPreferenceModel
@@ -14,6 +14,7 @@ from app.domain.candidates.models import (
     SkillLevel,
     UserPreference,
 )
+from app.domain.versioning import profile_content_hash
 
 
 def _to_cv_document(model: CvDocumentModel) -> CvDocument:
@@ -51,6 +52,8 @@ def _to_candidate_profile(model: CandidateProfileModel) -> CandidateProfile:
         domains=list(model.domains),
         ai_experience=list(model.ai_experience),
         generated_by=model.generated_by,
+        version=model.version,
+        content_hash=model.content_hash,
     )
 
 
@@ -118,8 +121,18 @@ class CandidateRepository:
         self, user_id: uuid.UUID, cv_document_id: uuid.UUID, profile: CandidateProfile
     ) -> CandidateProfile:
         """Each analysis creates a new snapshot rather than overwriting — re-running
-        analyze_cv keeps history instead of silently discarding the previous read."""
+        analyze_cv keeps history instead of silently discarding the previous read.
+        Each snapshot gets the next version number for this user and a hash of its
+        own content, so a match scored against it stays attributable to exactly
+        this revision of the CV (see app/domain/versioning.py)."""
+        version_result = await self._session.execute(
+            select(func.coalesce(func.max(CandidateProfileModel.version), 0) + 1).where(
+                CandidateProfileModel.user_id == user_id
+            )
+        )
         model = CandidateProfileModel(
+            version=version_result.scalar_one(),
+            content_hash=profile_content_hash(profile),
             user_id=user_id,
             cv_document_id=cv_document_id,
             experience_years=profile.experience_years,
