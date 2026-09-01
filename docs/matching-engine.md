@@ -171,11 +171,16 @@ provider + local fallback + circuit breaker, wired in
   dedicated inference hardware, so a response comes back in a second or two
   instead of the CPU-bound minutes a 14B+ model needs under Ollama, which is what
   actually makes processing a real backlog (hundreds of jobs) practical — falling
-  back to `OLLAMA_FALLBACK_MODEL` (deliberately small/fast, not the best-quality
-  local model, since this leg needs to finish quickly under Celery's concurrent
-  load) the instant Groq returns 429.
-- Both fall back to **`build_configured_llm_provider`** (whatever `LLM_PROVIDER`
-  says) when their preferred hosted provider isn't configured at all.
+  back to `OLLAMA_FALLBACK_MODEL` the instant Groq returns 429. With
+  `LLM_PROVIDER=ollama` and no `GROQ_API_KEY` at all, this runs on
+  `OLLAMA_FALLBACK_MODEL` directly — **not** `LLM_MODEL`. The two are
+  deliberately independent: `LLM_MODEL` is what CV analysis/preferences AI-fill
+  fall back to, so each call site can run its own local model — e.g. a small,
+  fast one here (this leg needs to finish quickly under Celery's concurrent
+  load, not be the best quality model available locally) while CV analysis
+  keeps a bigger one for its much rarer fallback, or the reverse.
+- Both fall back to **`build_configured_llm_provider`** for the `openai`/
+  `anthropic` case, where there's no local-vs-hosted distinction to make.
 
 These two tiers deliberately never share a quota: the job pipeline's volume would
 exhaust Gemini's much smaller free-tier cap immediately, and CV analysis doesn't

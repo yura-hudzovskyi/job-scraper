@@ -21,7 +21,12 @@ choice — see docs/matching-engine.md:
   model available locally) the moment Groq returns 429. A
   FixedCooldownCircuitBreaker rides along with a short cooldown, not
   GeminiCircuitBreaker's until-midnight one — see circuit_breaker.py for why.
-  Falls back to build_configured_llm_provider when Groq isn't configured.
+  With LLM_PROVIDER=ollama and no GROQ_API_KEY, this runs on
+  ollama_fallback_model directly (not llm_model) — the job pipeline's local
+  model is independently choosable from CV analysis's, e.g. a small/fast model
+  here for volume while CV analysis's own Ollama fallback stays on something
+  bigger, or the reverse. Falls back to build_configured_llm_provider only for
+  the openai/anthropic case, where that distinction doesn't apply.
 - build_configured_llm_provider: whatever llm_provider says, no Gemini/Groq
   involved. The base case both call sites above fall back to when their
   preferred hosted provider isn't configured.
@@ -133,9 +138,20 @@ def build_job_llm_provider(
     """Job skill extraction (both the automatic per-scrape run and "rescore all
     vacancies"), AI matching, and the "should I apply?" reranker — see the module
     docstring. model_override, same meaning as build_configured_llm_provider's,
-    overrides the *Ollama fallback leg's* model for one run (e.g. "rescore all
-    vacancies" comparing a different local model), not Groq's — Groq's model is
-    always Settings.groq_model."""
+    overrides the *Ollama leg's* model for one run (e.g. "rescore all vacancies"
+    comparing a different local model), not Groq's — Groq's model is always
+    Settings.groq_model.
+
+    Deliberately does NOT fall through to build_configured_llm_provider's
+    Settings.llm_model when llm_provider is "ollama": that setting is what CV
+    analysis/preferences AI-fill fall back to (build_quality_llm_provider), and
+    the two are meant to stay independently choosable — e.g. running a small,
+    fast model here (ollama_fallback_model) for job-pipeline volume while CV
+    analysis's rare Gemini-fallback still gets a bigger/better one via llm_model,
+    or vice versa. Only the openai/anthropic branches (no separate "fallback
+    model" concept — there's no local-vs-hosted distinction to make there) still
+    go through build_configured_llm_provider as-is.
+    """
     if settings.groq_api_key:
         from app.integrations.ai.llm.circuit_breaker import FixedCooldownCircuitBreaker
         from app.integrations.ai.llm.fallback_provider import FallbackLLMProvider
@@ -155,6 +171,14 @@ def build_job_llm_provider(
         )
         return FallbackLLMProvider(
             groq, ollama, is_retryable=_is_groq_rate_limited, circuit_breaker=circuit_breaker
+        )
+
+    if settings.llm_provider == "ollama":
+        return OllamaLLMProvider(
+            settings.ollama_base_url,
+            model_override or settings.ollama_fallback_model,
+            num_ctx=settings.ollama_num_ctx,
+            timeout_seconds=settings.ollama_timeout_seconds,
         )
 
     return build_configured_llm_provider(settings, model_override)

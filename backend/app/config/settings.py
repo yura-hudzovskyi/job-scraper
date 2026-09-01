@@ -38,12 +38,16 @@ class Settings(BaseSettings):
     # (docs/deployment.md) so concurrent requests queue cleanly instead of both
     # running at once and starving each other of RAM.
     ollama_timeout_seconds: float = 600.0
-    # The job pipeline's local fallback model (build_job_llm_provider) — separate
-    # from llm_model/Settings.llm_model, which is what a direct LLM_PROVIDER=ollama
-    # setup or CV analysis's fallback uses. Deliberately small: this only gets
-    # called once Groq's rate limit trips, so it needs to actually finish in
-    # reasonable time under Celery's concurrent load, not be the best quality
-    # model available locally — see docs/matching-engine.md.
+    # The job pipeline's own Ollama model (build_job_llm_provider) — used
+    # directly when GROQ_API_KEY isn't set, or as the fallback once Groq's rate
+    # limit trips when it is. Deliberately independent of llm_model, which is
+    # what CV analysis/preferences AI-fill fall back to instead
+    # (build_quality_llm_provider): the two call sites can run different local
+    # models — e.g. something small/fast here for per-job volume (this needs to
+    # actually finish in reasonable time under Celery's concurrent load, not be
+    # the best quality model available locally) while CV analysis's fallback
+    # stays on something bigger, since that one's rare enough to afford it. See
+    # docs/matching-engine.md.
     ollama_fallback_model: str = "llama3.1:8b"
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None

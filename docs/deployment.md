@@ -133,10 +133,15 @@ table) is what CV analysis and preferences AI-fill fall back to if
 `GEMINI_API_KEY` isn't set, or the moment Gemini's quota trips; both are rare,
 manual, user-triggered actions, so a CPU-only response in 10-30s+ on the A1 shape
 is fine. `OLLAMA_FALLBACK_MODEL` (default `llama3.1:8b`, see `.env.example`) is
-the separate, smaller model the job pipeline (skill extraction, AI matching)
-falls back to once `GROQ_API_KEY`'s rate limit trips — that one deliberately
-stays small, since it needs to actually finish in reasonable time under Celery's
-concurrent load rather than being the best-quality model available locally.
+the **separate** model the job pipeline (skill extraction, AI matching) uses —
+directly, if `GROQ_API_KEY` isn't set at all; as the fallback once it is set and
+its rate limit trips, otherwise. The two settings are deliberately independent,
+not a "primary vs. fallback" pair sharing one value: pick a small/fast model here
+since this leg needs to actually finish in reasonable time under Celery's
+concurrent load (a 4B-class model is a reasonable choice if even `llama3.1:8b`
+feels slow under load), while `LLM_MODEL` can stay on something bigger for CV
+analysis's much rarer fallback, or the reverse — whichever trade-off fits your
+actual usage.
 
 What matters for whichever model(s) you pull is fitting comfortably in RAM
 alongside Postgres, the API/worker processes, and sentence-transformers, which
@@ -150,7 +155,7 @@ of that headroom for guaranteed no truncation on very long postings/CVs.
 
 | Model | Download size | ~Resident RAM in use (16384 ctx) | Free-tier fit |
 |---|---|---|---|
-| `llama3.2:3b` | ~2 GB | ~2.8 GB | Comfortable even on a 12 GB VM |
+| `llama3.2:3b` / `qwen3.5:4b`-class | ~2-3 GB | ~3-4 GB (estimated by extrapolation, not independently measured for every 4B-class tag) | Comfortable even on a 12 GB VM, and the fastest option for `OLLAMA_FALLBACK_MODEL` if `llama3.1:8b` still feels slow under concurrent load — worth confirming actual quality on real matches before committing, smaller models trade off reasoning depth |
 | `qwen2.5:14b` / `qwen3:14b` | ~9 GB | ~13 GB | **Recommended default on the 24 GB (4 OCPU) shape** — meaningfully better structured-output quality than 3b, still leaves ~8 GB of headroom over Postgres/API/worker/beat/sentence-transformers |
 | `llama3.1:8b` / `qwen2.5:7b` | ~4.5-4.7 GB | ~6.5 GB | Fine on 24 GB; tight on 12 GB |
 
