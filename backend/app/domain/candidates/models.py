@@ -29,11 +29,35 @@ class SkillLevel(StrEnum):
     EXPERT = "expert"
 
 
+class SkillSource(StrEnum):
+    """Who said this skill is on the CV. USER outranks everything automated and
+    survives re-analysis — see app/domain/candidates/skill_overrides.py."""
+
+    LLM = "llm"
+    RULES = "rules"
+    USER = "user"
+
+
 @dataclass(frozen=True)
 class CandidateSkill:
     name: str
     level: SkillLevel
     years: float | None = None
+    source: SkillSource = SkillSource.LLM
+
+
+@dataclass(frozen=True)
+class SkillOverride:
+    """One correction the user made to their own extracted skills. Kept per user
+    rather than inside a profile snapshot, so re-analyzing the CV re-applies it
+    instead of silently undoing it."""
+
+    skill_key: str  # dedupe_key() from app/domain/skills/normalizer.py
+    name: str
+    level: SkillLevel | None = None
+    years: float | None = None
+    # "The CV mentions it, don't count it" — a correction, not an absence.
+    removed: bool = False
 
 
 @dataclass(frozen=True)

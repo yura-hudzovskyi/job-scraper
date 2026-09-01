@@ -2,7 +2,12 @@ import uuid
 
 import pytest
 
-from app.domain.candidates.models import CandidateProfile
+from app.domain.candidates.models import (
+    CandidateProfile,
+    SkillLevel,
+    SkillOverride,
+    SkillSource,
+)
 from app.integrations.ai.llm.base import LLMResult
 from app.services.ai_errors import LlmCallFailed, LlmNotConfigured
 from app.services.cv_service import CvService
@@ -18,9 +23,17 @@ class _FakeLlmProvider:
 
 
 class _FakeCandidateRepository:
-    def __init__(self, deletable_cv_ids: set[uuid.UUID] | None = None) -> None:
+    def __init__(
+        self,
+        deletable_cv_ids: set[uuid.UUID] | None = None,
+        skill_overrides: list[SkillOverride] | None = None,
+    ) -> None:
         self.saved: tuple[uuid.UUID, uuid.UUID, CandidateProfile] | None = None
         self._deletable_cv_ids = deletable_cv_ids or set()
+        self._skill_overrides = skill_overrides or []
+
+    async def list_skill_overrides(self, user_id: uuid.UUID) -> list[SkillOverride]:
+        return self._skill_overrides
 
     async def save_candidate_profile(
         self, user_id: uuid.UUID, cv_document_id: uuid.UUID, profile: CandidateProfile
@@ -120,3 +133,25 @@ async def test_a_provider_failure_never_reaches_the_caller_verbatim() -> None:
 
     assert "gsk_secret" not in str(raised.value)
     assert "acct_42" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_user_corrections_survive_re_analysis() -> None:
+    # The CV still says Django and says Python is "strong"; the user has already
+    # said otherwise. Re-reading the CV must not quietly undo either decision.
+    overrides = [
+        SkillOverride(skill_key="django", name="Django", removed=True),
+        SkillOverride(skill_key="python", name="Python", level=SkillLevel.EXPERT, years=6.0),
+        SkillOverride(skill_key="rust", name="Rust", level=SkillLevel.COMMERCIAL),
+    ]
+    repository = _FakeCandidateRepository(skill_overrides=overrides)
+    service = CvService(repository, llm_provider=_FakeLlmProvider(_EXTRACTED_PAYLOAD))  # type: ignore[arg-type]
+
+    profile = await service.analyze_cv(uuid.uuid4(), uuid.uuid4(), "some CV text")
+
+    by_name = {skill.name: skill for skill in profile.skills}
+    assert "Django" not in by_name
+    assert by_name["Python"].level is SkillLevel.EXPERT
+    assert by_name["Python"].years == 6.0
+    assert by_name["Python"].source is SkillSource.USER
+    assert by_name["Rust"].source is SkillSource.USER

@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, func
+from sqlalchemy import ForeignKey, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -53,6 +53,24 @@ class CandidateProfileModel(UUIDPrimaryKeyMixin, Base):
     content_hash: Mapped[str | None] = mapped_column(default=None)
 
     extracted_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class CandidateSkillOverrideModel(UUIDPrimaryKeyMixin, Base):
+    """A user's own decision about one of their skills. Deliberately keyed by user
+    rather than by profile: a CandidateProfile is an immutable snapshot of one
+    analysis, so a correction stored inside one would be lost on the next — see
+    app/domain/candidates/skill_overrides.py."""
+
+    __tablename__ = "candidate_skill_overrides"
+    __table_args__ = (UniqueConstraint("user_id", "skill_key"),)
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    skill_key: Mapped[str]
+    name: Mapped[str]
+    level: Mapped[str | None] = mapped_column(default=None)
+    years: Mapped[float | None] = mapped_column(default=None)
+    removed: Mapped[bool] = mapped_column(default=False, server_default="false")
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class UserPreferenceModel(UUIDPrimaryKeyMixin, Base):

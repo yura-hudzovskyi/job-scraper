@@ -19,6 +19,7 @@ from app.domain.candidates.models import (
     ExperienceEntry,
     SkillLevel,
 )
+from app.domain.candidates.skill_overrides import apply_overrides, normalize
 from app.integrations.ai.llm.base import LLMProvider
 from app.repositories.candidate_repository import CandidateRepository
 from app.services.ai_errors import LlmCallFailed, LlmNotConfigured
@@ -133,10 +134,13 @@ class CvService:
             user_id=str(user_id),
             experience_years=extracted.experience_years,
             roles=extracted.roles,
-            skills=[
-                CandidateSkill(name=skill.name, level=SkillLevel(skill.level), years=skill.years)
-                for skill in extracted.skills
-            ],
+            skills=apply_overrides(
+                normalize(
+                    CandidateSkill(name=skill.name, level=SkillLevel(skill.level), years=skill.years)
+                    for skill in extracted.skills
+                ),
+                await self._candidate_repository.list_skill_overrides(user_id),
+            ),
             experience=[
                 ExperienceEntry(
                     company=entry.company,

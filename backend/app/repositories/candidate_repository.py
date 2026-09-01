@@ -1,17 +1,26 @@
 """Persistence for CV documents, LLM-extracted candidate profiles, and preferences."""
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.candidate import CandidateProfileModel, CvDocumentModel, UserPreferenceModel
+from app.db.models.candidate import (
+    CandidateProfileModel,
+    CandidateSkillOverrideModel,
+    CvDocumentModel,
+    UserPreferenceModel,
+)
 from app.domain.candidates.models import (
     CandidateProfile,
     CandidateSkill,
     CvDocument,
     ExperienceEntry,
     SkillLevel,
+    SkillOverride,
+    SkillSource,
     UserPreference,
 )
 from app.domain.versioning import profile_content_hash
@@ -34,7 +43,12 @@ def _to_candidate_profile(model: CandidateProfileModel) -> CandidateProfile:
         experience_years=model.experience_years,
         roles=list(model.roles),
         skills=[
-            CandidateSkill(name=skill["name"], level=SkillLevel(skill["level"]), years=skill.get("years"))
+            CandidateSkill(
+                name=skill["name"],
+                level=SkillLevel(skill["level"]),
+                years=skill.get("years"),
+                source=SkillSource(skill.get("source", SkillSource.LLM)),
+            )
             for skill in model.skills
         ],
         experience=[
@@ -54,6 +68,16 @@ def _to_candidate_profile(model: CandidateProfileModel) -> CandidateProfile:
         generated_by=model.generated_by,
         version=model.version,
         content_hash=model.content_hash,
+    )
+
+
+def _to_skill_override(model: CandidateSkillOverrideModel) -> SkillOverride:
+    return SkillOverride(
+        skill_key=model.skill_key,
+        name=model.name,
+        level=SkillLevel(model.level) if model.level else None,
+        years=model.years,
+        removed=model.removed,
     )
 
 
@@ -138,7 +162,12 @@ class CandidateRepository:
             experience_years=profile.experience_years,
             roles=profile.roles,
             skills=[
-                {"name": skill.name, "level": skill.level.value, "years": skill.years}
+                {
+                    "name": skill.name,
+                    "level": skill.level.value,
+                    "years": skill.years,
+                    "source": skill.source.value,
+                }
                 for skill in profile.skills
             ],
             experience=[
@@ -177,6 +206,58 @@ class CandidateRepository:
         hard-requires a CandidateProfile, so this is the fan-out gate in scrape.py."""
         result = await self._session.execute(select(CandidateProfileModel.user_id).distinct())
         return list(result.scalars())
+
+    async def list_skill_overrides(self, user_id: uuid.UUID) -> list[SkillOverride]:
+        """Every correction this user has made to their extracted skills — applied
+        to each new analysis, so they survive re-extraction."""
+        result = await self._session.execute(
+            select(CandidateSkillOverrideModel)
+            .where(CandidateSkillOverrideModel.user_id == user_id)
+            .order_by(CandidateSkillOverrideModel.skill_key)
+        )
+        return [_to_skill_override(model) for model in result.scalars()]
+
+    async def save_skill_override(self, user_id: uuid.UUID, override: SkillOverride) -> None:
+        """One row per (user, skill) — re-editing the same skill replaces the
+        previous decision rather than stacking another one."""
+        stmt = (
+            insert(CandidateSkillOverrideModel)
+            .values(
+                user_id=user_id,
+                skill_key=override.skill_key,
+                name=override.name,
+                level=override.level.value if override.level else None,
+                years=override.years,
+                removed=override.removed,
+                updated_at=datetime.now(UTC),
+            )
+            .on_conflict_do_update(
+                index_elements=[
+                    CandidateSkillOverrideModel.user_id,
+                    CandidateSkillOverrideModel.skill_key,
+                ],
+                set_={
+                    "name": override.name,
+                    "level": override.level.value if override.level else None,
+                    "years": override.years,
+                    "removed": override.removed,
+                    "updated_at": datetime.now(UTC),
+                },
+            )
+        )
+        await self._session.execute(stmt)
+        await self._session.flush()
+
+    async def delete_skill_override(self, user_id: uuid.UUID, skill_key: str) -> None:
+        """Forget the correction entirely — the next analysis then takes whatever
+        the extractor says about this skill again."""
+        await self._session.execute(
+            delete(CandidateSkillOverrideModel).where(
+                CandidateSkillOverrideModel.user_id == user_id,
+                CandidateSkillOverrideModel.skill_key == skill_key,
+            )
+        )
+        await self._session.flush()
 
     async def get_preferences(self, user_id: uuid.UUID) -> UserPreference | None:
         result = await self._session.execute(
