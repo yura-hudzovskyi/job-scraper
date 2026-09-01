@@ -4,6 +4,7 @@ import pytest
 
 from app.domain.candidates.models import (
     CandidateProfile,
+    CandidateSkill,
     SkillLevel,
     SkillOverride,
     SkillSource,
@@ -27,13 +28,22 @@ class _FakeCandidateRepository:
         self,
         deletable_cv_ids: set[uuid.UUID] | None = None,
         skill_overrides: list[SkillOverride] | None = None,
+        profile: CandidateProfile | None = None,
     ) -> None:
-        self.saved: tuple[uuid.UUID, uuid.UUID, CandidateProfile] | None = None
+        self.saved: tuple[uuid.UUID, uuid.UUID | None, CandidateProfile] | None = None
+        self.saved_override: SkillOverride | None = None
         self._deletable_cv_ids = deletable_cv_ids or set()
         self._skill_overrides = skill_overrides or []
+        self._profile = profile
 
     async def list_skill_overrides(self, user_id: uuid.UUID) -> list[SkillOverride]:
         return self._skill_overrides
+
+    async def save_skill_override(self, user_id: uuid.UUID, override: SkillOverride) -> None:
+        self.saved_override = override
+
+    async def get_latest_candidate_profile(self, user_id: uuid.UUID) -> CandidateProfile | None:
+        return self._profile
 
     async def save_candidate_profile(
         self, user_id: uuid.UUID, cv_document_id: uuid.UUID, profile: CandidateProfile
@@ -155,3 +165,50 @@ async def test_user_corrections_survive_re_analysis() -> None:
     assert by_name["Python"].years == 6.0
     assert by_name["Python"].source is SkillSource.USER
     assert by_name["Rust"].source is SkillSource.USER
+
+
+def _analyzed_profile() -> CandidateProfile:
+    return CandidateProfile(
+        id="p1",
+        user_id="u1",
+        experience_years=4.0,
+        roles=["backend engineer"],
+        skills=[CandidateSkill(name="Python", level=SkillLevel.AWARE, years=1.0)],
+        cv_document_id="0f2c9b5e-2c6e-4a4e-9c86-6f6b5f2c1a11",
+    )
+
+
+@pytest.mark.asyncio
+async def test_correcting_a_skill_writes_a_new_profile_revision() -> None:
+    # The snapshot chain only moves forward: the correction is recorded for future
+    # analyses *and* a new revision is written so the change counts immediately.
+    repository = _FakeCandidateRepository(profile=_analyzed_profile())
+    service = CvService(repository, llm_provider=None)  # type: ignore[arg-type]
+    override = SkillOverride(skill_key="python", name="Python", level=SkillLevel.EXPERT, years=6.0)
+
+    profile = await service.correct_skill(uuid.uuid4(), override)
+
+    assert profile.skills[0].level is SkillLevel.EXPERT
+    assert profile.skills[0].source is SkillSource.USER
+    assert repository.saved_override == override
+    assert repository.saved is not None
+
+
+@pytest.mark.asyncio
+async def test_removing_a_skill_drops_it_from_the_new_revision() -> None:
+    repository = _FakeCandidateRepository(profile=_analyzed_profile())
+    service = CvService(repository, llm_provider=None)  # type: ignore[arg-type]
+
+    profile = await service.correct_skill(
+        uuid.uuid4(), SkillOverride(skill_key="python", name="Python", removed=True)
+    )
+
+    assert profile.skills == []
+
+
+@pytest.mark.asyncio
+async def test_correcting_a_skill_without_an_analyzed_profile_is_a_clear_error() -> None:
+    service = CvService(_FakeCandidateRepository(), llm_provider=None)  # type: ignore[arg-type]
+
+    with pytest.raises(LookupError):
+        await service.correct_skill(uuid.uuid4(), SkillOverride(skill_key="rust", name="Rust"))

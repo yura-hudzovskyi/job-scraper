@@ -40,6 +40,7 @@ def _to_candidate_profile(model: CandidateProfileModel) -> CandidateProfile:
     return CandidateProfile(
         id=str(model.id),
         user_id=str(model.user_id),
+        cv_document_id=str(model.cv_document_id) if model.cv_document_id else None,
         experience_years=model.experience_years,
         roles=list(model.roles),
         skills=[
@@ -142,7 +143,7 @@ class CandidateRepository:
         return result.rowcount > 0
 
     async def save_candidate_profile(
-        self, user_id: uuid.UUID, cv_document_id: uuid.UUID, profile: CandidateProfile
+        self, user_id: uuid.UUID, cv_document_id: uuid.UUID | None, profile: CandidateProfile
     ) -> CandidateProfile:
         """Each analysis creates a new snapshot rather than overwriting — re-running
         analyze_cv keeps history instead of silently discarding the previous read.

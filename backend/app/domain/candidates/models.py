@@ -82,6 +82,9 @@ class CandidateProfile:
     domains: list[str] = field(default_factory=list)
     ai_experience: list[str] = field(default_factory=list)
     generated_by: str | None = None  # which LLM produced this, e.g. "Gemini (gemini-2.0-flash)"
+    # Which uploaded CV this snapshot was extracted from. None once that document
+    # is deleted — the snapshot stays valid without it (see CandidateProfileModel).
+    cv_document_id: str | None = None
     # Which revision of this user's CV this is — see app/domain/versioning.py. The
     # defaults describe a profile that hasn't been saved yet; CandidateRepository
     # fills both in on save.

@@ -2,12 +2,14 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user_id, get_cv_service
-from app.domain.candidates.models import CandidateProfile, CvDocument
+from app.domain.candidates.models import CandidateProfile, CvDocument, SkillLevel, SkillOverride
+from app.domain.skills.normalizer import dedupe_key
 from app.services.ai_errors import LlmCallFailed, LlmNotConfigured
 from app.services.cv_service import CvService, UnsupportedCvFormat
 from app.workers.tasks.backfill import score_existing_jobs_for_user
@@ -26,6 +28,15 @@ class CandidateSkillResponse(BaseModel):
     name: str
     level: str
     years: float | None
+    # "llm" / "rules" / "user" — a skill the user corrected is theirs, and the UI
+    # says so rather than presenting it as something the model read off the CV.
+    source: str
+
+
+class SkillCorrectionRequest(BaseModel):
+    name: str
+    level: Literal["aware", "commercial", "strong", "expert"] | None = None
+    years: float | None = None
 
 
 class ExperienceEntryResponse(BaseModel):
@@ -64,7 +75,12 @@ def _to_profile_response(profile: CandidateProfile) -> CandidateProfileResponse:
         experience_years=profile.experience_years,
         roles=profile.roles,
         skills=[
-            CandidateSkillResponse(name=skill.name, level=skill.level.value, years=skill.years)
+            CandidateSkillResponse(
+                name=skill.name,
+                level=skill.level.value,
+                years=skill.years,
+                source=skill.source.value,
+            )
             for skill in profile.skills
         ],
         experience=[
@@ -129,6 +145,54 @@ async def get_latest_profile(
     """Returns the already-analyzed profile, if any — without re-running the LLM."""
     profile = await cv_service.get_latest_profile(user_id)
     return _to_profile_response(profile) if profile else None
+
+
+@router.post("/profile/skills", response_model=CandidateProfileResponse)
+async def correct_skill(
+    payload: SkillCorrectionRequest,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    cv_service: CvService = Depends(get_cv_service),
+) -> CandidateProfileResponse:
+    """Add a skill the CV never named, or correct the level/years of one it did.
+    The correction is remembered separately from the profile, so re-analyzing the
+    CV re-applies it instead of undoing it (see CvService.correct_skill)."""
+    try:
+        profile = await cv_service.correct_skill(
+            user_id,
+            SkillOverride(
+                skill_key=dedupe_key(payload.name),
+                name=payload.name.strip(),
+                level=SkillLevel(payload.level) if payload.level else None,
+                years=payload.years,
+            ),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # The profile that every match is scored against just changed.
+    score_existing_jobs_for_user.delay(str(user_id))
+    return _to_profile_response(profile)
+
+
+@router.delete("/profile/skills/{name}", response_model=CandidateProfileResponse)
+async def remove_skill(
+    name: str,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    cv_service: CvService = Depends(get_cv_service),
+) -> CandidateProfileResponse:
+    """"The CV mentions it, don't count it" — recorded as a correction, so it
+    stays gone when the CV is analyzed again. Bringing it back means re-analyzing
+    the CV: profile revisions only move forward."""
+    try:
+        profile = await cv_service.correct_skill(
+            user_id,
+            SkillOverride(skill_key=dedupe_key(name), name=name.strip(), removed=True),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    score_existing_jobs_for_user.delay(str(user_id))
+    return _to_profile_response(profile)
 
 
 @router.post("/analyze", response_model=CandidateProfileResponse)
