@@ -27,7 +27,7 @@ services:
   worker:
     image: ghcr.io/yura-hudzovskyi/job-scraper-backend:latest
     restart: unless-stopped
-    command: celery -A app.workers.celery_app worker --loglevel=info
+    command: celery -A app.workers.celery_app worker --loglevel=info -Q default,ai_interactive,ai_extraction,ai_matching,ai_backfill
     env_file: .env
     volumes:
       # sentence-transformers' embedding model cache — without this it re-downloads

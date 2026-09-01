@@ -20,6 +20,26 @@ celery_app = Celery(
     ],
 )
 
+# Separate queues so one kind of work can't starve another — see
+# docs/ai-pipeline-v3.md (6.4). The split that matters: a "rescore everything"
+# run is thousands of messages, and without its own queue it sits in front of the
+# extraction and scoring of jobs scraped since, which is what the user is
+# actually waiting for.
+#
+# Every worker must consume all of these (see docker-compose*.yml's -Q flag), or
+# tasks routed to a queue nobody reads simply never run. Splitting them across
+# dedicated workers is a deployment choice this routing makes possible, not a
+# requirement.
+celery_app.conf.task_default_queue = "default"
+celery_app.conf.task_routes = {
+    # Fired right after a CV is analyzed or its skills corrected: the user is
+    # watching for their jobs list to fill in.
+    "backfill.score_existing_jobs_for_user": {"queue": "ai_interactive"},
+    "backfill.*": {"queue": "ai_backfill"},
+    "extract.*": {"queue": "ai_extraction"},
+    "score.*": {"queue": "ai_matching"},
+}
+
 # Each tick scrapes one category (rotating through app/integrations/sources/
 # categories.py over time, see workers/tasks/scrape.py) rather than everything at
 # once — a shorter interval than the old fixed 2h is what makes the rotation reach
