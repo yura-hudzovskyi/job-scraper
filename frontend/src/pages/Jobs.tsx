@@ -67,7 +67,7 @@ export function Jobs() {
           )}
           <Button
             className="bg-slate-600 hover:bg-slate-500"
-            title="Re-extract skills and recompute the AI match for every vacancy in the database, not just this page. Uses Gemini by default, falling back to local Ollama automatically once Gemini's rate limit is hit. Runs in the background and can take a while."
+            title="Re-extract skills and recompute the AI match for every vacancy in the database, not just this page. Uses Groq by default, falling back to local Ollama automatically once Groq's rate limit is hit. Runs in the background and can take a while."
             onClick={() => setIsRescoreAllOpen(true)}
           >
             Rescore all vacancies…
@@ -160,9 +160,11 @@ export function Jobs() {
         <Modal title="Rescore all vacancies" onClose={() => setIsRescoreAllOpen(false)}>
           <p className="mb-3 text-sm text-slate-600">
             Re-extracts skills and recomputes the AI match for every vacancy currently in the
-            database — not just this page. Uses Gemini by default; if Gemini's rate limit is
-            hit mid-run, it automatically falls back to local Ollama for the rest. This runs in
-            the background and can take a while for a large backlog.
+            database — not just this page. Uses Groq by default (same provider as automatic
+            per-scrape extraction and AI matching); if Groq's rate limit is hit mid-run, it
+            automatically falls back to local Ollama for the rest. This runs in the background
+            and can take a while for a large backlog. To change Groq's own model persistently
+            instead of just this run's Ollama fallback, use the System page.
           </p>
           <Field label="Ollama model to fall back to (optional)">
             {ollamaModelsQuery.data && ollamaModelsQuery.data.models.length > 0 ? (
@@ -194,7 +196,7 @@ export function Jobs() {
             <p className="mt-1 text-xs text-slate-400">
               No Ollama models detected on the server (or a non-Ollama provider is configured) —
               leave blank to use the server default, or type a model tag manually. Only used if
-              Gemini isn't configured or its rate limit is hit.
+              Groq isn't configured or its rate limit is hit.
             </p>
           )}
           <div className="mt-4 flex justify-end gap-2">

@@ -16,19 +16,26 @@ ollama_provider.py. JSON mode (guaranteed-valid-JSON, not guaranteed-matching-
 schema) is the one thing documented across Groq's whole catalog, so the schema is
 spelled out in the prompt instead and validated here, the same approach
 OllamaLLMProvider uses.
+
+max_retries=0: the `openai` SDK retries 429s internally by default (with its own
+backoff) before ever raising back to caller code — which fights FallbackLLMProvider
+and GeminiCircuitBreaker/FixedCooldownCircuitBreaker's whole reason for existing.
+Every retryable failure needs to surface immediately so the fallback (and the
+circuit breaker recording it) can take over right away, not after the SDK has
+already silently burned a few seconds and a couple of real HTTP requests against
+a quota that's already exhausted for this window.
 """
 
 import openai
 
 from app.integrations.ai.llm.base import LLMResult, T
 
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
 _BASE_URL = "https://api.groq.com/openai/v1"
 
 
 class GroqLLMProvider:
-    def __init__(self, api_key: str, model: str = DEFAULT_MODEL):
-        self._client = openai.AsyncOpenAI(api_key=api_key, base_url=_BASE_URL)
+    def __init__(self, api_key: str, model: str):
+        self._client = openai.AsyncOpenAI(api_key=api_key, base_url=_BASE_URL, max_retries=0)
         self._model = model
 
     async def structured_completion(self, prompt: str, schema: type[T]) -> LLMResult[T]:

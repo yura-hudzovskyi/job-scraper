@@ -21,7 +21,12 @@
       "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0 Safari/537.36\" https://www.work.ua/jobs/rss/ -o /tmp/workua_rss.xml -w \"workua RSS: HTTP %{http_code}\\\\n\")",
       "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0 Safari/537.36\" \"https://www.work.ua/jobs-kyiv-python/\" -o /tmp/workua_search.html -w \"workua search page: HTTP %{http_code} size=%{size_download}\\\\n\")",
       "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0 Safari/537.36\" \"https://www.work.ua/jobs/\" -o /tmp/workua_jobs.html -w \"HTTP %{http_code} size=%{size_download}\\\\n\")",
-      "Bash(.venv/Scripts/python -m pytest -q)"
+      "Bash(.venv/Scripts/python -m pytest -q)",
+      "WebFetch(domain:console.groq.com)",
+      "WebSearch",
+      "Bash(python -m pytest tests/unit -q)",
+      "PowerShell(Get-Command py -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Command python3 -ErrorAction SilentlyContinue)"
     ]
   }
 }

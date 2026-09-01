@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.routes import (
+    ai_settings,
     applications,
     auth,
     cv,
@@ -11,6 +12,7 @@ from app.api.routes import (
     search_profiles,
     settings,
     sources,
+    system,
     telegram,
 )
 
@@ -28,5 +30,7 @@ for module in (
     settings,
     telegram,
     llm,
+    ai_settings,
+    system,
 ):
     api_router.include_router(module.router)

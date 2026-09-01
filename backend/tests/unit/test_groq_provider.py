@@ -23,7 +23,7 @@ class _Dummy(BaseModel):
 async def test_bogus_api_key_reaches_real_groq_endpoint_and_is_rejected() -> None:
     """Proves the client is actually pointed at Groq's endpoint and talks to it —
     a malformed request would fail differently (400) than a bad key (401)."""
-    provider = GroqLLMProvider(api_key="gsk_fake-key-for-smoke-test")
+    provider = GroqLLMProvider(api_key="gsk_fake-key-for-smoke-test", model="llama-3.3-70b-versatile")
 
     with pytest.raises(openai.AuthenticationError):
         await provider.structured_completion("Say hello", _Dummy)

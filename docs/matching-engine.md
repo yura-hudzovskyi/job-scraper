@@ -204,6 +204,44 @@ cooldown period instead:
 Both are purely reactive to what the provider itself already said no to — no
 proactive budget/quota-counting needed on top.
 
+### Changing models at runtime
+
+`GROQ_MODEL`, `GEMINI_MODEL`, `LLM_MODEL` and `OLLAMA_FALLBACK_MODEL` are `.env`
+defaults, not the last word — the System page in the UI can override any of them
+without a redeploy. `app/config/runtime_settings.py::get_effective_settings`
+layers whatever's persisted in Redis (`app/repositories/ai_settings_repository.py`)
+on top of the `Settings` instance right before a provider gets built, so a change
+saved through the UI takes effect on the very next call. `factory.py` itself never
+changes — it still just takes a plain `Settings`. Precedence, most to least
+specific: the one-off `model_override` a caller passes for a single run (e.g.
+"rescore all vacancies" comparing one alternate Ollama model) > the persisted UI
+override > the `.env` default.
+
+`POST /api/ai/models/test` fires one real, minimal completion straight at the raw
+Groq/Gemini provider (bypassing `FallbackLLMProvider` on purpose) and returns
+either the real model label or the provider's own error text — use it before
+committing to a model change, since a model that's wrong, deprecated, or just
+rate-limited too tightly for this app's volume degrades *silently* otherwise
+(`AiMatcher`/`JobSkillExtractionService` catch every exception and fall back by
+design — see above — so a broken `GROQ_MODEL` doesn't fail loudly, it just quietly
+never gets used).
+
+**A model that used to work can stop working with no local change at all.**
+Concretely: Groq's newer/preview models (`qwen/qwen3.6-27b`, `qwen/qwen3.8-27b`,
+`openai/gpt-oss-120b`/`-20b`) run on a much tighter free-tier quota than GA models
+like the default `llama-3.3-70b-versatile` — roughly 30 requests/min, 1,000
+requests/day, 200K tokens/day per
+[console.groq.com/docs/rate-limits](https://console.groq.com/docs/rate-limits)
+(Groq's own docs note these can change per-account; check the Limits page in your
+own console rather than trusting a number here indefinitely). `AiMatcher`'s prompt
+(full job description + candidate profile) is large enough that the token budget
+runs out before the request-count one does at any real job-pipeline volume — the
+result is constant 429s falling back to the slower Ollama leg, not an obviously
+"broken" model. `groq_circuit_open`/`gemini_circuit_open` on `GET /api/ai/models`
+and the `scored_by` label on a real match (`"AI (Groq ...)"` vs. `"AI (Ollama
+...)"` vs. `"deterministic"`) are how to tell which leg is actually serving
+traffic right now.
+
 Whichever model actually produced a result is recorded (`LLMResult.model_label`,
 `backend/app/integrations/ai/llm/base.py`) and shown in the UI — a quota-driven
 fallback to Ollama is never presented as if it were the primary provider.

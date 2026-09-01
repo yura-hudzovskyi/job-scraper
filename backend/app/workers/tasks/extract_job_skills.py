@@ -14,6 +14,7 @@ analysis and preferences AI-fill — see docs/matching-engine.md).
 import asyncio
 import uuid
 
+from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
 from app.db.session import session_scope
 from app.integrations.ai.llm.factory import build_job_llm_provider
@@ -24,9 +25,10 @@ from app.workers.tasks.score import score_job_for_user
 
 
 async def _run(canonical_job_id: str, user_ids: list[str]) -> None:
+    settings = await get_effective_settings(get_settings())
     async with session_scope() as session:
         service = JobSkillExtractionService(
-            JobRepository(session), build_job_llm_provider(get_settings())
+            JobRepository(session), build_job_llm_provider(settings)
         )
         await service.extract_and_save(uuid.UUID(canonical_job_id))
 

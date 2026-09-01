@@ -12,6 +12,7 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
 from app.db.session import get_session
 from app.integrations.ai.llm.base import LLMProvider
@@ -76,8 +77,9 @@ def get_notification_repository(
     return NotificationRepository(session)
 
 
-def get_quality_llm_provider() -> LLMProvider | None:
-    return build_quality_llm_provider(get_settings())
+async def get_quality_llm_provider() -> LLMProvider | None:
+    settings = await get_effective_settings(get_settings())
+    return build_quality_llm_provider(settings)
 
 
 def get_cv_service(

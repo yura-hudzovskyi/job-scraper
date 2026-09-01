@@ -9,11 +9,9 @@ import anthropic
 
 from app.integrations.ai.llm.base import LLMResult, T
 
-DEFAULT_MODEL = "claude-opus-5"
-
 
 class AnthropicLLMProvider:
-    def __init__(self, api_key: str, model: str = DEFAULT_MODEL):
+    def __init__(self, api_key: str, model: str):
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self._model = model
 

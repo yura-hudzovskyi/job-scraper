@@ -10,6 +10,7 @@ is itself idempotent (upserts).
 import asyncio
 import uuid
 
+from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
 from app.db.session import session_scope
 from app.integrations.ai.llm.factory import build_job_llm_provider
@@ -44,10 +45,11 @@ async def _run_reextract_and_rescore(user_id: str, canonical_job_id: str, llm_mo
     different local model against the existing backlog). Skips straight to
     scoring (degrading to whatever skills were already stored) if no job
     provider is configured at all."""
+    settings = await get_effective_settings(get_settings())
     async with session_scope() as session:
         job_repository = JobRepository(session)
         extraction_service = JobSkillExtractionService(
-            job_repository, build_job_llm_provider(get_settings(), llm_model)
+            job_repository, build_job_llm_provider(settings, llm_model)
         )
         await extraction_service.extract_and_save(uuid.UUID(canonical_job_id))
 

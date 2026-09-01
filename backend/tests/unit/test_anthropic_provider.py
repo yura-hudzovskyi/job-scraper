@@ -21,7 +21,9 @@ class _Dummy(BaseModel):
 async def test_bogus_api_key_reaches_real_api_and_is_rejected() -> None:
     """Proves the client is constructed correctly and talks to the real endpoint —
     a malformed request would fail differently (400) than a bad key (401)."""
-    provider = AnthropicLLMProvider(api_key="sk-ant-api03-fake-key-for-smoke-test")
+    provider = AnthropicLLMProvider(
+        api_key="sk-ant-api03-fake-key-for-smoke-test", model="claude-opus-5"
+    )
 
     with pytest.raises(anthropic.AuthenticationError):
         await provider.structured_completion("Say hello", _Dummy)

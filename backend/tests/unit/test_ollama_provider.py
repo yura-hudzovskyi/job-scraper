@@ -9,13 +9,10 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
-from app.integrations.ai.llm.ollama_provider import (
-    DEFAULT_MODEL,
-    OllamaLLMProvider,
-    OllamaModelNotFound,
-)
+from app.integrations.ai.llm.ollama_provider import OllamaLLMProvider, OllamaModelNotFound
 
 _BASE_URL = "http://localhost:11434"
+_MODEL = "llama3.1"
 
 
 def _ollama_reachable() -> bool:
@@ -32,12 +29,12 @@ class _Dummy(BaseModel):
 @pytest.mark.asyncio
 @pytest.mark.skipif(not _ollama_reachable(), reason="no local Ollama server")
 async def test_structured_completion_returns_validated_schema() -> None:
-    provider = OllamaLLMProvider(_BASE_URL, DEFAULT_MODEL)
+    provider = OllamaLLMProvider(_BASE_URL, _MODEL)
     result = await provider.structured_completion(
         "Reply with a JSON object where 'answer' is the string 'hello'.", _Dummy
     )
     assert isinstance(result.data, _Dummy)
-    assert result.model_label == f"Ollama ({DEFAULT_MODEL})"
+    assert result.model_label == f"Ollama ({_MODEL})"
 
 
 @pytest.mark.asyncio

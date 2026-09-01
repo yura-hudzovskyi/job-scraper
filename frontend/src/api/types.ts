@@ -177,3 +177,43 @@ export interface NotificationThresholds {
   quiet_hours_start: number;
   quiet_hours_end: number;
 }
+
+export interface AiModelField {
+  value: string;
+  is_override: boolean;
+  default: string;
+}
+
+export interface AiModelsResponse {
+  llm_provider: string;
+  groq_configured: boolean;
+  groq_model: AiModelField;
+  groq_circuit_open: boolean;
+  gemini_configured: boolean;
+  gemini_model: AiModelField;
+  gemini_circuit_open: boolean;
+  llm_model: AiModelField;
+  ollama_fallback_model: AiModelField;
+  ollama_base_url: string;
+}
+
+export interface AiModelsUpdateRequest {
+  groq_model?: string | null;
+  gemini_model?: string | null;
+  llm_model?: string | null;
+  ollama_fallback_model?: string | null;
+}
+
+export interface TestModelResponse {
+  ok: boolean;
+  model_label: string | null;
+  error: string | null;
+}
+
+export interface FlushRedisResponse {
+  databases_flushed: number;
+}
+
+export interface PurgeCeleryResponse {
+  purged: number;
+}

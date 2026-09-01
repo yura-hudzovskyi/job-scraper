@@ -1,8 +1,11 @@
 import { apiClient } from "./client";
 import type {
+  AiModelsResponse,
+  AiModelsUpdateRequest,
   CandidateProfile,
   ConnectTelegramResponse,
   CvDocument,
+  FlushRedisResponse,
   JobListResponse,
   JobMatch,
   JobSummary,
@@ -11,10 +14,12 @@ import type {
   OllamaModelsResponse,
   Preferences,
   ProfileSummary,
+  PurgeCeleryResponse,
   SourceHealth,
   SuggestedPreferences,
   TelegramBotInfo,
   TelegramStatus,
+  TestModelResponse,
   TokenResponse,
 } from "./types";
 
@@ -77,3 +82,12 @@ export const getNotificationThresholds = () =>
   apiClient.get<NotificationThresholds>("/api/settings/notifications");
 export const updateNotificationThresholds = (thresholds: NotificationThresholds) =>
   apiClient.patch<NotificationThresholds>("/api/settings/notifications", thresholds);
+
+export const getAiModels = () => apiClient.get<AiModelsResponse>("/api/ai/models");
+export const updateAiModels = (payload: AiModelsUpdateRequest) =>
+  apiClient.patch<AiModelsResponse>("/api/ai/models", payload);
+export const testAiModel = (tier: "groq" | "gemini", model: string) =>
+  apiClient.post<TestModelResponse>("/api/ai/models/test", { tier, model });
+
+export const flushRedis = () => apiClient.post<FlushRedisResponse>("/api/system/redis/flush");
+export const purgeCelery = () => apiClient.post<PurgeCeleryResponse>("/api/system/celery/purge");

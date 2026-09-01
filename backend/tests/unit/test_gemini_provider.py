@@ -22,7 +22,7 @@ class _Dummy(BaseModel):
 async def test_bogus_api_key_reaches_real_api_and_is_rejected() -> None:
     """Proves the client is constructed correctly and talks to the real endpoint —
     a malformed request would fail differently than a bad key (400, INVALID_ARGUMENT)."""
-    provider = GeminiLLMProvider(api_key="fake-key-for-smoke-test")
+    provider = GeminiLLMProvider(api_key="fake-key-for-smoke-test", model="gemini-2.0-flash")
 
     with pytest.raises(ClientError) as exc_info:
         await provider.structured_completion("Say hello", _Dummy)

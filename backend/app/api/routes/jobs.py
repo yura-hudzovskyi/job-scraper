@@ -190,12 +190,16 @@ async def rescore_job(
 
 
 class RescoreAllRequest(BaseModel):
-    # Overrides Settings.llm_model for this run only — the "Rescore all vacancies"
-    # admin action (Jobs page) re-extracts skills and rescores every job through
-    # the Gemini-first quality provider (see workers/tasks/backfill.py); this only
-    # picks which Ollama model that provider falls back to if Gemini's rate limit
-    # is hit mid-run, without touching server config. None (the default) means
-    # "use whatever the server is already configured with."
+    # Overrides the Ollama fallback model for this run only — the "Rescore all
+    # vacancies" admin action (Jobs page) re-extracts skills and rescores every
+    # job through the Groq-first job-pipeline provider (see
+    # workers/tasks/backfill.py, app/integrations/ai/llm/factory.py::
+    # build_job_llm_provider), same as automatic per-scrape extraction and
+    # AiMatcher; this only picks which local Ollama model that provider falls
+    # back to once Groq's rate limit is hit mid-run, without touching server
+    # config. None (the default) means "use whatever the server/System page is
+    # already configured with." See app/api/routes/ai_settings.py for changing
+    # Groq's own model persistently instead of per-run.
     llm_model: str | None = None
 
 

@@ -12,6 +12,7 @@ import { Profile } from "./pages/Profile";
 import { Register } from "./pages/Register";
 import { Settings } from "./pages/Settings";
 import { Sources } from "./pages/Sources";
+import { System } from "./pages/System";
 
 export function AppRoutes() {
   return (
@@ -33,6 +34,7 @@ export function AppRoutes() {
         <Route path="/market-insights" element={<MarketInsights />} />
         <Route path="/sources" element={<Sources />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/system" element={<System />} />
       </Route>
     </Routes>
   );

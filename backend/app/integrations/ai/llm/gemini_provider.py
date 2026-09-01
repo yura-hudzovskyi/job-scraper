@@ -15,11 +15,9 @@ from google.genai import types
 
 from app.integrations.ai.llm.base import LLMResult, T
 
-DEFAULT_MODEL = "gemini-2.0-flash"
-
 
 class GeminiLLMProvider:
-    def __init__(self, api_key: str, model: str = DEFAULT_MODEL):
+    def __init__(self, api_key: str, model: str):
         self._client = genai.Client(api_key=api_key)
         self._model = model
 

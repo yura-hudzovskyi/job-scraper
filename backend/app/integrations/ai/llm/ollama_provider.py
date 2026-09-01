@@ -12,8 +12,6 @@ import httpx
 
 from app.integrations.ai.llm.base import LLMResult, T
 
-DEFAULT_MODEL = "llama3.1"
-
 
 class OllamaModelNotFound(RuntimeError):
     """Ollama returns a bare 404 for both "no route" and "model not pulled" —
@@ -60,7 +58,7 @@ class OllamaLLMProvider:
     def __init__(
         self,
         base_url: str,
-        model: str = DEFAULT_MODEL,
+        model: str,
         num_ctx: int = DEFAULT_NUM_CTX,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ):

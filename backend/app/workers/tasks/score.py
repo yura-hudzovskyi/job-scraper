@@ -6,6 +6,7 @@ described in ARCHITECTURE.md ends with NotificationPolicy, not with a saved scor
 import asyncio
 import uuid
 
+from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
 from app.db.session import session_scope
 from app.domain.candidates.models import UserPreference
@@ -24,7 +25,8 @@ class ScoringUnavailable(RuntimeError):
 async def _run(
     user_id: str, canonical_job_id: str, llm_model: str | None = None
 ) -> dict[str, float | str]:
-    matching_service = build_matching_service(get_settings(), llm_model)
+    settings = await get_effective_settings(get_settings())
+    matching_service = build_matching_service(settings, llm_model)
     if matching_service is None:
         raise ScoringUnavailable("no embedding provider configured")
 

@@ -21,7 +21,7 @@ class _Dummy(BaseModel):
 async def test_bogus_api_key_reaches_real_api_and_is_rejected() -> None:
     """Proves the client is constructed correctly and talks to the real endpoint —
     a malformed request would fail differently (400) than a bad key (401)."""
-    provider = OpenAILLMProvider(api_key="sk-fake-key-for-smoke-test")
+    provider = OpenAILLMProvider(api_key="sk-fake-key-for-smoke-test", model="gpt-4o")
 
     with pytest.raises(openai.AuthenticationError):
         await provider.structured_completion("Say hello", _Dummy)
