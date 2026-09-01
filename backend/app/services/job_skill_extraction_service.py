@@ -38,6 +38,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -58,6 +59,17 @@ logger = logging.getLogger(__name__)
 EXTRACTION_VERSION = "1"
 
 _MAX_EVIDENCE_CHARS = 160
+
+
+@dataclass(frozen=True)
+class ExtractionOutcome:
+    """What one pass produced, and whether it is worth coming back for a better
+    one: `retry_after` is set when the LLM was skipped for lack of capacity, so
+    the calling task can reschedule itself instead of leaving a posting on
+    rules-only requirements forever."""
+
+    skills: list[NormalizedJobSkill]
+    retry_after: timedelta | None = None
 
 
 @dataclass(frozen=True)
@@ -167,16 +179,25 @@ class JobSkillExtractionService:
 
     async def extract_and_save(
         self, canonical_job_id: uuid.UUID, force: bool = False
-    ) -> list[NormalizedJobSkill]:
+    ) -> ExtractionOutcome:
         job = await self._job_repository.get_normalized_job_for_canonical(canonical_job_id)
         if job is None:
             raise LookupError(f"canonical job {canonical_job_id} has no normalized source record")
 
         extraction_key = f"{job_posting_hash(job)}:{EXTRACTION_VERSION}"
         if not force and await self._job_repository.get_extraction_key(canonical_job_id) == extraction_key:
-            return job.skills
+            return ExtractionOutcome(job.skills)
 
-        extraction = await self._extract_with_llm(job)
+        retry_after: timedelta | None = None
+        try:
+            extraction = await self._extract_with_llm(job)
+        except NoCapacity as exc:
+            # Expected, not exceptional: this capability's budget is spent or every
+            # leg is cooling down. The rules extractor covers this posting for now,
+            # and the caller is told when a better read becomes possible.
+            logger.info("no LLM capacity for %s (%s) — using the rules extractor", job.url, exc)
+            extraction, retry_after = None, exc.retry_after
+
         if extraction is None:
             if _has_llm_extraction(job):
                 logger.info(
@@ -184,25 +205,30 @@ class JobSkillExtractionService:
                     "this run degraded to rules, which would be a downgrade",
                     canonical_job_id,
                 )
-                return job.skills
+                return ExtractionOutcome(job.skills, retry_after)
             extraction = _Extraction(
                 skills=rule_extractor.extract_skills(job.title, job.description),
                 label=rule_extractor.EXTRACTOR_LABEL,
             )
 
+        used_rules = extraction.label == rule_extractor.EXTRACTOR_LABEL
         await self._job_repository.update_skills_for_canonical(
             canonical_job_id,
             extraction.skills,
             extraction.label,
             category=extraction.category,
             category_confidence=extraction.category_confidence,
-            extraction_key=extraction_key,
+            # A rules pass is not what this posting deserves, so it isn't cached:
+            # the next run reads it again rather than treating the fallback as the
+            # final answer.
+            extraction_key=None if used_rules else extraction_key,
         )
-        return extraction.skills
+        return ExtractionOutcome(extraction.skills, retry_after)
 
     async def _extract_with_llm(self, job: NormalizedJob) -> _Extraction | None:
         """None means "the LLM produced nothing usable" — no provider, or the call
-        failed. The caller decides what to fall back to."""
+        failed. NoCapacity propagates instead, because "come back later" is a
+        different answer from "this didn't work"."""
         if self._llm_provider is None:
             return None
 
@@ -214,11 +240,9 @@ class JobSkillExtractionService:
         )
         try:
             result = await self._llm_provider.structured_completion(prompt, _ExtractedJob)
-        except NoCapacity as exc:
-            # Expected, not exceptional: this capability's budget is spent or every
-            # leg is cooling down. The rules extractor covers this posting.
-            logger.info("no LLM capacity for %s (%s) — using the rules extractor", job.url, exc)
-            return None
+        except NoCapacity:
+            # Not a failure of this call — the caller handles "come back later".
+            raise
         except Exception:
             logger.warning(
                 "LLM skill extraction failed for %s — falling back to the rules extractor",

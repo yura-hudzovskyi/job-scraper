@@ -13,6 +13,7 @@ analysis and preferences AI-fill — see docs/matching-engine.md).
 
 import asyncio
 import uuid
+from datetime import timedelta
 
 from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
@@ -22,23 +23,38 @@ from app.integrations.ai.routing.router import Capability
 from app.repositories.job_repository import JobRepository
 from app.services.job_skill_extraction_service import JobSkillExtractionService
 from app.workers.celery_app import celery_app
+from app.workers.pacing import retry_countdown
 from app.workers.tasks.score import score_job_for_user
 
+# A posting whose LLM read was blocked by a rate limit is worth coming back for,
+# but not forever: after this many tries the rules extraction it already has
+# stands, and the job keeps its (weaker but real) requirements.
+_MAX_CAPACITY_RETRIES = 3
 
-async def _run(canonical_job_id: str, user_ids: list[str]) -> None:
+
+async def _run(canonical_job_id: str, user_ids: list[str]) -> timedelta | None:
     settings = await get_effective_settings(get_settings())
     async with session_scope() as session:
         service = JobSkillExtractionService(
             JobRepository(session),
             build_llm_router(Capability.JOB_EXTRACTION, settings),
         )
-        await service.extract_and_save(uuid.UUID(canonical_job_id))
+        outcome = await service.extract_and_save(uuid.UUID(canonical_job_id))
 
+    # Scoring runs either way: users see a result now, built on whatever
+    # requirements this pass could get.
     for user_id in user_ids:
         score_job_for_user.delay(user_id, canonical_job_id)
+    return outcome.retry_after
 
 
-@celery_app.task(name="extract.extract_job_skills")
-def extract_job_skills(canonical_job_id: str, user_ids: list[str]) -> dict[str, str]:
-    asyncio.run(_run(canonical_job_id, user_ids))
+@celery_app.task(name="extract.extract_job_skills", bind=True, max_retries=_MAX_CAPACITY_RETRIES)
+def extract_job_skills(self, canonical_job_id: str, user_ids: list[str]) -> dict[str, str]:
+    """Reschedules itself when the posting could only be read by rules because
+    the LLM had no capacity — with a countdown taken from the provider's own
+    reset, so the worker slot goes back to the pool instead of waiting (see
+    app/workers/pacing.py)."""
+    retry_after = asyncio.run(_run(canonical_job_id, user_ids))
+    if retry_after is not None and self.request.retries < _MAX_CAPACITY_RETRIES:
+        raise self.retry(countdown=retry_countdown(retry_after, self.request.retries))
     return {"canonical_job_id": canonical_job_id}

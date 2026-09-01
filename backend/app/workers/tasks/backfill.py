@@ -9,6 +9,7 @@ is itself idempotent (upserts).
 
 import asyncio
 import uuid
+from datetime import timedelta
 
 from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
@@ -18,7 +19,10 @@ from app.integrations.ai.routing.router import Capability
 from app.repositories.job_repository import JobRepository
 from app.services.job_skill_extraction_service import JobSkillExtractionService
 from app.workers.celery_app import celery_app
+from app.workers.pacing import retry_countdown
 from app.workers.tasks.score import score_job_for_user
+
+_MAX_CAPACITY_RETRIES = 3
 
 
 async def _run(user_id: str) -> int:
@@ -37,7 +41,7 @@ def score_existing_jobs_for_user(user_id: str) -> dict[str, int]:
     return {"jobs_queued": count}
 
 
-async def _run_reextract_and_rescore(user_id: str, canonical_job_id: str) -> None:
+async def _run_reextract_and_rescore(user_id: str, canonical_job_id: str) -> timedelta | None:
     """Re-extracts this job's skills through the same job-pipeline provider
     (the JOB_EXTRACTION capability — see routing/policy.py) that the
     automatic per-scrape extraction already uses, then rescores. force=True: this
@@ -51,14 +55,24 @@ async def _run_reextract_and_rescore(user_id: str, canonical_job_id: str) -> Non
         extraction_service = JobSkillExtractionService(
             job_repository, build_llm_router(Capability.JOB_EXTRACTION, settings)
         )
-        await extraction_service.extract_and_save(uuid.UUID(canonical_job_id), force=True)
+        outcome = await extraction_service.extract_and_save(
+            uuid.UUID(canonical_job_id), force=True
+        )
 
     score_job_for_user.delay(user_id, canonical_job_id)
+    return outcome.retry_after
 
 
-@celery_app.task(name="backfill.reextract_and_rescore_job")
-def reextract_and_rescore_job(user_id: str, canonical_job_id: str) -> dict[str, str]:
-    asyncio.run(_run_reextract_and_rescore(user_id, canonical_job_id))
+@celery_app.task(
+    name="backfill.reextract_and_rescore_job", bind=True, max_retries=_MAX_CAPACITY_RETRIES
+)
+def reextract_and_rescore_job(self, user_id: str, canonical_job_id: str) -> dict[str, str]:
+    """A bulk refresh will out-run any free tier, so this comes back when the
+    provider does rather than settling for the rules extraction (see
+    app/workers/pacing.py)."""
+    retry_after = asyncio.run(_run_reextract_and_rescore(user_id, canonical_job_id))
+    if retry_after is not None and self.request.retries < _MAX_CAPACITY_RETRIES:
+        raise self.retry(countdown=retry_countdown(retry_after, self.request.retries))
     return {"canonical_job_id": canonical_job_id}
 
 

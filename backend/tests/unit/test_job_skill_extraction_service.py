@@ -1,5 +1,6 @@
 import uuid
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 
@@ -14,6 +15,7 @@ from app.domain.jobs.models import (
 from app.domain.skills import rule_extractor
 from app.domain.versioning import job_posting_hash
 from app.integrations.ai.llm.base import LLMResult
+from app.integrations.ai.routing.router import Capability, NoCapacity
 from app.services.job_skill_extraction_service import EXTRACTION_VERSION, JobSkillExtractionService
 
 _DESCRIPTION = (
@@ -111,7 +113,7 @@ async def test_extract_and_save_records_framing_evidence_and_category() -> None:
     service = JobSkillExtractionService(repository, _FakeLlmProvider(_EXTRACTED_PAYLOAD))  # type: ignore[arg-type]
     canonical_job_id = uuid.uuid4()
 
-    skills = await service.extract_and_save(canonical_job_id)
+    skills = (await service.extract_and_save(canonical_job_id)).skills
 
     assert skills is not None
     assert [(s.name, s.requirement, s.required) for s in skills] == [
@@ -142,7 +144,7 @@ async def test_aliases_collapse_and_the_stronger_framing_wins() -> None:
     }
     service = JobSkillExtractionService(repository, _FakeLlmProvider(payload))  # type: ignore[arg-type]
 
-    skills = await service.extract_and_save(uuid.uuid4())
+    skills = (await service.extract_and_save(uuid.uuid4())).skills
 
     assert skills is not None
     assert len(skills) == 1
@@ -169,7 +171,7 @@ async def test_evidence_the_posting_does_not_contain_is_dropped() -> None:
     }
     service = JobSkillExtractionService(repository, _FakeLlmProvider(payload))  # type: ignore[arg-type]
 
-    skills = await service.extract_and_save(uuid.uuid4())
+    skills = (await service.extract_and_save(uuid.uuid4())).skills
 
     assert skills is not None
     assert skills[0].name == "Kubernetes"
@@ -183,7 +185,7 @@ async def test_without_an_llm_the_rules_extractor_still_produces_requirements() 
     repository = _FakeJobRepository(_job())
     service = JobSkillExtractionService(repository, llm_provider=None)  # type: ignore[arg-type]
 
-    skills = await service.extract_and_save(uuid.uuid4())
+    skills = (await service.extract_and_save(uuid.uuid4())).skills
 
     assert {skill.name for skill in skills} == {"Django", "PostgreSQL", "Docker"}
     assert _named(skills, "Docker").requirement is RequirementType.OPTIONAL_EXPLICIT
@@ -217,7 +219,7 @@ async def test_a_failed_llm_call_degrades_to_rules_instead_of_failing_the_task()
     repository = _FakeJobRepository(_job())
     service = JobSkillExtractionService(repository, _FailingLlmProvider())  # type: ignore[arg-type]
 
-    skills = await service.extract_and_save(uuid.uuid4())
+    skills = (await service.extract_and_save(uuid.uuid4())).skills
 
     assert {skill.name for skill in skills} == {"Django", "PostgreSQL", "Docker"}
     assert repository.saved is not None
@@ -239,7 +241,7 @@ async def test_a_rules_fallback_never_overwrites_an_existing_llm_extraction() ->
     repository = _FakeJobRepository(job)
     service = JobSkillExtractionService(repository, _FailingLlmProvider())  # type: ignore[arg-type]
 
-    skills = await service.extract_and_save(uuid.uuid4())
+    skills = (await service.extract_and_save(uuid.uuid4())).skills
 
     assert skills == already_extracted
     assert repository.saved is None
@@ -262,7 +264,7 @@ async def test_an_unchanged_posting_is_not_read_again() -> None:
     repository = _FakeJobRepository(job, extraction_key=_current_key(job))
     service = JobSkillExtractionService(repository, _NeverCalledLlmProvider())  # type: ignore[arg-type]
 
-    skills = await service.extract_and_save(uuid.uuid4())
+    skills = (await service.extract_and_save(uuid.uuid4())).skills
 
     assert skills == job.skills
     assert repository.saved is None
@@ -276,7 +278,7 @@ async def test_force_re_reads_a_posting_that_has_not_changed() -> None:
     repository = _FakeJobRepository(job, extraction_key=_current_key(job))
     service = JobSkillExtractionService(repository, _FakeLlmProvider(_EXTRACTED_PAYLOAD))  # type: ignore[arg-type]
 
-    skills = await service.extract_and_save(uuid.uuid4(), force=True)
+    skills = (await service.extract_and_save(uuid.uuid4(), force=True)).skills
 
     assert [skill.name for skill in skills] == ["Django", "PostgreSQL", "Docker"]
     assert repository.saved is not None
@@ -293,3 +295,40 @@ async def test_an_edited_posting_is_read_again() -> None:
 
     assert repository.saved is not None
     assert repository.saved_extraction_key == _current_key(job)
+
+
+class _NoCapacityProvider:
+    def __init__(self, retry_after=None):
+        self._retry_after = retry_after
+
+    async def structured_completion(self, prompt, schema):
+        raise NoCapacity(Capability.JOB_EXTRACTION, self._retry_after)
+
+
+@pytest.mark.asyncio
+async def test_no_llm_capacity_falls_back_to_rules_and_asks_to_be_retried() -> None:
+    # The posting deserves a proper read, so the rules pass is deliberately not
+    # cached and the caller is told when the provider reopens.
+    repository = _FakeJobRepository(_job())
+    service = JobSkillExtractionService(  # type: ignore[arg-type]
+        repository, _NoCapacityProvider(timedelta(seconds=45))
+    )
+
+    outcome = await service.extract_and_save(uuid.uuid4())
+
+    assert {skill.name for skill in outcome.skills} == {"Django", "PostgreSQL", "Docker"}
+    assert outcome.retry_after == timedelta(seconds=45)
+    assert repository.saved is not None
+    assert repository.saved[2] == rule_extractor.EXTRACTOR_LABEL
+    assert repository.saved_extraction_key is None
+
+
+@pytest.mark.asyncio
+async def test_a_successful_read_is_cached() -> None:
+    repository = _FakeJobRepository(_job())
+    service = JobSkillExtractionService(repository, _FakeLlmProvider(_EXTRACTED_PAYLOAD))  # type: ignore[arg-type]
+
+    outcome = await service.extract_and_save(uuid.uuid4())
+
+    assert outcome.retry_after is None
+    assert repository.saved_extraction_key == _current_key(_job())
