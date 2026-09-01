@@ -29,6 +29,7 @@ from app.domain.jobs.models import (
     SalaryRange,
 )
 from app.domain.jobs.scrape_rotation import pick_next_category
+from app.domain.versioning import DocumentVersion, job_content_hash
 
 
 def _to_raw_job(model: RawJobModel) -> RawJob:
@@ -301,6 +302,31 @@ class JobRepository:
         model.skills = _skills_payload(skills)
         model.skills_extracted_by = generated_by
         await self._session.flush()
+
+    async def refresh_canonical_content_version(
+        self, canonical_job_id: uuid.UUID
+    ) -> DocumentVersion | None:
+        """Recompute this vacancy's content identity from the source record scoring
+        actually reads, bumping its version when the analysis-relevant content
+        changed since last time (see app/domain/versioning.py). Called from the
+        scoring path — the one place that needs the identity — so it is always
+        current for the result being produced, and a job stored before hashing
+        existed heals on its next score. Returns None for a canonical job with no
+        source record to read."""
+        normalized = await self.get_normalized_job_for_canonical(canonical_job_id)
+        model = await self._session.get(CanonicalJobModel, canonical_job_id)
+        if normalized is None or model is None:
+            return None
+
+        new_hash = job_content_hash(normalized)
+        if model.content_hash != new_hash:
+            # A first hash isn't a new version — it's the same posting, finally
+            # identified. Only a *changed* hash means the content moved.
+            if model.content_hash is not None:
+                model.content_version += 1
+            model.content_hash = new_hash
+            await self._session.flush()
+        return DocumentVersion(version=model.content_version, content_hash=new_hash)
 
     async def create_canonical_job(self, normalized: NormalizedJob) -> uuid.UUID:
         model = CanonicalJobModel(

@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.api.deps import get_current_user_id, get_job_service, get_match_repository
 from app.domain.jobs.models import CanonicalJob
 from app.domain.matching.models import JobMatch, LlmAssessment
+from app.domain.matching.provenance import MatchProvenance
 from app.repositories.match_repository import MatchRepository
 from app.services.job_service import JobService
 from app.workers.tasks.backfill import rescore_all_jobs
@@ -75,6 +76,36 @@ class MatchGapResponse(BaseModel):
     critical: bool
 
 
+class DocumentVersionResponse(BaseModel):
+    version: int
+    content_hash: str
+
+
+class PipelineVersionsResponse(BaseModel):
+    scorer: str
+    match_prompt: str
+    skill_taxonomy: str
+    calibration: str | None
+
+
+class MatchProvenanceResponse(BaseModel):
+    """How this result was produced — read back from what was stored with it, so
+    it keeps naming the models that really ran even after the System page points
+    the app at different ones. See docs/ai-pipeline-v3.md (9.2)."""
+
+    engine: str
+    analysis_level: str
+    profile: DocumentVersionResponse | None
+    job: DocumentVersionResponse | None
+    embedding_model: str | None
+    cross_encoder_model: str | None
+    skills_model: str | None
+    match_model: str | None
+    fallback_reason: str | None
+    versions: PipelineVersionsResponse
+    generated_at: datetime | None
+
+
 class JobMatchResponse(BaseModel):
     id: str
     eligible: bool
@@ -85,8 +116,7 @@ class JobMatchResponse(BaseModel):
     gaps: list[MatchGapResponse]
     recommendation: str | None
     llm_assessment: LlmAssessmentResponse | None
-    skills_source: str | None
-    scored_by: str | None
+    provenance: MatchProvenanceResponse | None
     scored_at: datetime | None
 
 
@@ -122,6 +152,41 @@ def _to_llm_assessment_response(assessment: LlmAssessment | None) -> LlmAssessme
     )
 
 
+def _to_provenance_response(provenance: MatchProvenance | None) -> MatchProvenanceResponse | None:
+    if provenance is None:
+        return None
+    return MatchProvenanceResponse(
+        engine=provenance.engine.value,
+        analysis_level=provenance.analysis_level.value,
+        profile=(
+            DocumentVersionResponse(
+                version=provenance.profile.version, content_hash=provenance.profile.content_hash
+            )
+            if provenance.profile
+            else None
+        ),
+        job=(
+            DocumentVersionResponse(
+                version=provenance.job.version, content_hash=provenance.job.content_hash
+            )
+            if provenance.job
+            else None
+        ),
+        embedding_model=provenance.embedding_model,
+        cross_encoder_model=provenance.cross_encoder_model,
+        skills_model=provenance.skills_model,
+        match_model=provenance.match_model,
+        fallback_reason=provenance.fallback_reason.value if provenance.fallback_reason else None,
+        versions=PipelineVersionsResponse(
+            scorer=provenance.versions.scorer,
+            match_prompt=provenance.versions.match_prompt,
+            skill_taxonomy=provenance.versions.skill_taxonomy,
+            calibration=provenance.versions.calibration,
+        ),
+        generated_at=provenance.generated_at,
+    )
+
+
 def _to_match_response(match: JobMatch) -> JobMatchResponse:
     return JobMatchResponse(
         id=match.id,
@@ -136,8 +201,7 @@ def _to_match_response(match: JobMatch) -> JobMatchResponse:
         gaps=[MatchGapResponse(label=gap.label, critical=gap.critical) for gap in match.gaps],
         recommendation=match.recommendation.value if match.recommendation else None,
         llm_assessment=_to_llm_assessment_response(match.llm_assessment),
-        skills_source=match.skills_source,
-        scored_by=match.scored_by,
+        provenance=_to_provenance_response(match.provenance),
         scored_at=match.scored_at,
     )
 

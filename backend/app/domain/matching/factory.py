@@ -8,6 +8,7 @@ import redis.asyncio as redis
 from app.config.settings import Settings
 from app.domain.matching.filters import HardFilterService
 from app.domain.matching.llm_reranker import LlmReranker
+from app.domain.matching.provenance import PipelineModels
 from app.domain.matching.role_matching import RoleMatcher
 from app.domain.matching.scoring import DeterministicScorer, SemanticScorer
 from app.domain.matching.service import MatchingService
@@ -52,4 +53,10 @@ def build_matching_service(settings: Settings) -> MatchingService | None:
         SkillMatcher(embedding_provider),
         RoleMatcher(embedding_provider),
         llm_reranker=llm_reranker,
+        # The factory is the only layer that knows which models Settings selected;
+        # the service just records them on every result it produces.
+        models=PipelineModels(
+            embedding=settings.embedding_model,
+            cross_encoder=settings.cross_encoder_model,
+        ),
     )

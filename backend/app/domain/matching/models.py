@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
+from app.domain.matching.provenance import MatchProvenance
+
 
 class Recommendation(StrEnum):
     APPLY = "apply"
@@ -88,11 +90,9 @@ class JobMatch:
 
     recommendation: Recommendation | None = None
     llm_assessment: LlmAssessment | None = None
-    skills_source: str | None = None  # which LLM extracted this job's skills, if any
-    # "deterministic" for every match scored by the current pipeline. Historical
-    # rows from before the deterministic-primary rewrite may still read
-    # "AI (<model>)" — that's the retired AiMatcher path, kept as-is; not produced
-    # by new matches.
-    scored_by: str | None = None
+    # How this result was produced — engine, analysis level, the CV/job revisions
+    # it was scored against, the models involved. See provenance.py; None only for
+    # a match built outside the pipeline (tests, or a row stored before v3).
+    provenance: MatchProvenance | None = None
     scored_at: datetime | None = None  # bumped on every rescore — lets the UI detect "rescore finished"
     decision: MatchDecision = MatchDecision.PENDING

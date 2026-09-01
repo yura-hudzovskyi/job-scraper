@@ -36,11 +36,28 @@ from app.domain.matching.models import (
     Recommendation,
     ScoreBreakdown,
 )
+from app.domain.matching.provenance import (
+    AnalysisLevel,
+    FallbackReason,
+    MatchEngine,
+    MatchProvenance,
+    PipelineModels,
+    now,
+)
 from app.domain.matching.role_matching import RoleMatcher
 from app.domain.matching.scoring import DeterministicScore, DeterministicScorer, SemanticScorer
 from app.domain.matching.skill_matching import SkillAssessment, SkillMatcher
+from app.domain.versioning import DocumentVersion
 
 _MAX_LISTED_REASONS = 5
+
+
+def _profile_version(profile: CandidateProfile) -> DocumentVersion | None:
+    """None for a profile saved before content hashes existed — better than
+    inventing an identity for a snapshot that can't actually be identified."""
+    if profile.content_hash is None:
+        return None
+    return DocumentVersion(version=profile.version, content_hash=profile.content_hash)
 
 
 @dataclass(frozen=True)
@@ -75,6 +92,7 @@ class MatchingService:
         role_matcher: RoleMatcher,
         thresholds: MatchingThresholds | None = None,
         llm_reranker: LlmReranker | None = None,
+        models: PipelineModels | None = None,
     ):
         self._hard_filters = hard_filters
         self._deterministic_scorer = deterministic_scorer
@@ -83,6 +101,9 @@ class MatchingService:
         self._role_matcher = role_matcher
         self._thresholds = thresholds or MatchingThresholds()
         self._llm_reranker = llm_reranker
+        # Recorded, not used: which models this instance was built with, so every
+        # result it produces can say so (see provenance.py).
+        self._models = models or PipelineModels()
 
     async def evaluate(
         self,
@@ -90,10 +111,13 @@ class MatchingService:
         job: NormalizedJob,
         profile: CandidateProfile,
         preferences: UserPreference,
+        job_version: DocumentVersion | None = None,
     ) -> JobMatch:
         """Run the full pipeline for a single job and return an explainable JobMatch.
         Hard filters gate eligibility first; the deterministic pipeline then decides
-        fit — see the module docstring."""
+        fit — see the module docstring. `job_version` identifies the revision of the
+        posting being scored (app/domain/versioning.py); the caller looks it up, this
+        service only records it."""
         filter_result = self._hard_filters.evaluate(job, preferences)
         if not filter_result.eligible:
             return JobMatch(
@@ -106,10 +130,13 @@ class MatchingService:
                 breakdown=ScoreBreakdown(0, 0, 0, 0, 0, 0, 0, 0),
                 gaps=[MatchGap(label=reason, critical=True) for reason in filter_result.reasons],
                 recommendation=Recommendation.SKIP,
-                scored_by="deterministic",
+                # Nothing was analyzed — a hard filter answered before scoring ran.
+                provenance=self._provenance(AnalysisLevel.LIMITED, profile, job, job_version),
             )
 
-        return await self._evaluate_deterministic(canonical_job_id, job, profile, preferences)
+        return await self._evaluate_deterministic(
+            canonical_job_id, job, profile, preferences, job_version
+        )
 
     async def _evaluate_deterministic(
         self,
@@ -117,6 +144,7 @@ class MatchingService:
         job: NormalizedJob,
         profile: CandidateProfile,
         preferences: UserPreference,
+        job_version: DocumentVersion | None = None,
     ) -> JobMatch:
         """The authoritative scoring path: deterministic + semantic + skill, no LLM
         involved (see module docstring)."""
@@ -202,9 +230,42 @@ class MatchingService:
             strengths=strengths,
             gaps=gaps,
             recommendation=recommendation,
-            skills_source=job.skills_extracted_by,
-            scored_by="deterministic",
+            provenance=self._provenance(
+                # No extracted requirements means nothing was really checked —
+                # saying so is the honest analysis level, not STANDARD.
+                AnalysisLevel.STANDARD if skills_available else AnalysisLevel.LIMITED,
+                profile,
+                job,
+                job_version,
+            ),
         )
+
+    def _provenance(
+        self,
+        analysis_level: AnalysisLevel,
+        profile: CandidateProfile,
+        job: NormalizedJob,
+        job_version: DocumentVersion | None,
+    ) -> MatchProvenance:
+        """Everything the deterministic path knows about how it produced a result.
+        should_i_apply() amends it when the LLM layer runs on top."""
+        return MatchProvenance(
+            engine=MatchEngine.DETERMINISTIC,
+            analysis_level=analysis_level,
+            profile=_profile_version(profile),
+            job=job_version,
+            embedding_model=self._models.embedding,
+            cross_encoder_model=self._models.cross_encoder,
+            skills_model=job.skills_extracted_by,
+            generated_at=now(),
+        )
+
+    def _record_fallback(self, match: JobMatch, reason: FallbackReason) -> JobMatch:
+        """The LLM layer didn't contribute — say why, so the UI can explain the
+        result instead of silently showing one with no verdict attached."""
+        if match.provenance is None:
+            return match
+        return replace(match, provenance=replace(match.provenance, fallback_reason=reason))
 
     def _explain(
         self, skill_assessment: SkillAssessment
@@ -242,15 +303,28 @@ class MatchingService:
         isn't worth asking, and the primary volume control on top of LlmReranker's
         own daily call budget (see app/integrations/ai/llm/budget.py) — a
         personal-scale free-tier key can't afford reranking every match regardless of
-        quality. Returns `match` unchanged (no LLM configured, SKIP-tier, or the
-        daily budget is exhausted) rather than erroring — same "degrade gracefully"
-        policy as every other optional AI layer here."""
-        if self._llm_reranker is None or match.recommendation == Recommendation.SKIP:
-            return match
+        quality. When the layer can't run (no LLM configured, SKIP-tier, or the
+        daily budget is exhausted) the match comes back scored exactly as before,
+        with only its provenance amended to say why — same "degrade gracefully"
+        policy as every other optional AI layer here, but no longer silent about
+        it."""
+        if self._llm_reranker is None:
+            return self._record_fallback(match, FallbackReason.NO_LLM_PROVIDER)
+        if match.recommendation == Recommendation.SKIP:
+            return self._record_fallback(match, FallbackReason.BELOW_LLM_THRESHOLD)
 
         assessment = await self._llm_reranker.assess(
             job, profile, match.breakdown, match.strengths, match.gaps
         )
         if assessment is None:
-            return match
-        return replace(match, llm_assessment=assessment)
+            return self._record_fallback(match, FallbackReason.LLM_BUDGET_EXHAUSTED)
+
+        provenance = match.provenance
+        if provenance is not None:
+            provenance = replace(
+                provenance,
+                analysis_level=AnalysisLevel.FULL,
+                match_model=assessment.model_label,
+                fallback_reason=None,
+            )
+        return replace(match, llm_assessment=assessment, provenance=provenance)

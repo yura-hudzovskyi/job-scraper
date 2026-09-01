@@ -14,6 +14,13 @@ from app.domain.matching.models import (
     Recommendation,
     ScoreBreakdown,
 )
+from app.domain.matching.provenance import (
+    AnalysisLevel,
+    FallbackReason,
+    MatchEngine,
+    MatchProvenance,
+    PipelineModels,
+)
 from app.domain.matching.role_matching import RoleMatcher
 from app.domain.matching.scoring import DeterministicScorer, SemanticScorer
 from app.domain.matching.service import MatchingService
@@ -85,6 +92,7 @@ def _matching_service(
         SkillMatcher(embedding_provider),  # type: ignore[arg-type]
         RoleMatcher(embedding_provider),  # type: ignore[arg-type]
         llm_reranker=llm_reranker,  # type: ignore[arg-type]
+        models=PipelineModels(embedding="all-MiniLM-L6-v2"),
     )
 
 
@@ -98,6 +106,9 @@ def _match(recommendation: Recommendation) -> JobMatch:
         practical_fit=80.0,
         breakdown=ScoreBreakdown(90, 90, 90, 90, 100, 100, 90, 100),
         recommendation=recommendation,
+        provenance=MatchProvenance(
+            engine=MatchEngine.DETERMINISTIC, analysis_level=AnalysisLevel.STANDARD
+        ),
     )
 
 
@@ -133,8 +144,11 @@ async def test_should_i_apply_is_a_noop_without_a_reranker() -> None:
 
     result = await service.should_i_apply(_job(), _profile(), match)
 
-    assert result is match
     assert result.llm_assessment is None
+    assert result.provenance is not None
+    assert result.provenance.fallback_reason is FallbackReason.NO_LLM_PROVIDER
+    # Only the provenance is amended — the score itself is untouched.
+    assert result.practical_fit == match.practical_fit
 
 
 @pytest.mark.asyncio
@@ -159,8 +173,10 @@ async def test_should_i_apply_is_a_noop_for_skip_recommendation() -> None:
 
     result = await service.should_i_apply(_job(), _profile(), match)
 
-    assert result is match
+    assert result.llm_assessment is None
     assert reranker.call_count == 0
+    assert result.provenance is not None
+    assert result.provenance.fallback_reason is FallbackReason.BELOW_LLM_THRESHOLD
 
 
 @pytest.mark.asyncio
@@ -174,9 +190,10 @@ async def test_should_i_apply_is_a_noop_when_reranker_returns_none() -> None:
 
     result = await service.should_i_apply(_job(), _profile(), match)
 
-    assert result is match
     assert reranker.call_count == 1
     assert result.llm_assessment is None
+    assert result.provenance is not None
+    assert result.provenance.fallback_reason is FallbackReason.LLM_BUDGET_EXHAUSTED
 
 
 @pytest.mark.asyncio
@@ -189,6 +206,12 @@ async def test_should_i_apply_populates_llm_assessment_when_apply_and_budget_all
 
     assert result.llm_assessment == _FAKE_ASSESSMENT
     assert reranker.call_count == 1
+    assert result.provenance is not None
+    # An LLM verdict on top is what makes the analysis "full", and the model that
+    # produced it is recorded on the result rather than looked up later.
+    assert result.provenance.analysis_level is AnalysisLevel.FULL
+    assert result.provenance.match_model == _FAKE_ASSESSMENT.model_label
+    assert result.provenance.fallback_reason is None
 
 
 @pytest.fixture
@@ -229,7 +252,10 @@ async def test_strong_match_recommends_apply(matching_service: MatchingService) 
     assert match.eligible is True
     assert match.recommendation == Recommendation.APPLY
     assert match.practical_fit > 80
-    assert match.skills_source == "Groq (llama-3.3-70b-versatile)"
+    assert match.provenance is not None
+    assert match.provenance.skills_model == "Groq (llama-3.3-70b-versatile)"
+    assert match.provenance.embedding_model == "all-MiniLM-L6-v2"
+    assert match.provenance.analysis_level is AnalysisLevel.STANDARD
     assert any(reason.label == "Django" for reason in match.strengths)
 
 
