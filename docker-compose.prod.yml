@@ -34,6 +34,10 @@ services:
       # queue cleanly instead, each still finishing in its normal ~60-90s once its
       # turn comes up. See docs/deployment.md.
       OLLAMA_NUM_PARALLEL: 1
+      # Verbose server-side logging (prompt that reached the model, context/token
+      # counts, per-stage timings) — see docs/deployment.md. `docker compose logs -f
+      # ollama` to read it.
+      OLLAMA_DEBUG: "1"
     volumes:
       - ollama_data:/root/.ollama
 
