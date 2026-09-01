@@ -6,10 +6,10 @@ import { ApiError } from "../api/client";
 import { getJob, getJobMatch, rescoreJob } from "../api/endpoints";
 import { Button, Card, ErrorBanner, SectionTitle } from "../components/ui";
 
-// Rescoring runs a background LLM call that can take anywhere from a couple of
-// seconds (Gemini) to 60-90s (a 14B-class Ollama fallback on CPU, see
-// docs/deployment.md) — polling briefly and giving up beats both "assume it's
-// done after a fixed 3s" (wrong: showed stale data) and polling forever.
+// Rescoring runs a background LLM call whose latency depends on the provider and
+// on how deep the Celery queue is — polling briefly and giving up beats both
+// "assume it's done after a fixed 3s" (wrong: showed stale data) and polling
+// forever.
 const RESCORE_POLL_INTERVAL_MS = 4000;
 const RESCORE_POLL_TIMEOUT_MS = 120_000;
 
@@ -39,10 +39,9 @@ export function JobDetails() {
 
   // Rescoring is a background Celery task, not a synchronous call — the button
   // used to just wait a fixed 3s and invalidate once, which silently showed
-  // stale data whenever scoring took longer than that (routine now that scoring
-  // can fall back to a slow local Ollama call). Instead: poll until the match's
-  // scored_at timestamp actually moves past what it was before this rescore, or
-  // give up after RESCORE_POLL_TIMEOUT_MS.
+  // stale data whenever scoring took longer than that. Instead: poll until the
+  // match's scored_at timestamp actually moves past what it was before this
+  // rescore, or give up after RESCORE_POLL_TIMEOUT_MS.
   const [pollDeadline, setPollDeadline] = useState<number | null>(null);
   const scoredAtBeforeRescore = useRef<string | null>(null);
 

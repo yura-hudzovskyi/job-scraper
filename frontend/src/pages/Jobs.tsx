@@ -2,8 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
-import { listJobs, listOllamaModels, rescoreAllJobs, rescoreJob } from "../api/endpoints";
-import { Button, Card, ErrorBanner, Field, Modal, SectionTitle, inputClass } from "../components/ui";
+import { listJobs, rescoreAllJobs, rescoreJob } from "../api/endpoints";
+import { Button, Card, ErrorBanner, Modal, SectionTitle } from "../components/ui";
 
 const PAGE_SIZE = 25;
 
@@ -12,7 +12,6 @@ export function Jobs() {
   const [offset, setOffset] = useState(0);
   const [includeSkipped, setIncludeSkipped] = useState(false);
   const [isRescoreAllOpen, setIsRescoreAllOpen] = useState(false);
-  const [rescoreAllModel, setRescoreAllModel] = useState("");
 
   const jobsQuery = useQuery({
     queryKey: ["jobs", offset, includeSkipped],
@@ -33,18 +32,9 @@ export function Jobs() {
     },
   });
 
-  const ollamaModelsQuery = useQuery({
-    queryKey: ["ollama-models"],
-    queryFn: listOllamaModels,
-    enabled: isRescoreAllOpen,
-  });
-
   const rescoreAllMutation = useMutation({
-    mutationFn: () => rescoreAllJobs(rescoreAllModel || undefined),
-    onSuccess: () => {
-      setIsRescoreAllOpen(false);
-      setRescoreAllModel("");
-    },
+    mutationFn: () => rescoreAllJobs(),
+    onSuccess: () => setIsRescoreAllOpen(false),
   });
 
   const hasPrevious = offset > 0;
@@ -67,7 +57,7 @@ export function Jobs() {
           )}
           <Button
             className="bg-slate-600 hover:bg-slate-500"
-            title="Re-extract skills and recompute the AI match for every vacancy in the database, not just this page. Uses Groq by default, falling back to local Ollama automatically once Groq's rate limit is hit. Runs in the background and can take a while."
+            title="Re-extract skills and recompute the AI match for every vacancy in the database, not just this page. Uses Groq first, falling back to Gemini once Groq's rate limit is hit. Runs in the background and can take a while."
             onClick={() => setIsRescoreAllOpen(true)}
           >
             Rescore all vacancies…
@@ -160,45 +150,11 @@ export function Jobs() {
         <Modal title="Rescore all vacancies" onClose={() => setIsRescoreAllOpen(false)}>
           <p className="mb-3 text-sm text-slate-600">
             Re-extracts skills and recomputes the AI match for every vacancy currently in the
-            database — not just this page. Uses Groq by default (same provider as automatic
-            per-scrape extraction and AI matching); if Groq's rate limit is hit mid-run, it
-            automatically falls back to local Ollama for the rest. This runs in the background
-            and can take a while for a large backlog. To change Groq's own model persistently
-            instead of just this run's Ollama fallback, use the System page.
+            database — not just this page. Uses Groq first (same provider as automatic
+            per-scrape extraction and AI matching), falling back to Gemini if Groq's rate limit
+            is hit mid-run. This runs in the background and can take a while for a large
+            backlog. To change which models it runs on, use the System page.
           </p>
-          <Field label="Ollama model to fall back to (optional)">
-            {ollamaModelsQuery.data && ollamaModelsQuery.data.models.length > 0 ? (
-              <select
-                className={inputClass}
-                value={rescoreAllModel}
-                onChange={(e) => setRescoreAllModel(e.target.value)}
-              >
-                <option value="">Server default</option>
-                {ollamaModelsQuery.data.models.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                className={inputClass}
-                placeholder="Server default (leave blank), e.g. qwen2.5:14b"
-                value={rescoreAllModel}
-                onChange={(e) => setRescoreAllModel(e.target.value)}
-              />
-            )}
-          </Field>
-          {ollamaModelsQuery.isLoading && (
-            <p className="mt-1 text-xs text-slate-400">Loading available Ollama models…</p>
-          )}
-          {ollamaModelsQuery.data && ollamaModelsQuery.data.models.length === 0 && (
-            <p className="mt-1 text-xs text-slate-400">
-              No Ollama models detected on the server (or a non-Ollama provider is configured) —
-              leave blank to use the server default, or type a model tag manually. Only used if
-              Groq isn't configured or its rate limit is hit.
-            </p>
-          )}
           <div className="mt-4 flex justify-end gap-2">
             <Button
               className="bg-slate-600 hover:bg-slate-500"

@@ -32,8 +32,6 @@ export function System() {
   const [inputs, setInputs] = useState<Record<ModelFieldKey, string>>({
     groq_model: "",
     gemini_model: "",
-    llm_model: "",
-    ollama_fallback_model: "",
   });
 
   useEffect(() => {
@@ -41,8 +39,6 @@ export function System() {
       setInputs({
         groq_model: modelsQuery.data.groq_model.value,
         gemini_model: modelsQuery.data.gemini_model.value,
-        llm_model: modelsQuery.data.llm_model.value,
-        ollama_fallback_model: modelsQuery.data.ollama_fallback_model.value,
       });
     }
   }, [modelsQuery.data]);
@@ -159,7 +155,6 @@ export function System() {
         {modelsQuery.data && (
           <div>
             <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-              <span>LLM_PROVIDER: {modelsQuery.data.llm_provider}</span>
               <Badge
                 open={modelsQuery.data.groq_circuit_open}
                 label={modelsQuery.data.groq_circuit_open ? "Groq cooling down" : "Groq available"}
@@ -172,30 +167,20 @@ export function System() {
               />
             </div>
             <p className="mb-3 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-              Job pipeline (skill extraction, AI matching) — Groq, falling back to local Ollama
+              Job pipeline (skill extraction, AI matching) — Groq first, Gemini on rate limit
             </p>
             {renderModelRow("groq_model", "Groq model", modelsQuery.data.groq_model, {
               testTier: "groq",
               configured: modelsQuery.data.groq_configured,
             })}
-            {renderModelRow(
-              "ollama_fallback_model",
-              "Ollama fallback model",
-              modelsQuery.data.ollama_fallback_model,
-            )}
 
             <p className="mt-5 mb-3 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-              CV analysis / preferences AI-fill — Gemini, falling back to Ollama
+              CV analysis / preferences AI-fill — Gemini first, Groq on rate limit
             </p>
             {renderModelRow("gemini_model", "Gemini model", modelsQuery.data.gemini_model, {
               testTier: "gemini",
               configured: modelsQuery.data.gemini_configured,
             })}
-            {renderModelRow(
-              "llm_model",
-              "Ollama / hosted-provider model",
-              modelsQuery.data.llm_model,
-            )}
           </div>
         )}
         {updateMutation.isError && (
