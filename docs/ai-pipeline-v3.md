@@ -1419,7 +1419,7 @@ The key product behavior after v3 should be:
 Each phase lands as a series of small, self-contained commits; the test suite must stay green
 at every commit.
 
-- [ ] Phase 0 - stabilize the baseline (Ollama removal, feature flags)
+- [x] Phase 0 - stabilize the baseline (Ollama removal, feature flags)
 - [ ] Phase 1 - versioned contracts and provenance
 - [ ] Phase 2 - extraction v3 and skill ontology
 - [ ] Phase 3 - capability router and quota manager
@@ -1429,3 +1429,19 @@ at every commit.
 - [ ] Phase 7 - LLM enrichment and priority scheduler
 - [ ] Phase 8 - UI completion and operations
 - [ ] Phase 9 - evaluation, rollout, and cleanup
+
+### Phase 0 notes
+
+Landed: Ollama removed from the backend, the frontend, `docker-compose.prod.yml`,
+`deploy/bootstrap.sh` and every doc; the LLM chains are now Groq -> Gemini for the job
+pipeline and Gemini -> Groq for CV analysis / preferences AI-fill, with OpenAI/Anthropic
+as an optional paid leg behind `LLM_PROVIDER` + `LLM_MODEL`; the Ollama-only per-run
+model override on "Rescore all vacancies" is gone (model selection returns as stored
+policy in Phase 3); `MATCHING_PIPELINE_V3`, `LLM_ENRICHMENT` and `MULTI_EMBEDDING_LANES`
+exist and default to off. Backend suite 181 passed, `ruff` clean, frontend `tsc -b`
+clean.
+
+Deliberately not done: the old `AiMatcher` was not copied into a reference file — it is
+in git history at `92b6e87^` and can be read from there when Phase 7 wants its prompt.
+Capturing baseline scores and latency needs a populated database, so it folds into the
+Phase 9 validation set rather than being built twice.

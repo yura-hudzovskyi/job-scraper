@@ -75,6 +75,20 @@ class Settings(BaseSettings):
     cross_encoder_model: str | None = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     cross_encoder_weight: float = 0.5
 
+    # AI pipeline v3 rollout flags — see docs/ai-pipeline-v3.md. Each one stays
+    # off until the phase that implements it lands, so half-built pipeline stages
+    # can ship dark instead of living on a long-running branch.
+    #
+    # Route scoring through the v3 orchestrator (hybrid engine + priority
+    # scheduler) instead of MatchingService.evaluate. Phase 6.
+    matching_pipeline_v3: bool = False
+    # Let that orchestrator upgrade a hybrid match with an LLM judgment when
+    # quota allows. Phase 7; no effect while matching_pipeline_v3 is off.
+    llm_enrichment: bool = False
+    # Build and query the versioned embedding lanes instead of the single
+    # on-demand embedding SemanticScorer computes today. Phase 4.
+    multi_embedding_lanes: bool = False
+
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     # Public HTTPS hostname Caddy fronts this API on (see Caddyfile, docs/deployment.md) —
