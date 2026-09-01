@@ -1,9 +1,17 @@
 import uuid
+from dataclasses import replace
 
 import pytest
 
 from app.domain.categories import JobCategory
-from app.domain.jobs.models import EmploymentType, JobLocation, NormalizedJob, RequirementType
+from app.domain.jobs.models import (
+    EmploymentType,
+    JobLocation,
+    NormalizedJob,
+    NormalizedJobSkill,
+    RequirementType,
+)
+from app.domain.skills import rule_extractor
 from app.integrations.ai.llm.base import LLMResult
 from app.services.job_skill_extraction_service import JobSkillExtractionService
 
@@ -41,6 +49,10 @@ class _FakeJobRepository:
     ) -> None:
         self.saved = (canonical_job_id, skills, generated_by)
         self.saved_category = (category, category_confidence)
+
+
+def _named(skills, name):
+    return next((skill for skill in skills if skill.name == name), None)
 
 
 def _job() -> NormalizedJob:
@@ -157,14 +169,20 @@ async def test_evidence_the_posting_does_not_contain_is_dropped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_extract_and_save_without_llm_provider_is_a_no_op() -> None:
+async def test_without_an_llm_the_rules_extractor_still_produces_requirements() -> None:
+    # The whole point of the fallback: a job reaches scoring with real
+    # requirements instead of an empty list that would score as "nothing checked".
     repository = _FakeJobRepository(_job())
     service = JobSkillExtractionService(repository, llm_provider=None)  # type: ignore[arg-type]
 
-    result = await service.extract_and_save(uuid.uuid4())
+    skills = await service.extract_and_save(uuid.uuid4())
 
-    assert result is None
-    assert repository.saved is None
+    assert {skill.name for skill in skills} == {"Django", "PostgreSQL", "Docker"}
+    assert _named(skills, "Docker").requirement is RequirementType.OPTIONAL_EXPLICIT
+    assert repository.saved is not None
+    assert repository.saved[2] == rule_extractor.EXTRACTOR_LABEL
+    # Rules can't classify a role — better no category than a guessed one.
+    assert repository.saved_category == (None, None)
 
 
 @pytest.mark.asyncio
@@ -182,17 +200,38 @@ class _FailingLlmProvider:
 
 
 @pytest.mark.asyncio
-async def test_extract_and_save_returns_none_when_the_llm_call_fails() -> None:
-    # Regression test: extract_job_skills.delay's Celery task fans out
-    # score_job_for_user for every onboarded user right after extract_and_save
-    # returns — if a bad LLM response (timeout, provider outage, a response that
-    # doesn't match the schema) raised out of here instead of degrading to None,
-    # the whole task would fail and silently skip scoring for every user on that
-    # job. See job_skill_extraction_service.py's module docstring.
+async def test_a_failed_llm_call_degrades_to_rules_instead_of_failing_the_task() -> None:
+    # extract_job_skills.delay fans out score_job_for_user for every onboarded
+    # user right after this returns, so a bad LLM response (timeout, provider
+    # outage, a response that doesn't match the schema) must not propagate — it
+    # would fail the whole Celery task and silently skip scoring for every user
+    # on that job.
     repository = _FakeJobRepository(_job())
     service = JobSkillExtractionService(repository, _FailingLlmProvider())  # type: ignore[arg-type]
 
-    result = await service.extract_and_save(uuid.uuid4())
+    skills = await service.extract_and_save(uuid.uuid4())
 
-    assert result is None
+    assert {skill.name for skill in skills} == {"Django", "PostgreSQL", "Docker"}
+    assert repository.saved is not None
+    assert repository.saved[2] == rule_extractor.EXTRACTOR_LABEL
+
+
+@pytest.mark.asyncio
+async def test_a_rules_fallback_never_overwrites_an_existing_llm_extraction() -> None:
+    # A rescore run whose LLM leg is down must not replace richer, model-read
+    # requirements with what a dictionary scan found.
+    already_extracted = [
+        NormalizedJobSkill(
+            name="Kubernetes",
+            requirement=RequirementType.REQUIRED_EXPLICIT,
+            canonical_id="kubernetes",
+        )
+    ]
+    job = replace(_job(), skills=already_extracted, skills_extracted_by="Groq (some-model)")
+    repository = _FakeJobRepository(job)
+    service = JobSkillExtractionService(repository, _FailingLlmProvider())  # type: ignore[arg-type]
+
+    skills = await service.extract_and_save(uuid.uuid4())
+
+    assert skills == already_extracted
     assert repository.saved is None
