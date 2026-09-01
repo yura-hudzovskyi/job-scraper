@@ -9,6 +9,8 @@ export interface CandidateSkill {
   name: string;
   level: string;
   years: number | null;
+  /** "llm" | "rules" | "user" — a skill the user corrected is marked as theirs. */
+  source: string;
 }
 
 export interface ExperienceEntry {

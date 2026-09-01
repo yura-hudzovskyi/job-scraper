@@ -38,6 +38,10 @@ export const listCvs = () => apiClient.get<CvDocument[]>("/api/cv");
 export const deleteCv = (cvId: string) => apiClient.delete<void>(`/api/cv/${cvId}`);
 export const analyzeCv = () => apiClient.post<CandidateProfile>("/api/cv/analyze");
 export const getCandidateProfile = () => apiClient.get<CandidateProfile | null>("/api/cv/profile");
+export const correctSkill = (name: string) =>
+  apiClient.post<CandidateProfile>("/api/cv/profile/skills", { name });
+export const removeSkill = (name: string) =>
+  apiClient.delete<CandidateProfile>(`/api/cv/profile/skills/${encodeURIComponent(name)}`);
 export const getProfile = () => apiClient.get<ProfileSummary>("/api/profile");
 
 export const getPreferences = () => apiClient.get<Preferences | null>("/api/settings");
