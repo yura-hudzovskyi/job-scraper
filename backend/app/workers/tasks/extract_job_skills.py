@@ -5,7 +5,7 @@ score.score_job_for_user so the LLM call happens once per job, not once per
 (job x user). Safe to re-run: extraction overwrites the same job_source_records row,
 and score_job_for_user is itself idempotent.
 
-Uses build_job_llm_provider (Groq first, Gemini on rate limit)
+Runs on the JOB_EXTRACTION capability (Groq first, Gemini on rate limit)
 — this runs on every newly-scraped job, the same high-volume job-pipeline call
 site as AI matching, so it deliberately never touches Gemini (reserved for CV
 analysis and preferences AI-fill — see docs/matching-engine.md).
@@ -17,7 +17,8 @@ import uuid
 from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
 from app.db.session import session_scope
-from app.integrations.ai.llm.factory import build_job_llm_provider
+from app.integrations.ai.llm.factory import build_llm_router
+from app.integrations.ai.routing.router import Capability
 from app.repositories.job_repository import JobRepository
 from app.services.job_skill_extraction_service import JobSkillExtractionService
 from app.workers.celery_app import celery_app
@@ -28,7 +29,8 @@ async def _run(canonical_job_id: str, user_ids: list[str]) -> None:
     settings = await get_effective_settings(get_settings())
     async with session_scope() as session:
         service = JobSkillExtractionService(
-            JobRepository(session), build_job_llm_provider(settings)
+            JobRepository(session),
+            build_llm_router(Capability.JOB_EXTRACTION, settings),
         )
         await service.extract_and_save(uuid.UUID(canonical_job_id))
 

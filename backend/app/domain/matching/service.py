@@ -48,6 +48,7 @@ from app.domain.matching.role_matching import RoleMatcher
 from app.domain.matching.scoring import DeterministicScore, DeterministicScorer, SemanticScorer
 from app.domain.matching.skill_matching import SkillAssessment, SkillMatcher
 from app.domain.versioning import DocumentVersion
+from app.integrations.ai.routing.router import NoCapacity
 
 _MAX_LISTED_REASONS = 5
 
@@ -301,7 +302,7 @@ class MatchingService:
         LlmReranker and docs/matching-engine.md's Phase 4 section. Never called for
         Recommendation.SKIP matches: that's both where the "should I apply?" question
         isn't worth asking, and the primary volume control on top of LlmReranker's
-        own daily call budget (see app/integrations/ai/llm/budget.py) — a
+        own capability budget (see app/integrations/ai/quota/budget.py) — a
         personal-scale free-tier key can't afford reranking every match regardless of
         quality. When the layer can't run (no LLM configured, SKIP-tier, or the
         daily budget is exhausted) the match comes back scored exactly as before,
@@ -313,11 +314,12 @@ class MatchingService:
         if match.recommendation == Recommendation.SKIP:
             return self._record_fallback(match, FallbackReason.BELOW_LLM_THRESHOLD)
 
-        assessment = await self._llm_reranker.assess(
-            job, profile, match.breakdown, match.strengths, match.gaps
-        )
-        if assessment is None:
-            return self._record_fallback(match, FallbackReason.LLM_BUDGET_EXHAUSTED)
+        try:
+            assessment = await self._llm_reranker.assess(
+                job, profile, match.breakdown, match.strengths, match.gaps
+            )
+        except NoCapacity:
+            return self._record_fallback(match, FallbackReason.LLM_NO_CAPACITY)
 
         provenance = match.provenance
         if provenance is not None:

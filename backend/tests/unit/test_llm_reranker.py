@@ -5,6 +5,7 @@ from app.domain.jobs.models import EmploymentType, JobLocation, NormalizedJob
 from app.domain.matching.llm_reranker import LlmReranker
 from app.domain.matching.models import MatchGap, MatchReason, Recommendation, ScoreBreakdown
 from app.integrations.ai.llm.base import LLMResult
+from app.integrations.ai.routing.router import Capability, NoCapacity
 
 
 class _FakeLlmProvider:
@@ -17,16 +18,6 @@ class _FakeLlmProvider:
         assert "Backend Engineer" in prompt
         assert "NestJS" in prompt  # a gap label passed in
         return LLMResult(data=schema(**self._payload), model_label="fake-model")
-
-
-class _FakeBudget:
-    def __init__(self, allow: bool):
-        self._allow = allow
-        self.calls = 0
-
-    async def try_consume(self) -> bool:
-        self.calls += 1
-        return self._allow
 
 
 def _job() -> NormalizedJob:
@@ -79,7 +70,7 @@ _VERDICT_PAYLOAD = {
 @pytest.mark.asyncio
 async def test_assess_maps_llm_verdict_to_llm_assessment() -> None:
     provider = _FakeLlmProvider(_VERDICT_PAYLOAD)
-    reranker = LlmReranker(provider, _FakeBudget(allow=True))  # type: ignore[arg-type]
+    reranker = LlmReranker(provider)  # type: ignore[arg-type]
 
     assessment = await reranker.assess(_job(), _profile(), _BREAKDOWN, _STRENGTHS, _GAPS)
 
@@ -97,12 +88,17 @@ async def test_assess_maps_llm_verdict_to_llm_assessment() -> None:
     assert provider.call_count == 1
 
 
+class _NoCapacityProvider:
+    async def structured_completion(self, prompt, schema):
+        raise NoCapacity(Capability.MATCH_ENRICHMENT)
+
+
 @pytest.mark.asyncio
-async def test_assess_returns_none_without_calling_the_llm_when_budget_exhausted() -> None:
-    provider = _FakeLlmProvider(_VERDICT_PAYLOAD)
-    reranker = LlmReranker(provider, _FakeBudget(allow=False))  # type: ignore[arg-type]
+async def test_no_capacity_surfaces_to_the_caller_rather_than_a_silent_none() -> None:
+    # Budget and cooldown decisions live in the router now; the reranker's job is
+    # to let the caller see the difference between "no verdict" and "no capacity",
+    # which is what MatchingService records as a fallback reason.
+    reranker = LlmReranker(_NoCapacityProvider())  # type: ignore[arg-type]
 
-    assessment = await reranker.assess(_job(), _profile(), _BREAKDOWN, _STRENGTHS, _GAPS)
-
-    assert assessment is None
-    assert provider.call_count == 0
+    with pytest.raises(NoCapacity):
+        await reranker.assess(_job(), _profile(), _BREAKDOWN, _STRENGTHS, _GAPS)

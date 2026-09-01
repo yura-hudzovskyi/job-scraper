@@ -42,13 +42,13 @@ def test_a_fallback_reason_round_trips() -> None:
     provenance = _provenance(
         analysis_level=AnalysisLevel.STANDARD,
         match_model=None,
-        fallback_reason=FallbackReason.LLM_BUDGET_EXHAUSTED,
+        fallback_reason=FallbackReason.LLM_NO_CAPACITY,
     )
 
     restored = provenance_from_payload(provenance_payload(provenance))
 
     assert restored is not None
-    assert restored.fallback_reason is FallbackReason.LLM_BUDGET_EXHAUSTED
+    assert restored.fallback_reason is FallbackReason.LLM_NO_CAPACITY
     assert restored.match_model is None
 
 

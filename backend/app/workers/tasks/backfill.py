@@ -13,7 +13,8 @@ import uuid
 from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
 from app.db.session import session_scope
-from app.integrations.ai.llm.factory import build_job_llm_provider
+from app.integrations.ai.llm.factory import build_llm_router
+from app.integrations.ai.routing.router import Capability
 from app.repositories.job_repository import JobRepository
 from app.services.job_skill_extraction_service import JobSkillExtractionService
 from app.workers.celery_app import celery_app
@@ -38,7 +39,7 @@ def score_existing_jobs_for_user(user_id: str) -> dict[str, int]:
 
 async def _run_reextract_and_rescore(user_id: str, canonical_job_id: str) -> None:
     """Re-extracts this job's skills through the same job-pipeline provider
-    (Groq first, Gemini on rate limit — see build_job_llm_provider) that the
+    (the JOB_EXTRACTION capability — see routing/policy.py) that the
     automatic per-scrape extraction already uses, then rescores. force=True: this
     is the explicit "refresh everything" action, so it re-reads the posting even
     when nothing about it changed — that is the point of pressing the button.
@@ -48,7 +49,7 @@ async def _run_reextract_and_rescore(user_id: str, canonical_job_id: str) -> Non
     async with session_scope() as session:
         job_repository = JobRepository(session)
         extraction_service = JobSkillExtractionService(
-            job_repository, build_job_llm_provider(settings)
+            job_repository, build_llm_router(Capability.JOB_EXTRACTION, settings)
         )
         await extraction_service.extract_and_save(uuid.UUID(canonical_job_id), force=True)
 

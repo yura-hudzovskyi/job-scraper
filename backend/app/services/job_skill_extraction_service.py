@@ -47,6 +47,7 @@ from app.domain.jobs.models import NormalizedJob, NormalizedJobSkill, Requiremen
 from app.domain.skills import requirements, rule_extractor
 from app.domain.versioning import job_posting_hash
 from app.integrations.ai.llm.base import LLMProvider
+from app.integrations.ai.routing.router import NoCapacity
 from app.repositories.job_repository import JobRepository
 
 logger = logging.getLogger(__name__)
@@ -213,6 +214,11 @@ class JobSkillExtractionService:
         )
         try:
             result = await self._llm_provider.structured_completion(prompt, _ExtractedJob)
+        except NoCapacity as exc:
+            # Expected, not exceptional: this capability's budget is spent or every
+            # leg is cooling down. The rules extractor covers this posting.
+            logger.info("no LLM capacity for %s (%s) — using the rules extractor", job.url, exc)
+            return None
         except Exception:
             logger.warning(
                 "LLM skill extraction failed for %s — falling back to the rules extractor",

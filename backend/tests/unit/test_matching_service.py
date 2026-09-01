@@ -31,6 +31,7 @@ from app.domain.matching.role_matching import RoleMatcher
 from app.domain.matching.scoring import DeterministicScorer, SemanticScorer
 from app.domain.matching.service import MatchingService
 from app.domain.matching.skill_matching import SkillMatcher
+from app.integrations.ai.routing.router import Capability, NoCapacity
 
 
 class _FakeEmbeddingProvider:
@@ -119,12 +120,16 @@ def _match(recommendation: Recommendation) -> JobMatch:
 
 
 class _FakeLlmReranker:
-    def __init__(self, assessment: LlmAssessment | None):
+    def __init__(self, assessment: LlmAssessment | None = None, error: Exception | None = None):
         self._assessment = assessment
+        self._error = error
         self.call_count = 0
 
-    async def assess(self, job, profile, breakdown, strengths, gaps) -> LlmAssessment | None:
+    async def assess(self, job, profile, breakdown, strengths, gaps) -> LlmAssessment:
         self.call_count += 1
+        if self._error is not None:
+            raise self._error
+        assert self._assessment is not None
         return self._assessment
 
 
@@ -190,7 +195,7 @@ async def test_should_i_apply_is_a_noop_when_reranker_returns_none() -> None:
     # Budget exhausted (or any other degrade-gracefully reason) -> reranker
     # itself returns None rather than raising; should_i_apply must leave the
     # match untouched, not error.
-    reranker = _FakeLlmReranker(None)
+    reranker = _FakeLlmReranker(error=NoCapacity(Capability.MATCH_ENRICHMENT))
     service = _matching_service(_FakeEmbeddingProvider(), llm_reranker=reranker)
     match = _match(Recommendation.APPLY)
 
@@ -199,7 +204,7 @@ async def test_should_i_apply_is_a_noop_when_reranker_returns_none() -> None:
     assert reranker.call_count == 1
     assert result.llm_assessment is None
     assert result.provenance is not None
-    assert result.provenance.fallback_reason is FallbackReason.LLM_BUDGET_EXHAUSTED
+    assert result.provenance.fallback_reason is FallbackReason.LLM_NO_CAPACITY
 
 
 @pytest.mark.asyncio

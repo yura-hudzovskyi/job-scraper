@@ -52,7 +52,9 @@ class FallbackReason(StrEnum):
     was expected to)."""
 
     NO_LLM_PROVIDER = "no_llm_provider"
-    LLM_BUDGET_EXHAUSTED = "llm_budget_exhausted"
+    # Today's budget for this capability is spent, or every provider leg is
+    # cooling down — see app/integrations/ai/routing/router.py::NoCapacity.
+    LLM_NO_CAPACITY = "llm_no_capacity"
     BELOW_LLM_THRESHOLD = "below_llm_threshold"
 
 

@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
 
-    # Optional paid LLM leg (see app/integrations/ai/llm/factory.py::
-    # build_configured_llm_provider) — used only when both are set, and only
+    # Optional paid LLM leg (the PAID entry in
+    # app/integrations/ai/routing/policy.py) — used only when both are set, and only
     # after the Gemini/Groq free tiers. The pipeline runs on those two alone by
     # default; this exists for deployments that would rather not depend on a
     # free tier at all.
@@ -30,34 +30,28 @@ class Settings(BaseSettings):
 
     # Optional: when set, CV analysis and preferences AI-fill (the "quality
     # matters most, low volume" call sites) use Gemini's free tier first, falling
-    # back to Groq on rate limit — see
-    # app/integrations/ai/llm/factory.py::build_quality_llm_provider.
+    # back to Groq on rate limit — see app/integrations/ai/routing/policy.py.
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"
 
     # Optional: when set, the job pipeline (skill extraction, AI matching, "should
     # I apply?") uses Groq's free tier first — fast enough to actually churn
     # through a real backlog — falling back to Gemini on rate limit. See
-    # app/integrations/ai/llm/factory.py::build_job_llm_provider and
-    # docs/matching-engine.md.
+    # app/integrations/ai/routing/policy.py and docs/matching-engine.md.
     groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
-    # Groq enforces both per-minute and per-day limits; a 429 during normal use is
-    # far more likely to be the former, so this is a short, fixed cooldown rather
-    # than GeminiCircuitBreaker's until-midnight one — see circuit_breaker.py.
-    groq_circuit_breaker_cooldown_seconds: int = 60
 
-    # Hard daily ceiling on LlmReranker calls (see app/integrations/ai/llm/budget.py
-    # and app/domain/matching/llm_reranker.py) — independent of whatever the
-    # configured quality/job provider's own rate-limit/billing behavior is.
-    # LlmReranker is the only LLM call site left in the job-scoring pipeline (the
-    # deterministic pipeline now scores every eligible job on its own) and runs on
-    # CONSIDER+APPLY matches, not just APPLY — a wider tier than before, so this
-    # default is higher accordingly. Still just a starting point: tune to your
-    # actual plan and observed CONSIDER+APPLY volume (free-tier daily quotas vary
-    # by provider/model/tier and change over time, so this isn't a number
-    # guaranteed correct for any particular plan).
-    llm_rerank_daily_limit: int = 150
+    # Hard daily ceilings, one per capability — see
+    # app/integrations/ai/quota/budget.py. Separate counters *are* the
+    # interactive reserve: a backlog run burning through job extraction cannot
+    # eat what CV analysis has left, because they never share a budget.
+    #
+    # These are starting points, not measured limits: free-tier daily quotas vary
+    # by provider, model and account and change over time, so tune them to what
+    # the System page reports actually getting used.
+    llm_daily_limit_profile_extraction: int = 50  # user-triggered, rare, protected
+    llm_daily_limit_job_extraction: int = 400  # once per newly scraped job
+    llm_daily_limit_match_enrichment: int = 150  # the "should I apply?" verdict
 
     embedding_provider: Literal["sentence_transformers", "openai"] = "sentence_transformers"
     embedding_model: str = "all-MiniLM-L6-v2"

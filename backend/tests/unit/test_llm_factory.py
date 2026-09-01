@@ -1,17 +1,12 @@
-"""Provider-chain wiring only, no network: each entry point orders the same two
-free tiers differently, and the paid OpenAI/Anthropic leg is off unless it is
-fully configured. See app/integrations/ai/llm/factory.py.
+"""Which legs a capability gets, in what order, from a given configuration —
+policy in one place (app/integrations/ai/routing/policy.py), construction in
+another (app/integrations/ai/llm/factory.py). No network, no SDK calls: legs
+build their provider lazily, so these only look at what was selected.
 """
 
 from app.config.settings import Settings
-from app.integrations.ai.llm.factory import (
-    build_configured_llm_provider,
-    build_job_llm_provider,
-    build_quality_llm_provider,
-)
-from app.integrations.ai.llm.fallback_provider import FallbackLLMProvider
-from app.integrations.ai.llm.gemini_provider import GeminiLLMProvider
-from app.integrations.ai.llm.groq_provider import GroqLLMProvider
+from app.integrations.ai.llm.factory import build_llm_router, legs_for
+from app.integrations.ai.routing.router import Capability
 
 
 def _settings(**overrides: object) -> Settings:
@@ -28,82 +23,72 @@ def _settings(**overrides: object) -> Settings:
     return Settings(**{**base, **overrides})  # type: ignore[arg-type]
 
 
-def test_nothing_configured_builds_no_provider() -> None:
+def _keys(capability: Capability, settings: Settings) -> list[str]:
+    return [leg.key for leg in legs_for(capability, settings)]
+
+
+def test_nothing_configured_builds_no_router() -> None:
     settings = _settings()
 
-    assert build_job_llm_provider(settings) is None
-    assert build_quality_llm_provider(settings) is None
-    assert build_configured_llm_provider(settings) is None
+    assert legs_for(Capability.JOB_EXTRACTION, settings) == []
+    assert build_llm_router(Capability.JOB_EXTRACTION, settings) is None
 
 
-def test_job_pipeline_runs_on_groq_alone_when_it_is_the_only_leg() -> None:
-    provider = build_job_llm_provider(_settings(groq_api_key="gsk_fake"))
+def test_the_job_pipeline_leads_with_the_fast_provider() -> None:
+    settings = _settings(groq_api_key="gsk_fake", gemini_api_key="AIza_fake")
 
-    assert isinstance(provider, GroqLLMProvider)
-
-
-def test_job_pipeline_falls_back_from_groq_to_gemini() -> None:
-    provider = build_job_llm_provider(
-        _settings(groq_api_key="gsk_fake", gemini_api_key="AIza_fake")
-    )
-
-    assert isinstance(provider, FallbackLLMProvider)
-    assert isinstance(provider._primary, GroqLLMProvider)  # type: ignore[attr-defined]
-    assert isinstance(provider._fallback, GeminiLLMProvider)  # type: ignore[attr-defined]
+    assert _keys(Capability.JOB_EXTRACTION, settings) == [
+        "groq:llama-3.3-70b-versatile",
+        "gemini:gemini-2.0-flash",
+    ]
 
 
-def test_job_pipeline_runs_on_gemini_when_groq_is_not_configured() -> None:
-    provider = build_job_llm_provider(_settings(gemini_api_key="AIza_fake"))
+def test_cv_analysis_leads_with_the_quality_provider() -> None:
+    # The reverse order of the job pipeline: profile extraction is rare and its
+    # output is what every later match is built on.
+    settings = _settings(groq_api_key="gsk_fake", gemini_api_key="AIza_fake")
 
-    assert isinstance(provider, GeminiLLMProvider)
-
-
-def test_quality_pipeline_falls_back_from_gemini_to_groq() -> None:
-    # The reverse order of the job pipeline: CV analysis is low-volume and wants
-    # the better model first, the job pipeline is high-volume and wants the fast
-    # one first.
-    provider = build_quality_llm_provider(
-        _settings(groq_api_key="gsk_fake", gemini_api_key="AIza_fake")
-    )
-
-    assert isinstance(provider, FallbackLLMProvider)
-    assert isinstance(provider._primary, GeminiLLMProvider)  # type: ignore[attr-defined]
-    assert isinstance(provider._fallback, GroqLLMProvider)  # type: ignore[attr-defined]
+    assert _keys(Capability.PROFILE_EXTRACTION, settings) == [
+        "gemini:gemini-2.0-flash",
+        "groq:llama-3.3-70b-versatile",
+    ]
 
 
-def test_quality_pipeline_runs_on_gemini_alone_when_groq_is_not_configured() -> None:
-    provider = build_quality_llm_provider(_settings(gemini_api_key="AIza_fake"))
+def test_a_provider_without_credentials_is_absent_not_a_failing_leg() -> None:
+    settings = _settings(groq_api_key="gsk_fake")
 
-    assert isinstance(provider, GeminiLLMProvider)
+    assert _keys(Capability.JOB_EXTRACTION, settings) == ["groq:llama-3.3-70b-versatile"]
+
+
+def test_legs_use_the_currently_configured_model_names() -> None:
+    # The System page writes overrides onto Settings before this runs, so a model
+    # changed at runtime takes effect on the very next call.
+    settings = _settings(groq_api_key="gsk_fake", groq_model="llama-3.1-8b-instant")
+
+    assert _keys(Capability.JOB_EXTRACTION, settings) == ["groq:llama-3.1-8b-instant"]
 
 
 def test_the_paid_leg_needs_a_provider_a_model_and_its_key() -> None:
-    assert build_configured_llm_provider(_settings(llm_provider="openai")) is None
+    assert _keys(Capability.JOB_EXTRACTION, _settings(llm_provider="openai")) == []
     assert (
-        build_configured_llm_provider(_settings(llm_provider="openai", llm_model="gpt-4o-mini"))
-        is None
+        _keys(Capability.JOB_EXTRACTION, _settings(llm_provider="openai", llm_model="gpt-4o-mini"))
+        == []
     )
 
-    provider = build_configured_llm_provider(
-        _settings(llm_provider="openai", llm_model="gpt-4o-mini", openai_api_key="sk-fake")
+    settings = _settings(
+        llm_provider="openai", llm_model="gpt-4o-mini", openai_api_key="sk-fake"
     )
 
-    from app.integrations.ai.llm.openai_provider import OpenAILLMProvider
-
-    assert isinstance(provider, OpenAILLMProvider)
+    assert _keys(Capability.JOB_EXTRACTION, settings) == ["paid:gpt-4o-mini"]
 
 
-def test_the_paid_leg_is_the_fallback_when_only_one_free_tier_is_configured() -> None:
-    from app.integrations.ai.llm.openai_provider import OpenAILLMProvider
-
-    provider = build_job_llm_provider(
-        _settings(
-            groq_api_key="gsk_fake",
-            llm_provider="openai",
-            llm_model="gpt-4o-mini",
-            openai_api_key="sk-fake",
-        )
+def test_the_paid_leg_comes_after_both_free_tiers() -> None:
+    settings = _settings(
+        groq_api_key="gsk_fake",
+        gemini_api_key="AIza_fake",
+        llm_provider="anthropic",
+        llm_model="claude-haiku-4-5-20251001",
+        anthropic_api_key="sk-ant-fake",
     )
 
-    assert isinstance(provider, FallbackLLMProvider)
-    assert isinstance(provider._fallback, OpenAILLMProvider)  # type: ignore[attr-defined]
+    assert _keys(Capability.MATCH_ENRICHMENT, settings)[-1] == "paid:claude-haiku-4-5-20251001"

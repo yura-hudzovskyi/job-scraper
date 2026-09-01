@@ -1,9 +1,16 @@
-"""Runtime AI model configuration for the System page — lets a user change which
-model each tier uses (see app/config/runtime_settings.py) without touching .env or
-restarting anything, and lets them test a model directly against its real provider
-so a bad or deprecated model id (Groq's free-tier catalog changes over time — see
-docs/matching-engine.md) surfaces immediately instead of silently degrading
-through FallbackLLMProvider the next time a real job gets scored.
+"""Runtime AI configuration and status for the System page.
+
+Two jobs: let a user change which model each tier uses (see
+app/config/runtime_settings.py) without touching .env or restarting anything, and
+show what the router is actually doing right now — which legs are serving traffic,
+which are cooling down and why, and how much of each capability's daily budget is
+left (see app/integrations/ai/routing/, app/integrations/ai/quota/budget.py).
+
+The status half matters because every failure path in this app degrades quietly
+by design: without it, "the AI stopped working" looks identical to "the AI is
+fine but this job had nothing to extract". It also lets a user test a model
+directly against its real provider, so a bad or deprecated model id surfaces
+immediately instead of silently degrading the next time a real job is scored.
 
 Deliberately scoped to *model names* only — LLM_PROVIDER/EMBEDDING_PROVIDER and
 every API key stay .env-only: those are infra/secrets decisions, not something to
@@ -22,10 +29,11 @@ from app.api.deps import get_current_user_id
 from app.config.runtime_settings import get_effective_settings
 from app.config.settings import Settings, get_settings
 from app.integrations.ai.llm.base import LLMProvider
-from app.integrations.ai.llm.circuit_breaker import (
-    FixedCooldownCircuitBreaker,
-    GeminiCircuitBreaker,
-)
+from app.integrations.ai.llm.factory import legs_for
+from app.integrations.ai.quota.budget import DailyCapabilityBudget
+from app.integrations.ai.routing import policy
+from app.integrations.ai.routing.router import Capability
+from app.integrations.ai.routing.state import ProviderStateStore
 from app.repositories.ai_settings_repository import AiSettingsRepository
 
 logger = logging.getLogger(__name__)
@@ -43,13 +51,60 @@ class ModelFieldStatus(BaseModel):
     default: str
 
 
+class LegStatus(BaseModel):
+    """One provider/model pair as the router currently sees it."""
+
+    provider: str
+    model: str
+    available: bool
+    # Why it isn't available: rate_limit, quota_exhausted, transient, fatal.
+    reason: str | None = None
+    retry_after_seconds: int | None = None
+
+
+class CapabilityStatus(BaseModel):
+    capability: str
+    legs: list[LegStatus]
+    budget_used: int
+    budget_limit: int
+
+
 class AiModelsResponse(BaseModel):
     groq_configured: bool
     groq_model: ModelFieldStatus
-    groq_circuit_open: bool
     gemini_configured: bool
     gemini_model: ModelFieldStatus
-    gemini_circuit_open: bool
+    capabilities: list[CapabilityStatus]
+
+
+async def _capability_status(
+    capability: Capability, settings: Settings, client: redis.Redis
+) -> CapabilityStatus:
+    state = ProviderStateStore(client)
+    budget = DailyCapabilityBudget(
+        client, capability.value, policy.daily_limit(capability, settings)
+    )
+    legs = []
+    for leg in legs_for(capability, settings):
+        leg_state = await state.state(leg.key)
+        retry_after = leg_state.retry_after
+        legs.append(
+            LegStatus(
+                provider=leg.provider,
+                model=leg.model,
+                available=leg_state.available,
+                reason=leg_state.reason.value if leg_state.reason else None,
+                retry_after_seconds=(
+                    int(retry_after.total_seconds()) if retry_after is not None else None
+                ),
+            )
+        )
+    return CapabilityStatus(
+        capability=capability.value,
+        legs=legs,
+        budget_used=await budget.used(),
+        budget_limit=budget.daily_limit,
+    )
 
 
 @router.get("/models", response_model=AiModelsResponse)
@@ -59,6 +114,7 @@ async def get_ai_models(
     settings = get_settings()
     overrides = await _ai_settings_repository(settings).get_overrides()
     effective = await get_effective_settings(settings)
+    client = redis.from_url(settings.redis_url)
 
     def _field(name: str) -> ModelFieldStatus:
         return ModelFieldStatus(
@@ -67,27 +123,14 @@ async def get_ai_models(
             default=getattr(settings, name),
         )
 
-    groq_circuit_open = False
-    if settings.groq_api_key:
-        breaker = FixedCooldownCircuitBreaker(
-            redis.from_url(settings.redis_url),
-            key=f"groq_exhausted:{effective.groq_model}",
-            cooldown_seconds=settings.groq_circuit_breaker_cooldown_seconds,
-        )
-        groq_circuit_open = await breaker.is_open()
-
-    gemini_circuit_open = False
-    if settings.gemini_api_key:
-        gemini_breaker = GeminiCircuitBreaker(redis.from_url(settings.redis_url), effective.gemini_model)
-        gemini_circuit_open = await gemini_breaker.is_open()
-
     return AiModelsResponse(
         groq_configured=bool(settings.groq_api_key),
         groq_model=_field("groq_model"),
-        groq_circuit_open=groq_circuit_open,
         gemini_configured=bool(settings.gemini_api_key),
         gemini_model=_field("gemini_model"),
-        gemini_circuit_open=gemini_circuit_open,
+        capabilities=[
+            await _capability_status(capability, effective, client) for capability in Capability
+        ],
     )
 
 
@@ -134,10 +177,10 @@ async def test_ai_model(
     user_id: uuid.UUID = Depends(get_current_user_id),
 ) -> TestModelResponse:
     """Fires one real, minimal completion against the raw provider — bypassing
-    FallbackLLMProvider on purpose, so a broken model surfaces its real error
-    (e.g. Groq's own "model does not exist" message for a deprecated/mistyped
-    model id) instead of the silent degrade-to-deterministic every other call
-    site in this app deliberately does."""
+    the router on purpose, so a broken model surfaces its real error (e.g. Groq's
+    own "model does not exist" message for a deprecated/mistyped model id)
+    instead of being classified, parked and degraded around like every other call
+    site here deliberately does."""
     settings = get_settings()
     provider: LLMProvider
 

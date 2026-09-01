@@ -3,8 +3,6 @@ when no embedding provider is available — the deterministic pipeline can't run
 without one (semantic_fit and skill matching both need it).
 """
 
-import redis.asyncio as redis
-
 from app.config.settings import Settings
 from app.domain.matching.filters import HardFilterService
 from app.domain.matching.llm_reranker import LlmReranker
@@ -17,8 +15,8 @@ from app.integrations.ai.embeddings.factory import (
     build_cross_encoder_provider,
     build_embedding_provider,
 )
-from app.integrations.ai.llm.budget import DailyCallBudget
-from app.integrations.ai.llm.factory import build_job_llm_provider
+from app.integrations.ai.llm.factory import build_llm_router
+from app.integrations.ai.routing.router import Capability
 
 
 def build_matching_service(settings: Settings) -> MatchingService | None:
@@ -29,22 +27,12 @@ def build_matching_service(settings: Settings) -> MatchingService | None:
     cross_encoder_provider = build_cross_encoder_provider(settings)
 
     # The "should I apply?" reranker (the only job-tier LLM call site now that
-    # scoring is fully deterministic) uses Groq's free tier first (if
-    # GROQ_API_KEY is set — fast enough for real volume), automatically falling
-    # back to Gemini the instant Groq returns 429 (rate limit) — see
-    # app/integrations/ai/llm/factory.py and fallback_provider.py. CV analysis and
-    # preferences AI-fill are the separate, Gemini-first call sites
-    # (build_quality_llm_provider).
-    llm_provider = build_job_llm_provider(settings)
-
-    llm_reranker = None
-    if llm_provider is not None:
-        budget = DailyCallBudget(
-            redis.from_url(settings.redis_url),
-            key_prefix="llm_rerank",
-            daily_limit=settings.llm_rerank_daily_limit,
-        )
-        llm_reranker = LlmReranker(llm_provider, budget)
+    # scoring is fully deterministic) runs on the MATCH_ENRICHMENT capability,
+    # with that capability's own daily budget and provider order — see
+    # app/integrations/ai/routing/policy.py. The router decides which leg serves
+    # the call and when there is no capacity left; the reranker just asks.
+    llm_provider = build_llm_router(Capability.MATCH_ENRICHMENT, settings)
+    llm_reranker = LlmReranker(llm_provider) if llm_provider is not None else None
 
     return MatchingService(
         HardFilterService(),

@@ -7,7 +7,7 @@ Celery's broker/backend — see app/api/routes/system.py for those), one hash so
 single HGETALL reads every override at once.
 
 Reads fail open (empty dict) on a Redis error, same contract as
-circuit_breaker.py and budget.py: an optional UI-config layer must never itself
+the provider state store and budgets: an optional UI-config layer must never itself
 block or crash a call the .env-configured default could still serve. Writes are
 the opposite — an explicit "Save" from the System page that silently didn't
 persist would be exactly the kind of invisible failure this whole cleanup is

@@ -16,7 +16,8 @@ from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
 from app.db.session import get_session
 from app.integrations.ai.llm.base import LLMProvider
-from app.integrations.ai.llm.factory import build_quality_llm_provider
+from app.integrations.ai.llm.factory import build_llm_router
+from app.integrations.ai.routing.router import Capability
 from app.repositories.candidate_repository import CandidateRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
@@ -78,8 +79,10 @@ def get_notification_repository(
 
 
 async def get_quality_llm_provider() -> LLMProvider | None:
+    """CV analysis and preferences AI-fill both read a CV into structure, so both
+    run on the profile-extraction capability and share its protected budget."""
     settings = await get_effective_settings(get_settings())
-    return build_quality_llm_provider(settings)
+    return build_llm_router(Capability.PROFILE_EXTRACTION, settings)
 
 
 def get_cv_service(

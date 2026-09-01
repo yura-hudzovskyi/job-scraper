@@ -1,137 +1,116 @@
-"""Builds LLMProviders from Settings. Three entry points, not one, because the
-call sites in this app want different provider orders rather than one global
-choice — see docs/ai-pipeline-v3.md (F5, capability-specific routing):
+"""Builds an LlmRouter for one capability from Settings.
 
-- build_quality_llm_provider: CV analysis and preferences AI-fill — low-volume,
-  quality-matters-most. Gemini first, Groq as the fallback leg.
-- build_job_llm_provider: job skill extraction and the "should I apply?"
-  reranker — the high-volume, throughput-matters call sites. Groq first (fast
-  enough to churn through a real backlog), Gemini as the fallback leg.
-- build_configured_llm_provider: the optional paid OpenAI/Anthropic leg
-  (LLM_PROVIDER + LLM_MODEL). Off by default; used as the last fallback when a
-  free tier isn't configured.
+Call sites ask for a capability — "extract a profile", "read a job posting",
+"enrich a match" — and get something that satisfies the LLMProvider protocol.
+Which vendors serve it, in what order, is policy (routing/policy.py); how a
+failure is handled is the router's (routing/router.py); this module only turns
+configuration into legs.
 
-A chain falls back only on a *rate-limit* failure of its primary — a real
-auth/config error surfaces loudly instead of being masked by a fallback that
-hides a broken API key. A circuit breaker rides along so a primary that already
-answered 429 is skipped for a cooldown instead of being re-tried on every single
-call (see circuit_breaker.py).
+Returns None when nothing is configured at all. Callers decide whether that's
+fatal (CV analysis) or something to degrade around (the job pipeline falls back
+to rules, matching stays deterministic).
 
-Returns None when nothing is configured — callers decide whether that's fatal
-(CV analysis) or something to degrade around (the job pipeline still scores
-deterministically without an LLM).
-
-Phase 3 of docs/ai-pipeline-v3.md replaces these hand-wired chains with a
-capability router driven by stored model policy; until then this stays
-deliberately small.
-
-Vendor SDK imports are deferred into their branches: they are the optional [llm]
-extra (see pyproject.toml), and importing them unconditionally would break app
-startup for anyone who installed without it. Groq reuses the `openai` package
-(Groq's own documented OpenAI-compatible endpoint), so it adds no new dependency.
+Vendor SDK imports stay deferred inside each leg's builder: they are the optional
+[llm] extra (see pyproject.toml), importing them unconditionally would break
+startup for anyone who installed without it, and a leg that never runs shouldn't
+pay for its import. Groq reuses the `openai` package (its own documented
+OpenAI-compatible endpoint), so it adds no new dependency.
 """
+
+from collections.abc import Callable
 
 import redis.asyncio as redis
 
 from app.config.settings import Settings
 from app.integrations.ai.llm.base import LLMProvider
-from app.integrations.ai.llm.fallback_provider import FallbackLLMProvider
+from app.integrations.ai.quota.budget import DailyCapabilityBudget
+from app.integrations.ai.routing import policy
+from app.integrations.ai.routing.router import Capability, LlmRouter, ModelLeg
+from app.integrations.ai.routing.state import ProviderStateStore
 
 
-def _is_gemini_rate_limited(exc: Exception) -> bool:
-    # google.genai.errors.ClientError.code carries the HTTP status (verified
-    # empirically against google-genai 2.20.0 — a bad API key raises the same
-    # exception class with code=400, so checking the code specifically, not just
-    # the exception type, is what keeps that case from being silently swallowed.
-    return getattr(exc, "code", None) == 429
-
-
-def _is_groq_rate_limited(exc: Exception) -> bool:
-    # openai.APIStatusError (the base class for openai.RateLimitError, raised for
-    # any OpenAI-compatible endpoint including Groq's) exposes .status_code —
-    # checking that directly, duck-typed, avoids importing the openai SDK in this
-    # module just for this predicate when Groq isn't even configured.
-    return getattr(exc, "status_code", None) == 429
-
-
-def _build_gemini(settings: Settings) -> LLMProvider | None:
+def _gemini_leg(settings: Settings) -> ModelLeg | None:
     if not settings.gemini_api_key:
         return None
-    from app.integrations.ai.llm.gemini_provider import GeminiLLMProvider
+    api_key, model = settings.gemini_api_key, settings.gemini_model
 
-    return GeminiLLMProvider(settings.gemini_api_key, settings.gemini_model)
+    def build() -> LLMProvider:
+        from app.integrations.ai.llm.gemini_provider import GeminiLLMProvider
+
+        return GeminiLLMProvider(api_key, model)
+
+    return ModelLeg(provider=policy.GEMINI, model=model, build=build)
 
 
-def _build_groq(settings: Settings) -> LLMProvider | None:
+def _groq_leg(settings: Settings) -> ModelLeg | None:
     if not settings.groq_api_key:
         return None
-    from app.integrations.ai.llm.groq_provider import GroqLLMProvider
+    api_key, model = settings.groq_api_key, settings.groq_model
 
-    return GroqLLMProvider(settings.groq_api_key, settings.groq_model)
+    def build() -> LLMProvider:
+        from app.integrations.ai.llm.groq_provider import GroqLLMProvider
+
+        return GroqLLMProvider(api_key, model)
+
+    return ModelLeg(provider=policy.GROQ, model=model, build=build)
 
 
-def build_configured_llm_provider(settings: Settings) -> LLMProvider | None:
-    """The optional paid leg — None unless LLM_PROVIDER, LLM_MODEL and the
-    matching API key are all set."""
-    if settings.llm_provider is None or not settings.llm_model:
+def _paid_leg(settings: Settings) -> ModelLeg | None:
+    """The optional OpenAI/Anthropic leg — only when the provider, the model and
+    the matching key are all set."""
+    model = settings.llm_model
+    if settings.llm_provider is None or not model:
         return None
 
     if settings.llm_provider == "openai":
         if not settings.openai_api_key:
             return None
-        from app.integrations.ai.llm.openai_provider import OpenAILLMProvider
+        openai_key = settings.openai_api_key
 
-        return OpenAILLMProvider(settings.openai_api_key, settings.llm_model)
+        def build_openai() -> LLMProvider:
+            from app.integrations.ai.llm.openai_provider import OpenAILLMProvider
+
+            return OpenAILLMProvider(openai_key, model)
+
+        return ModelLeg(provider=policy.PAID, model=model, build=build_openai)
 
     if not settings.anthropic_api_key:
         return None
-    from app.integrations.ai.llm.anthropic_provider import AnthropicLLMProvider
+    anthropic_key = settings.anthropic_api_key
 
-    return AnthropicLLMProvider(settings.anthropic_api_key, settings.llm_model)
+    def build_anthropic() -> LLMProvider:
+        from app.integrations.ai.llm.anthropic_provider import AnthropicLLMProvider
 
+        return AnthropicLLMProvider(anthropic_key, model)
 
-def build_quality_llm_provider(settings: Settings) -> LLMProvider | None:
-    """CV analysis and preferences AI-fill: Gemini first, Groq (then the optional
-    paid leg) as the fallback — see the module docstring."""
-    gemini = _build_gemini(settings)
-    fallback = _build_groq(settings) or build_configured_llm_provider(settings)
-    if gemini is None:
-        return fallback
-    if fallback is None:
-        return gemini
-
-    from app.integrations.ai.llm.circuit_breaker import GeminiCircuitBreaker
-
-    return FallbackLLMProvider(
-        gemini,
-        fallback,
-        is_retryable=_is_gemini_rate_limited,
-        circuit_breaker=GeminiCircuitBreaker(
-            redis.from_url(settings.redis_url), settings.gemini_model
-        ),
-    )
+    return ModelLeg(provider=policy.PAID, model=model, build=build_anthropic)
 
 
-def build_job_llm_provider(settings: Settings) -> LLMProvider | None:
-    """Job skill extraction and the "should I apply?" reranker: Groq first,
-    Gemini (then the optional paid leg) as the fallback — see the module
-    docstring."""
-    groq = _build_groq(settings)
-    fallback = _build_gemini(settings) or build_configured_llm_provider(settings)
-    if groq is None:
-        return fallback
-    if fallback is None:
-        return groq
+_BUILDERS: dict[str, Callable[[Settings], ModelLeg | None]] = {
+    policy.GEMINI: _gemini_leg,
+    policy.GROQ: _groq_leg,
+    policy.PAID: _paid_leg,
+}
 
-    from app.integrations.ai.llm.circuit_breaker import FixedCooldownCircuitBreaker
 
-    return FallbackLLMProvider(
-        groq,
-        fallback,
-        is_retryable=_is_groq_rate_limited,
-        circuit_breaker=FixedCooldownCircuitBreaker(
-            redis.from_url(settings.redis_url),
-            key=f"groq_exhausted:{settings.groq_model}",
-            cooldown_seconds=settings.groq_circuit_breaker_cooldown_seconds,
+def legs_for(capability: Capability, settings: Settings) -> list[ModelLeg]:
+    """The configured legs for this capability, in policy order. A provider with
+    no credentials is simply absent rather than a leg that always fails."""
+    legs = (_BUILDERS[name](settings) for name in policy.provider_order(capability))
+    return [leg for leg in legs if leg is not None]
+
+
+def build_llm_router(capability: Capability, settings: Settings) -> LlmRouter | None:
+    legs = legs_for(capability, settings)
+    if not legs:
+        return None
+
+    client = redis.from_url(settings.redis_url)
+    return LlmRouter(
+        capability,
+        legs,
+        ProviderStateStore(client),
+        DailyCapabilityBudget(
+            client, capability.value, policy.daily_limit(capability, settings)
         ),
     )
