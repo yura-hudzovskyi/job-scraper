@@ -39,8 +39,8 @@ def score_existing_jobs_for_user(user_id: str) -> dict[str, int]:
 async def _run_reextract_and_rescore(user_id: str, canonical_job_id: str, llm_model: str | None) -> None:
     """Re-extracts this job's skills through the same job-pipeline provider
     (Groq first, small local Ollama model on rate limit — see
-    build_job_llm_provider) that AiMatcher and the automatic per-scrape
-    extraction already use, then rescores. llm_model, if given, overrides that
+    build_job_llm_provider) that the automatic per-scrape extraction already
+    uses, then rescores. llm_model, if given, overrides that
     provider's Ollama fallback model for this run only (e.g. comparing a
     different local model against the existing backlog). Skips straight to
     scoring (degrading to whatever skills were already stored) if no job

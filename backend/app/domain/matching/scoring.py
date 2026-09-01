@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from app.domain.candidates.models import CandidateProfile, UserPreference
 from app.domain.jobs.models import NormalizedJob
 from app.domain.matching.similarity import cosine_similarity
-from app.integrations.ai.embeddings.base import EmbeddingProvider
+from app.integrations.ai.embeddings.base import CrossEncoderProvider, EmbeddingProvider
 
 
 @dataclass(frozen=True)
@@ -138,18 +138,37 @@ class DeterministicScorer:
 
 
 class SemanticScorer:
-    def __init__(self, embedding_provider: EmbeddingProvider):
+    def __init__(
+        self,
+        embedding_provider: EmbeddingProvider,
+        cross_encoder: CrossEncoderProvider | None = None,
+        cross_encoder_weight: float = 0.5,
+    ):
         self._embedding_provider = embedding_provider
+        self._cross_encoder = cross_encoder
+        self._cross_encoder_weight = cross_encoder_weight
 
     async def similarity(self, job: NormalizedJob, profile: CandidateProfile) -> float:
-        """Cosine similarity (0-1) between the candidate profile embedding and the
-        job's requirements + responsibilities embedding."""
+        """Similarity (0-1) between the candidate profile and the job's requirements +
+        responsibilities. Bi-encoder cosine similarity on its own when no cross-encoder
+        is configured (default, and every existing caller/test); blended with a
+        cross-encoder relevance score when one is (see Settings.cross_encoder_model) —
+        cross-encoders jointly attend over both texts instead of comparing two
+        independently-computed vectors, which is generally sharper for this kind of
+        single-pair relevance judgment."""
         profile_text = _profile_text(profile)
         job_text = f"{job.title}\n{job.description}"
         [profile_vector, job_vector] = await self._embedding_provider.embed(
             [profile_text, job_text]
         )
-        return cosine_similarity(profile_vector, job_vector)
+        bi_encoder_score = cosine_similarity(profile_vector, job_vector)
+
+        if self._cross_encoder is None:
+            return bi_encoder_score
+
+        [cross_encoder_score] = await self._cross_encoder.score([(profile_text, job_text)])
+        weight = self._cross_encoder_weight
+        return bi_encoder_score * (1 - weight) + cross_encoder_score * weight
 
 
 def _profile_text(profile: CandidateProfile) -> str:

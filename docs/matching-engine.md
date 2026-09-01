@@ -1,19 +1,37 @@
 # Matching engine
 
-The matching engine is **AI-primary, deterministic-fallback**: hard, non-negotiable
-filters (blacklists, salary floor, location, blocked stack — things the candidate
-explicitly configured) always run first and are never left to an LLM to reinterpret
-or hallucinate past. Past that gate, a single structured LLM call (`AiMatcher`,
-`backend/app/domain/matching/ai_matcher.py`) decides the actual fit and returns the
-full score breakdown as JSON in one shot.
+The matching engine is **deterministic-primary**: hard, non-negotiable filters
+(blacklists, salary floor, location, blocked stack — things the candidate explicitly
+configured) always run first and are never left to an LLM to reinterpret or
+hallucinate past. Past that gate, the weighted-score -> semantic -> skill pipeline
+(Stages 2-3 below) is the **sole, authoritative scorer** for every eligible job — no
+LLM involved, and nothing downstream ever overwrites its `requirement_match`/
+`practical_fit`. This used to be a fallback behind a per-job LLM call (`AiMatcher`);
+that class has been retired — see "Why deterministic-primary" below.
 
-The older filters -> weighted-score -> semantic -> skill pipeline (Stages 2-3 below)
-still exists, but only as the **fallback** — used when no LLM is configured, or when
-`AiMatcher`'s call fails or comes back with something untrustworthy (timeout,
-provider unreachable, malformed output). It never raises; it returns `None` and
-`MatchingService.evaluate` falls back automatically, so a scored, explainable
-`JobMatch` always comes out the other end either way. Every match records which
-path produced it (`JobMatch.scored_by` — `"AI (<model>)"` or `"deterministic"`).
+An optional LLM layer (`LlmReranker`, Stage 4) then adds a *qualitative* verdict —
+`JobMatch.llm_assessment` — on top of the already-scored match, for matches the
+deterministic pipeline already recommends CONSIDER or APPLY. It never touches the
+score itself, only attaches its own independent opinion (fit, gaps, interview risk,
+summary) alongside it, gated by a daily call budget. `JobMatch.scored_by` records
+which pipeline produced the *score* — always `"deterministic"` for matches produced
+by the current pipeline (historical `"AI (<model>)"` rows from before this change
+are the retired `AiMatcher` path, left as-is).
+
+## Why deterministic-primary
+
+The matching engine briefly ran the other way around — a single structured LLM call
+(`AiMatcher`) decided the actual fit for every eligible job, with the deterministic
+pipeline as its fallback. That doesn't survive real per-job volume on a free-tier or
+local-only LLM budget: at even a modest daily job count, a slow local model (CPU-only
+Ollama) blows past any reasonable per-request time budget, and a fast hosted free
+tier (Groq) still has a daily/per-minute cap that a call-on-every-eligible-job
+pattern burns through fast. The deterministic pipeline — weighted scoring + skill/
+role embeddings + a local cross-encoder reranker (Stage 3) — is fast, free, and
+already fully explainable on its own; the LLM's value-add is judgment on *top* of a
+trustworthy score (seniority fit, day-to-day realities), not re-deriving the score
+itself for every job. `LlmReranker` gated to CONSIDER+APPLY matches (Stage 4) gets
+that value at a bounded, predictable call volume instead.
 
 ## Pipeline
 
@@ -21,41 +39,12 @@ path produced it (`JobMatch.scored_by` — `"AI (<model>)"` or `"deterministic"`
 1000 scraped jobs
    │ hard filters (cheap, deterministic, non-negotiable)
 300 eligible candidates
-   │ AiMatcher: one structured LLM call → full score + breakdown + recommendation
-   │   │ on failure/timeout/no LLM configured, falls back to:
-   │   └ deterministic weighted score → semantic similarity → skill matching
+   │ deterministic weighted score → semantic similarity (bi-encoder + cross-encoder)
+   │ → skill matching — no LLM, always runs, always authoritative
 300 scored, explainable matches
-   │ LLM "should I apply?" (APPLY-tier only, see below)
+   │ LLM "should I apply?" (CONSIDER+APPLY tier, see below) → llm_assessment overlay
 final ranked list, delivered via notifications
 ```
-
-### AI matcher (primary path)
-
-`AiMatcher.assess` builds one prompt from the job posting and the candidate's
-profile + preferences, and asks for a single structured JSON verdict: the same
-`requirement_match` / `practical_fit` / 8-component `breakdown` /
-`strengths` / `gaps` / `recommendation` shape the deterministic pipeline produces
-(see `_AiVerdict` in `ai_matcher.py`) — the two paths are interchangeable from every
-caller's point of view. It never raises out of `assess()`: any exception (timeout,
-connection error, a model tag that isn't pulled, a response that fails schema
-validation) is caught, logged, and turned into `None` so `MatchingService.evaluate`
-falls back to the deterministic pipeline instead of losing the score for that job
-entirely.
-
-It's wired through `build_job_llm_provider` — Groq's free tier by default (fast
-enough to actually churn through real volume), falling back to a small local
-Ollama model on rate limit — not through the Gemini-first
-`build_quality_llm_provider` used by CV analysis and preferences AI-fill: this
-call runs once per (job, user) — every scored job, not just an already-filtered
-top shortlist — so routing it through Gemini's much smaller reserved free-tier
-quota would exhaust it in minutes. See `backend/app/domain/matching/factory.py`
-and the "LLM provider policy" section below.
-
-### Fallback pipeline
-
-The stages below are unchanged from the original deterministic design and are
-already fully explainable on their own (no LLM involved) — they just no longer run
-unconditionally.
 
 ### Stage 1 — Hard filters
 
@@ -124,11 +113,26 @@ Embed the candidate's professional profile and the normalized vacancy
 `sentence-transformers` is the default provider — no API cost for this stage. See
 `backend/app/integrations/ai/embeddings/`.
 
-### Stage 4 — "Should I apply?" (APPLY-tier only)
+A second, local signal is blended in on top: a cross-encoder reranker
+(`SentenceTransformersCrossEncoderProvider`, `Settings.cross_encoder_model`,
+default `cross-encoder/ms-marco-MiniLM-L-6-v2`) jointly scores the
+`(profile_text, job_text)` pair instead of comparing two independently-computed
+vectors, which is generally sharper for this kind of single-pair relevance
+judgment. `SemanticScorer.similarity` blends
+`bi_encoder * (1 - weight) + cross_encoder * weight` (`Settings.cross_encoder_weight`,
+default `0.5`); set `CROSS_ENCODER_MODEL` blank to disable it and fall back to pure
+bi-encoder cosine similarity. Same "load once per worker, no per-request cost"
+pattern as the bi-encoder provider — see
+`backend/app/integrations/ai/embeddings/cross_encoder_provider.py`. The
+domain-mismatch gate's ceilings (`MatchingThresholds.domain_mismatch_*_ceiling`,
+see Stage 2) were validated against pure bi-encoder scores — re-check them against
+real traffic once the cross-encoder blend has been live for a while.
+
+### Stage 4 — "Should I apply?" (CONSIDER+APPLY)
 
 A separate, optional LLM call (`LlmReranker`) layered on top of an already-scored
-match — by either path above — for jobs the pipeline recommends `APPLY`. It must
-return **structured**, not prose:
+match for jobs the deterministic pipeline recommends `CONSIDER` or `APPLY` — never
+`SKIP`. It must return **structured**, not prose:
 
 ```json
 {
@@ -147,13 +151,14 @@ return **structured**, not prose:
 
 ## LLM provider policy: two tiers, split by volume
 
-Three independent LLM call sites exist — CV analysis
+Four independent LLM call sites exist — CV analysis
 (`backend/app/services/cv_service.py`, user-triggered, rare), preferences AI-fill
 (`backend/app/services/profile_service.py`, also user-triggered, rare), job skill
 extraction (`backend/app/services/job_skill_extraction_service.py`, once per
 newly-scraped job *and* on every "rescore all vacancies" re-extraction), and the
-AI matcher itself (`ai_matcher.py`, once per (job, user) — the highest-volume of
-all of them). They split into two tiers by volume, each with its own hosted
+"should I apply?" reranker (`llm_reranker.py`, once per CONSIDER+APPLY (job, user)
+match — the highest-volume of all of them, now that scoring itself is fully
+deterministic). They split into two tiers by volume, each with its own hosted
 provider + local fallback + circuit breaker, wired in
 `backend/app/integrations/ai/llm/factory.py`:
 
@@ -165,20 +170,21 @@ provider + local fallback + circuit breaker, wired in
   misconfigured key fails loudly instead of silently degrading. A
   `GeminiCircuitBreaker` (see below) rides along.
 - **`build_job_llm_provider`** — job skill extraction (both the automatic
-  per-scrape run and "rescore all vacancies") and the AI matcher — the two
-  call sites that run at real volume (once per job, once per (job, user)). If
-  `GROQ_API_KEY` is set, tries Groq's free tier first — Groq runs open models on
-  dedicated inference hardware, so a response comes back in a second or two
-  instead of the CPU-bound minutes a 14B+ model needs under Ollama, which is what
-  actually makes processing a real backlog (hundreds of jobs) practical — falling
-  back to `OLLAMA_FALLBACK_MODEL` the instant Groq returns 429. With
-  `LLM_PROVIDER=ollama` and no `GROQ_API_KEY` at all, this runs on
-  `OLLAMA_FALLBACK_MODEL` directly — **not** `LLM_MODEL`. The two are
-  deliberately independent: `LLM_MODEL` is what CV analysis/preferences AI-fill
-  fall back to, so each call site can run its own local model — e.g. a small,
-  fast one here (this leg needs to finish quickly under Celery's concurrent
-  load, not be the best quality model available locally) while CV analysis
-  keeps a bigger one for its much rarer fallback, or the reverse.
+  per-scrape run and "rescore all vacancies") and the "should I apply?" reranker
+  — the two call sites that run at real volume (once per job, once per
+  CONSIDER+APPLY (job, user) match). If `GROQ_API_KEY` is set, tries Groq's free
+  tier first — Groq runs open models on dedicated inference hardware, so a
+  response comes back in a second or two instead of the CPU-bound minutes a 14B+
+  model needs under Ollama, which is what actually makes processing a real
+  backlog (hundreds of jobs) practical — falling back to `OLLAMA_FALLBACK_MODEL`
+  the instant Groq returns 429. With `LLM_PROVIDER=ollama` and no
+  `GROQ_API_KEY` at all, this runs on `OLLAMA_FALLBACK_MODEL` directly — **not**
+  `LLM_MODEL`. The two are deliberately independent: `LLM_MODEL` is what CV
+  analysis/preferences AI-fill fall back to, so each call site can run its own
+  local model — e.g. a small, fast one here (this leg needs to finish quickly
+  under Celery's concurrent load, not be the best quality model available
+  locally) while CV analysis keeps a bigger one for its much rarer fallback, or
+  the reverse.
 - Both fall back to **`build_configured_llm_provider`** for the `openai`/
   `anthropic` case, where there's no local-vs-hosted distinction to make.
 
@@ -222,7 +228,7 @@ Groq/Gemini provider (bypassing `FallbackLLMProvider` on purpose) and returns
 either the real model label or the provider's own error text — use it before
 committing to a model change, since a model that's wrong, deprecated, or just
 rate-limited too tightly for this app's volume degrades *silently* otherwise
-(`AiMatcher`/`JobSkillExtractionService` catch every exception and fall back by
+(`LlmReranker`/`JobSkillExtractionService` catch every exception and fall back by
 design — see above — so a broken `GROQ_MODEL` doesn't fail loudly, it just quietly
 never gets used).
 
@@ -233,18 +239,20 @@ like the default `llama-3.3-70b-versatile` — roughly 30 requests/min, 1,000
 requests/day, 200K tokens/day per
 [console.groq.com/docs/rate-limits](https://console.groq.com/docs/rate-limits)
 (Groq's own docs note these can change per-account; check the Limits page in your
-own console rather than trusting a number here indefinitely). `AiMatcher`'s prompt
-(full job description + candidate profile) is large enough that the token budget
-runs out before the request-count one does at any real job-pipeline volume — the
-result is constant 429s falling back to the slower Ollama leg, not an obviously
-"broken" model. `groq_circuit_open`/`gemini_circuit_open` on `GET /api/ai/models`
-and the `scored_by` label on a real match (`"AI (Groq ...)"` vs. `"AI (Ollama
-...)"` vs. `"deterministic"`) are how to tell which leg is actually serving
-traffic right now.
+own console rather than trusting a number here indefinitely). `LlmReranker`'s
+prompt (full job description + candidate profile), run for every CONSIDER+APPLY
+match, is large enough that the token budget runs out before the request-count one
+does at any real job-pipeline volume — the result is constant 429s falling back to
+the slower Ollama leg, not an obviously "broken" model. `groq_circuit_open`/
+`gemini_circuit_open` on `GET /api/ai/models` and `JobMatch.llm_assessment.model_label`
+on a real match (recorded whenever the reranker actually ran) are how to tell which
+leg is actually serving traffic right now — `scored_by` no longer varies by
+provider, since the score itself is always produced by the deterministic pipeline.
 
-Whichever model actually produced a result is recorded (`LLMResult.model_label`,
-`backend/app/integrations/ai/llm/base.py`) and shown in the UI — a quota-driven
-fallback to Ollama is never presented as if it were the primary provider.
+Whichever model actually produced a reranker result is recorded
+(`LLMResult.model_label`, `backend/app/integrations/ai/llm/base.py`, surfaced as
+`llm_assessment.model_label`) and shown in the UI — a quota-driven fallback to
+Ollama is never presented as if it were the primary provider.
 
 ## Two separate scores
 
@@ -284,13 +292,12 @@ highest-leverage user-facing feature of the matching engine — implemented as
 `LlmReranker` (`backend/app/domain/matching/llm_reranker.py`).
 
 It's deliberately narrow-cast: only called for matches already recommended
-`Recommendation.APPLY` (by either the AI matcher or the deterministic fallback —
-see above) — that's both where the question is actually worth asking and a
-volume control on top of `LlmReranker`'s own daily call budget
-(`app/integrations/ai/llm/budget.py`, `LLM_RERANK_DAILY_LIMIT`), which caps usage
-independent of whatever the configured provider's own rate-limit/billing
-behavior is. Batch reranking over an explicit shortlist (`rerank_shortlist`) is
-still deferred — see docs/roadmap.md.
+`Recommendation.CONSIDER` or `Recommendation.APPLY` (never `SKIP` — see above) —
+that's both where the question is actually worth asking and a volume control on
+top of `LlmReranker`'s own daily call budget (`app/integrations/ai/llm/budget.py`,
+`LLM_RERANK_DAILY_LIMIT`), which caps usage independent of whatever the configured
+provider's own rate-limit/billing behavior is. Batch reranking over an explicit
+shortlist (`rerank_shortlist`) is still deferred — see docs/roadmap.md.
 
 ## What the LLM must never own
 

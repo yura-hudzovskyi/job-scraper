@@ -1,8 +1,8 @@
 """Phase 4 — LLM reranking / "should I apply?" (docs/matching-engine.md). Only
-ever called for matches the deterministic pipeline already recommends APPLY (see
-MatchingService.should_i_apply) — the LLM reasons on top of an already-good
-match, catching nuance a formula structurally can't (seniority mismatch, on-call
-burden, etc.), not re-deriving fit from scratch. Same
+ever called for matches the deterministic pipeline already recommends CONSIDER or
+APPLY (see MatchingService.should_i_apply) — the LLM reasons on top of an
+already-decent match, catching nuance a formula structurally can't (seniority
+mismatch, on-call burden, etc.), not re-deriving fit from scratch. Same
 _Extracted*(BaseModel) + prompt-template + structured_completion pattern as
 job_skill_extraction_service.py / cv_service.py.
 """
@@ -38,9 +38,9 @@ class _LlmVerdict(BaseModel):
 
 
 _PROMPT = """You are helping a candidate decide whether to apply to a job. A \
-deterministic scoring pipeline already found this a strong match — your job is to \
-add judgment the pipeline can't: seniority fit, day-to-day realities, and gaps \
-that matter beyond a skills checklist.
+deterministic scoring pipeline already found this at least a decent match — your \
+job is to add judgment the pipeline can't: seniority fit, day-to-day realities, and \
+gaps that matter beyond a skills checklist.
 
 Job title: {job_title}
 Company: {company}

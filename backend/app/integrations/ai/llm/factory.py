@@ -11,9 +11,9 @@ choice — see docs/matching-engine.md:
   that same day skips straight to Ollama instead of re-trying Gemini and paying
   for the same failed round trip. Falls back to build_configured_llm_provider
   (whatever llm_provider says) when Gemini isn't configured.
-- build_job_llm_provider: job skill extraction, AI matching (ai_matcher.py), and
-  the "should I apply?" reranker — the job pipeline's own high-volume call sites,
-  run per scraped job and per (job, user). Groq's free tier first (if
+- build_job_llm_provider: job skill extraction and the "should I apply?" reranker
+  (llm_reranker.py) — the job pipeline's own high-volume call sites, run per
+  scraped job and per CONSIDER+APPLY (job, user) match. Groq's free tier first (if
   GROQ_API_KEY is set) — fast enough to actually churn through a real backlog,
   unlike CPU-only Ollama for anything past ~8B parameters — falling back to a
   small local model (ollama_fallback_model, not llm_model: this needs to finish

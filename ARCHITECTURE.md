@@ -16,13 +16,15 @@ against them before it's merged.
 1. **Adapters, not special cases.** Job sources, LLM providers, embedding providers and
    notification channels are replaceable adapters behind narrow interfaces. Domain logic
    must never import DOU, Djinni, Telegram, OpenAI or FastAPI directly.
-2. **AI-primary, deterministic-fallback matching.** Hard filters (candidate-configured,
-   non-negotiable constraints — blacklists, salary floor, location, blocked stack) always
-   run first and are never left to an LLM to reinterpret. Past that gate, a single
-   structured LLM call (`AiMatcher`) decides the actual fit and returns the full score
-   breakdown as JSON. The older filters -> weighted-score -> semantic -> skill pipeline
-   only runs as a fallback, when no LLM is configured or the AI call fails/returns
-   something untrustworthy — so a scored, explainable match always comes out either way.
+2. **Deterministic-primary matching, LLM as a bounded qualitative overlay.** Hard
+   filters (candidate-configured, non-negotiable constraints — blacklists, salary
+   floor, location, blocked stack) always run first and are never left to an LLM to
+   reinterpret. Past that gate, the filters -> weighted-score -> semantic (bi-encoder
+   cosine blended with a local cross-encoder reranker) -> skill pipeline is the sole,
+   authoritative scorer for every eligible job — no LLM involved, and nothing ever
+   overwrites its score. `LlmReranker` ("should I apply?") then layers a qualitative
+   verdict on top for CONSIDER+APPLY matches only, capped by a daily call budget — it
+   adds judgment (seniority fit, day-to-day realities), never re-derives the score.
    See [docs/matching-engine.md](docs/matching-engine.md).
 3. **Explainability is not optional.** Every score ships with a component breakdown,
    strengths, gaps, and critical gaps. A bare number is a bug.

@@ -75,13 +75,30 @@ class Settings(BaseSettings):
     # Hard daily ceiling on LlmReranker calls (see app/integrations/ai/llm/budget.py
     # and app/domain/matching/llm_reranker.py) — independent of whatever the
     # configured quality/job provider's own rate-limit/billing behavior is.
-    # Conservative default; tune to your actual plan (free-tier daily quotas vary
+    # LlmReranker is the only LLM call site left in the job-scoring pipeline (the
+    # deterministic pipeline now scores every eligible job on its own) and runs on
+    # CONSIDER+APPLY matches, not just APPLY — a wider tier than before, so this
+    # default is higher accordingly. Still just a starting point: tune to your
+    # actual plan and observed CONSIDER+APPLY volume (free-tier daily quotas vary
     # by provider/model/tier and change over time, so this isn't a number
     # guaranteed correct for any particular plan).
-    llm_rerank_daily_limit: int = 30
+    llm_rerank_daily_limit: int = 150
 
     embedding_provider: Literal["sentence_transformers", "openai"] = "sentence_transformers"
     embedding_model: str = "all-MiniLM-L6-v2"
+
+    # Second signal blended into SemanticScorer's semantic_fit (see
+    # app/domain/matching/scoring.py), on top of the bi-encoder cosine similarity
+    # above — cross-encoders jointly attend over both texts instead of comparing
+    # two independently-computed vectors, which is generally more accurate for a
+    # single query-document relevance judgment like "does this profile fit this
+    # job". Runs locally via sentence-transformers' CrossEncoder (already a base
+    # dependency, no extra package) — set to None to disable and fall back to pure
+    # bi-encoder cosine similarity. The default is deliberately small/fast to keep
+    # CPU cost low at real per-job volume; BAAI/bge-reranker-base is a heavier,
+    # more accurate opt-in swap (~5-10x slower on CPU).
+    cross_encoder_model: str | None = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    cross_encoder_weight: float = 0.5
 
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None

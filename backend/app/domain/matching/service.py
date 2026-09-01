@@ -1,26 +1,25 @@
-"""Orchestrates the matching pipeline: filters -> AI match (primary) -> deterministic
-score -> semantic score -> skill match (fallback) -> explanation -> (optional) LLM
-rerank. See docs/matching-engine.md.
+"""Orchestrates the matching pipeline: filters -> deterministic score -> semantic
+score -> skill match -> explanation -> (optional) LLM overlay. See
+docs/matching-engine.md.
 
 evaluate() runs cheap, non-negotiable hard filters first (company/stack/salary/
 location constraints the candidate explicitly configured — never left to an LLM to
-reinterpret), then hands the actual fit judgment to AiMatcher, a single structured
-LLM call that returns the full score breakdown as JSON. The old deterministic +
-semantic + skill pipeline (_evaluate_deterministic below) only runs as a fallback —
-when no LLM is configured, or when AiMatcher's call fails or returns something
-untrustworthy (timeout, malformed output, provider down) — so a scored, explainable
-JobMatch always comes out the other end either way.
+reinterpret), then always runs the deterministic + semantic + skill pipeline
+(_evaluate_deterministic below) — no LLM involved, already fully explainable on its
+own — to produce the authoritative score. Nothing downstream ever overwrites
+requirement_match/practical_fit once this has run.
 
 should_i_apply() is a separate, optional Phase 4 step callers run afterward for
-matches worth a closer look (see its own docstring for the APPLY-only gating and
-volume controls) — orthogonal to which path (AI or deterministic) produced the
-underlying score. rerank_shortlist() (batch reranking) is still deferred — no
-shortlist view or digest batching exists to feed it.
+matches worth a closer look (see its own docstring for the CONSIDER+APPLY gating and
+volume controls) — it layers a qualitative LLM verdict (llm_assessment) on top of
+the already-authoritative deterministic score, it never replaces it.
+rerank_shortlist() (batch reranking) is still deferred — no shortlist view or digest
+batching exists to feed it.
 
 This is the only entry point other modules should call — it composes
-HardFilterService, AiMatcher, DeterministicScorer, SemanticScorer, SkillMatcher,
-RoleMatcher and (optionally) LlmReranker, none of which should be called directly
-from services/ or the API layer.
+HardFilterService, DeterministicScorer, SemanticScorer, SkillMatcher, RoleMatcher and
+(optionally) LlmReranker, none of which should be called directly from services/ or
+the API layer.
 """
 
 import asyncio
@@ -28,7 +27,6 @@ from dataclasses import dataclass, replace
 
 from app.domain.candidates.models import CandidateProfile, UserPreference
 from app.domain.jobs.models import NormalizedJob
-from app.domain.matching.ai_matcher import AiMatcher
 from app.domain.matching.filters import HardFilterService
 from app.domain.matching.llm_reranker import LlmReranker
 from app.domain.matching.models import (
@@ -77,7 +75,6 @@ class MatchingService:
         role_matcher: RoleMatcher,
         thresholds: MatchingThresholds | None = None,
         llm_reranker: LlmReranker | None = None,
-        ai_matcher: AiMatcher | None = None,
     ):
         self._hard_filters = hard_filters
         self._deterministic_scorer = deterministic_scorer
@@ -86,7 +83,6 @@ class MatchingService:
         self._role_matcher = role_matcher
         self._thresholds = thresholds or MatchingThresholds()
         self._llm_reranker = llm_reranker
-        self._ai_matcher = ai_matcher
 
     async def evaluate(
         self,
@@ -96,9 +92,8 @@ class MatchingService:
         preferences: UserPreference,
     ) -> JobMatch:
         """Run the full pipeline for a single job and return an explainable JobMatch.
-        Hard filters gate eligibility first; AiMatcher (if configured) then decides
-        fit, falling back to the deterministic pipeline on any failure — see the
-        module docstring."""
+        Hard filters gate eligibility first; the deterministic pipeline then decides
+        fit — see the module docstring."""
         filter_result = self._hard_filters.evaluate(job, preferences)
         if not filter_result.eligible:
             return JobMatch(
@@ -114,16 +109,6 @@ class MatchingService:
                 scored_by="deterministic",
             )
 
-        if self._ai_matcher is not None:
-            ai_match = await self._ai_matcher.assess(job, profile, preferences)
-            if ai_match is not None:
-                return replace(
-                    ai_match,
-                    user_id=profile.user_id,
-                    canonical_job_id=canonical_job_id,
-                    skills_source=job.skills_extracted_by,
-                )
-
         return await self._evaluate_deterministic(canonical_job_id, job, profile, preferences)
 
     async def _evaluate_deterministic(
@@ -133,9 +118,8 @@ class MatchingService:
         profile: CandidateProfile,
         preferences: UserPreference,
     ) -> JobMatch:
-        """Fallback path — used when no AiMatcher is configured or its call didn't
-        come back with something trustworthy. Already fully explainable on its own:
-        deterministic + semantic + skill, no LLM involved (see module docstring)."""
+        """The authoritative scoring path: deterministic + semantic + skill, no LLM
+        involved (see module docstring)."""
         experience, salary, location = self._deterministic_scorer.score(job, profile, preferences)
         skill_assessment, semantic_similarity, role = await asyncio.gather(
             self._skill_matcher.assess(
@@ -253,15 +237,15 @@ class MatchingService:
         self, job: NormalizedJob, profile: CandidateProfile, match: JobMatch
     ) -> JobMatch:
         """Layers the LLM's qualitative verdict onto an already-scored match — see
-        LlmReranker and docs/matching-engine.md's Phase 4 section. Only ever called
-        for Recommendation.APPLY matches: that's both where the "should I apply?"
-        question is actually worth asking, and the primary volume control on top of
-        LlmReranker's own daily call budget (see app/integrations/ai/llm/budget.py) —
-        a personal-scale Gemini free-tier key can't afford reranking every match
-        that merely isn't SKIP. Returns `match` unchanged (no LLM configured, not
-        APPLY-tier, or the daily budget is exhausted) rather than erroring — same
-        "degrade gracefully" policy as every other optional AI layer here."""
-        if self._llm_reranker is None or match.recommendation != Recommendation.APPLY:
+        LlmReranker and docs/matching-engine.md's Phase 4 section. Never called for
+        Recommendation.SKIP matches: that's both where the "should I apply?" question
+        isn't worth asking, and the primary volume control on top of LlmReranker's
+        own daily call budget (see app/integrations/ai/llm/budget.py) — a
+        personal-scale free-tier key can't afford reranking every match regardless of
+        quality. Returns `match` unchanged (no LLM configured, SKIP-tier, or the
+        daily budget is exhausted) rather than erroring — same "degrade gracefully"
+        policy as every other optional AI layer here."""
+        if self._llm_reranker is None or match.recommendation == Recommendation.SKIP:
             return match
 
         assessment = await self._llm_reranker.assess(

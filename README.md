@@ -79,15 +79,15 @@ rendered no-op. Daily-digest delivery is still not built.
 **Phase 4** — job requirement extraction has run since Phase 2 (moved earlier, see
 `job_skill_extraction_service.py`). LLM reranking / "should I apply?" is now real
 too: `MatchingService.should_i_apply` calls an LLM for matches the deterministic
-(or AI-matcher) pipeline already recommends APPLY, gated by a configurable daily
-call budget (`LLM_RERANK_DAILY_LIMIT`) independent of the provider's own rate
-limits — see `app/domain/matching/llm_reranker.py` and
-`app/integrations/ai/llm/budget.py`. The matching pipeline itself now runs
-primarily through an LLM too (`AiMatcher`, one structured call per job/user),
-with the original deterministic pipeline kept as the fallback — see
-`docs/matching-engine.md` for the full Gemini/Groq/Ollama provider policy.
-Batch reranking over a shortlist (`rerank_shortlist`) is still deferred — no
-shortlist view or digest batching exists to feed it yet.
+pipeline already recommends CONSIDER or APPLY, gated by a configurable daily call
+budget (`LLM_RERANK_DAILY_LIMIT`) independent of the provider's own rate limits —
+see `app/domain/matching/llm_reranker.py` and `app/integrations/ai/llm/budget.py`.
+The deterministic pipeline itself (now blended with a local cross-encoder reranker
+on top of bi-encoder semantic similarity) is the sole scorer for every eligible
+job — no LLM in that path at all — see `docs/matching-engine.md` for the full
+cross-encoder + Gemini/Groq/Ollama provider policy. Batch reranking over a
+shortlist (`rerank_shortlist`) is still deferred — no shortlist view or digest
+batching exists to feed it yet.
 
 **Phase 5** (application tracker) is still interfaces/domain models without
 business logic — see [docs/roadmap.md](docs/roadmap.md).

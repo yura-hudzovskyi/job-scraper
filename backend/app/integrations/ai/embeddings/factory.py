@@ -9,7 +9,7 @@ one isn't installed.
 from functools import lru_cache
 
 from app.config.settings import Settings
-from app.integrations.ai.embeddings.base import EmbeddingProvider
+from app.integrations.ai.embeddings.base import CrossEncoderProvider, EmbeddingProvider
 
 
 @lru_cache(maxsize=4)
@@ -46,3 +46,20 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider | None:
         return OpenAIEmbeddingProvider(settings.openai_api_key, settings.embedding_model)
 
     return None
+
+
+@lru_cache(maxsize=4)
+def _cached_cross_encoder_provider(model_name: str) -> CrossEncoderProvider:
+    """Same rationale as _cached_sentence_transformer_provider above — one loaded
+    CrossEncoder per worker process, reused across every job scored."""
+    from app.integrations.ai.embeddings.cross_encoder_provider import (
+        SentenceTransformersCrossEncoderProvider,
+    )
+
+    return SentenceTransformersCrossEncoderProvider(model_name)
+
+
+def build_cross_encoder_provider(settings: Settings) -> CrossEncoderProvider | None:
+    if not settings.cross_encoder_model:
+        return None
+    return _cached_cross_encoder_provider(settings.cross_encoder_model)

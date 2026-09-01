@@ -165,3 +165,59 @@ async def test_semantic_scorer_returns_zero_for_orthogonal_vectors() -> None:
     scorer = SemanticScorer(provider)  # type: ignore[arg-type]
     similarity = await scorer.similarity(job, profile)
     assert similarity == pytest.approx(0.0)
+
+
+class _FakeCrossEncoderProvider:
+    def __init__(self, score: float):
+        self._score = score
+
+    async def score(self, pairs: list[tuple[str, str]]) -> list[float]:
+        return [self._score for _ in pairs]
+
+
+@pytest.mark.asyncio
+async def test_semantic_scorer_without_cross_encoder_ignores_it_by_default() -> None:
+    # Defaulting cross_encoder to None keeps every existing caller/test (which
+    # constructs SemanticScorer with just an embedding provider) on pure bi-encoder
+    # cosine similarity, byte-for-byte unchanged.
+    profile_text = "profile"
+    job = _job(description="We use Django and PostgreSQL.")
+    job_text = f"{job.title}\n{job.description}"
+    provider = _FakeEmbeddingProvider({profile_text: [1.0, 0.0], job_text: [1.0, 0.0]})
+    profile = CandidateProfile(id="p1", user_id="u1", experience_years=1, roles=["profile"], skills=[])
+
+    scorer = SemanticScorer(provider)  # type: ignore[arg-type]
+    similarity = await scorer.similarity(job, profile)
+    assert similarity == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_semantic_scorer_blends_cross_encoder_score_with_bi_encoder() -> None:
+    # Bi-encoder says perfect match (1.0), cross-encoder disagrees (0.0) — a 0.5
+    # blend weight should land exactly halfway between the two.
+    profile_text = "profile"
+    job = _job(description="We use Django and PostgreSQL.")
+    job_text = f"{job.title}\n{job.description}"
+    provider = _FakeEmbeddingProvider({profile_text: [1.0, 0.0], job_text: [1.0, 0.0]})
+    profile = CandidateProfile(id="p1", user_id="u1", experience_years=1, roles=["profile"], skills=[])
+    cross_encoder = _FakeCrossEncoderProvider(score=0.0)
+
+    scorer = SemanticScorer(provider, cross_encoder, cross_encoder_weight=0.5)  # type: ignore[arg-type]
+    similarity = await scorer.similarity(job, profile)
+    assert similarity == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_semantic_scorer_respects_cross_encoder_weight() -> None:
+    profile_text = "profile"
+    job = _job(description="We use Django and PostgreSQL.")
+    job_text = f"{job.title}\n{job.description}"
+    provider = _FakeEmbeddingProvider({profile_text: [1.0, 0.0], job_text: [1.0, 0.0]})
+    profile = CandidateProfile(id="p1", user_id="u1", experience_years=1, roles=["profile"], skills=[])
+    cross_encoder = _FakeCrossEncoderProvider(score=0.0)
+
+    # Weighting the cross-encoder at 0.2 should pull the perfect 1.0 bi-encoder
+    # score down by only 20%, not the 50% the default weight would.
+    scorer = SemanticScorer(provider, cross_encoder, cross_encoder_weight=0.2)  # type: ignore[arg-type]
+    similarity = await scorer.similarity(job, profile)
+    assert similarity == pytest.approx(0.8)

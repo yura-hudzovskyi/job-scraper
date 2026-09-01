@@ -42,7 +42,7 @@ async def test_a_404_response_raises_a_clear_model_not_found_error() -> None:
     # Regression test: Ollama returns a bare 404 for a model tag that was never
     # pulled — this used to surface as a generic httpx.HTTPStatusError, which
     # reads as "something's broken" rather than "run `ollama pull <model>`" when
-    # it shows up in AiMatcher's/JobSkillExtractionService's degrade-gracefully
+    # it shows up in LlmReranker's/JobSkillExtractionService's degrade-gracefully
     # warning logs. No real Ollama server needed — the transport is mocked.
     def _respond_404(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"error": "model 'not-pulled:1b' not found"})

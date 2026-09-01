@@ -151,8 +151,8 @@ export function System() {
         <SectionTitle>AI models</SectionTitle>
         <p className="mb-2 text-sm text-slate-600">
           Changes here take effect on the very next AI call — no redeploy or restart needed. See
-          docs/matching-engine.md for how the job pipeline (AiMatcher, skill extraction) and the
-          CV-analysis/preferences pipeline pick a provider.
+          docs/matching-engine.md for how the job pipeline (skill extraction, "should I apply?"
+          reranker) and the CV-analysis/preferences pipeline pick a provider.
         </p>
         {modelsQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
         {modelsQuery.isError && <ErrorBanner message="Failed to load AI model config" />}

@@ -10,8 +10,8 @@ onboarded user right after this call, so letting a bad response (timeout,
 unreachable Ollama, a model that isn't actually pulled, malformed JSON against the
 schema) propagate out of here would fail the whole Celery task and silently skip
 scoring for every user on that job — extraction failing is a reason to score with
-an empty skill list (AiMatcher/DeterministicScorer both handle that fine), not a
-reason to not score at all.
+an empty skill list (DeterministicScorer handles that fine), not a reason to not
+score at all.
 """
 
 import logging

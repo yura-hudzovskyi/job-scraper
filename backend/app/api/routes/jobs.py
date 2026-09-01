@@ -194,12 +194,12 @@ class RescoreAllRequest(BaseModel):
     # vacancies" admin action (Jobs page) re-extracts skills and rescores every
     # job through the Groq-first job-pipeline provider (see
     # workers/tasks/backfill.py, app/integrations/ai/llm/factory.py::
-    # build_job_llm_provider), same as automatic per-scrape extraction and
-    # AiMatcher; this only picks which local Ollama model that provider falls
-    # back to once Groq's rate limit is hit mid-run, without touching server
-    # config. None (the default) means "use whatever the server/System page is
-    # already configured with." See app/api/routes/ai_settings.py for changing
-    # Groq's own model persistently instead of per-run.
+    # build_job_llm_provider), same as automatic per-scrape extraction; this only
+    # picks which local Ollama model that provider falls back to once Groq's rate
+    # limit is hit mid-run, without touching server config. None (the default)
+    # means "use whatever the server/System page is already configured with."
+    # See app/api/routes/ai_settings.py for changing Groq's own model
+    # persistently instead of per-run.
     llm_model: str | None = None
 
 
