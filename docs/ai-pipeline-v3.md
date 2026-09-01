@@ -1420,7 +1420,7 @@ Each phase lands as a series of small, self-contained commits; the test suite mu
 at every commit.
 
 - [x] Phase 0 - stabilize the baseline (Ollama removal, feature flags)
-- [ ] Phase 1 - versioned contracts and provenance
+- [x] Phase 1 - versioned contracts and provenance
 - [ ] Phase 2 - extraction v3 and skill ontology
 - [ ] Phase 3 - capability router and quota manager
 - [ ] Phase 4 - multi-lane embeddings and retrieval
@@ -1445,3 +1445,35 @@ Deliberately not done: the old `AiMatcher` was not copied into a reference file 
 in git history at `92b6e87^` and can be read from there when Phase 7 wants its prompt.
 Capturing baseline scores and latency needs a populated database, so it folds into the
 Phase 9 validation set rather than being built twice.
+
+### Phase 1 notes
+
+Landed: `app/domain/versioning.py` (content hashes + `DocumentVersion`), version and
+hash columns on `canonical_jobs` and `candidate_profiles`, the `MatchProvenance`
+contract with its own JSONB serialization, `job_matches.provenance` replacing the
+`scored_by`/`skills_source` strings, provenance returned by `GET /api/jobs/{id}/match`
+and rendered as the "Analysis details" drawer, and `LlmCallFailed` so a provider's own
+error text never reaches an HTTP response. Backend suite 193 passed, `ruff` clean,
+frontend `tsc -b` clean.
+
+Acceptance checked: an old result keeps its attribution because provenance is read back
+from the stored payload and never rebuilt from current settings
+(`tests/unit/test_provenance.py`); duplicate scoring tasks still produce one row via the
+existing `unique(user_id, canonical_job_id)` upsert; a provider exception is logged and
+returned as a fixed-message 502 (`tests/unit/test_cv_service.py`).
+
+Deviations from the plan text, all deliberate:
+
+- **No `job_versions` / `candidate_profile_versions` history tables.** Each document
+  carries `(version, content_hash)` on its existing row instead. The identity is what
+  makes a result explainable; storing the full text of every past revision has no
+  consumer yet, and adding the tables later is easy.
+- **`ai_invocations` and `match_runs` not created yet.** They land with the code that
+  writes them — the usage ledger in Phase 3, orchestrator runs in Phase 6 — rather than
+  shipping dead schema now. Until then provenance lives on the match row itself.
+- **Models are recorded as provider labels** (`"Groq (llama-3.3-70b-versatile)"`), which
+  is what `LLMResult` carries today, not as structured `{provider, model}` pairs. Phase
+  3's capability router introduces the structured reference and provenance follows it.
+- **`engine` reads `deterministic`.** `hybrid` and `llm_enriched` exist in the enum but
+  only start being produced in phases 6 and 7 — reporting today's pipeline as either
+  would be a lie in the one place built to stop lying about provenance.

@@ -13,10 +13,10 @@ An optional LLM layer (`LlmReranker`, Stage 4) then adds a *qualitative* verdict
 `JobMatch.llm_assessment` — on top of the already-scored match, for matches the
 deterministic pipeline already recommends CONSIDER or APPLY. It never touches the
 score itself, only attaches its own independent opinion (fit, gaps, interview risk,
-summary) alongside it, gated by a daily call budget. `JobMatch.scored_by` records
-which pipeline produced the *score* — always `"deterministic"` for matches produced
-by the current pipeline (historical `"AI (<model>)"` rows from before this change
-are the retired `AiMatcher` path, left as-is).
+summary) alongside it, gated by a daily call budget. `JobMatch.provenance` records
+how the result was actually produced — engine, analysis level, the CV and job
+revisions it was scored against, every model involved, and (when the LLM layer
+didn't run) why not. See "Provenance" below.
 
 ## Why deterministic-primary
 
@@ -236,13 +236,40 @@ does at any real job-pipeline volume — the result is constant 429s falling bac
 the Gemini leg, not an obviously "broken" model. `groq_circuit_open`/
 `gemini_circuit_open` on `GET /api/ai/models` and `JobMatch.llm_assessment.model_label`
 on a real match (recorded whenever the reranker actually ran) are how to tell which
-leg is actually serving traffic right now — `scored_by` no longer varies by
-provider, since the score itself is always produced by the deterministic pipeline.
+leg is actually serving traffic right now — the score itself is always produced by
+the deterministic pipeline, so it never varies by provider.
 
 Whichever model actually produced a reranker result is recorded
 (`LLMResult.model_label`, `backend/app/integrations/ai/llm/base.py`, surfaced as
-`llm_assessment.model_label`) and shown in the UI — a quota-driven fallback to the
-other provider is never presented as if it were the primary one.
+`llm_assessment.model_label` and in provenance) and shown in the UI — a
+quota-driven fallback to the other provider is never presented as if it were the
+primary one.
+
+## Provenance
+
+Every match carries a snapshot of how it was made
+(`backend/app/domain/matching/provenance.py`), stored with the result and returned
+by `GET /api/jobs/{id}/match`:
+
+| Field | What it says |
+|---|---|
+| `engine` | which engine produced it — `deterministic` today; `hybrid`/`llm_enriched` arrive with phases 6 and 7 of docs/ai-pipeline-v3.md |
+| `analysis_level` | `full` (an LLM verdict on top), `standard` (scored against extracted requirements), `limited` (nothing extracted to check against, or a hard filter answered first) |
+| `profile` / `job` | which revision of the CV and of the posting were scored — `version` plus the content hash from `backend/app/domain/versioning.py` |
+| `embedding_model`, `cross_encoder_model`, `skills_model`, `match_model` | the models that actually ran |
+| `fallback_reason` | why the LLM layer didn't contribute: `no_llm_provider`, `llm_budget_exhausted`, `below_llm_threshold` |
+| `versions` | scorer / match prompt / skill taxonomy / calibration versions in force at the time |
+
+Two rules make this worth storing rather than deriving:
+
+- **it is read back from the row, never rebuilt from current settings** — pointing
+  the System page at a different model must not retroactively rewrite who produced
+  an old result;
+- **the content hash covers only what affects analysis** — re-listing the same
+  vacancy under another URL, or re-extracting its skills with a different model,
+  is not a new job version; a changed requirement is.
+
+The UI renders this as the "Analysis details" drawer on a job page.
 
 ## Two separate scores
 

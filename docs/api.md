@@ -15,7 +15,9 @@ GET    /api/profile
 GET    /api/jobs                  paginated (?limit, ?offset), items include practical_fit/recommendation;
                                    excludes Recommendation.SKIP matches by default (?include_skipped=true to see all)
 GET    /api/jobs/{id}
-GET    /api/jobs/{id}/match
+GET    /api/jobs/{id}/match       includes `provenance`: engine, analysis level, CV/job revision,
+                                   the models that ran, fallback reason, pipeline versions
+                                   (see docs/matching-engine.md#provenance)
 POST   /api/jobs/{id}/rescore
 POST   /api/jobs/rescore-all      re-extracts skills + rescores every canonical job for this
                                    user; Groq-first, falls back to Gemini on rate limit
