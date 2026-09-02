@@ -56,6 +56,21 @@ class Settings(BaseSettings):
     embedding_provider: Literal["sentence_transformers", "openai"] = "sentence_transformers"
     embedding_model: str = "all-MiniLM-L6-v2"
 
+    # Optional embedding lanes (app/integrations/ai/embeddings/lanes.py). Each one
+    # is a separate vector space with its own stored vectors; retrieval uses the
+    # best *ready* lane and never mixes two. The local model above is always
+    # available as the durable lane, so neither of these is required.
+    #
+    # Voyage: the quality lane candidate — strong multilingual model, currently a
+    # large one-time free token pool rather than a recurring allowance.
+    voyage_api_key: str | None = None
+    voyage_embedding_model: str = "voyage-4-large"
+    # Cloudflare Workers AI: a hosted BGE-M3 on a recurring daily allowance, so it
+    # keeps working after a one-off pool runs out. Both values are needed.
+    cloudflare_account_id: str | None = None
+    cloudflare_api_token: str | None = None
+    cloudflare_embedding_model: str = "@cf/baai/bge-m3"
+
     # Second signal blended into SemanticScorer's semantic_fit (see
     # app/domain/matching/scoring.py), on top of the bi-encoder cosine similarity
     # above — cross-encoders jointly attend over both texts instead of comparing
