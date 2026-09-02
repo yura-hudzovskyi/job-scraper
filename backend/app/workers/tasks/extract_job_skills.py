@@ -24,6 +24,7 @@ from app.repositories.job_repository import JobRepository
 from app.services.job_skill_extraction_service import JobSkillExtractionService
 from app.workers.celery_app import celery_app
 from app.workers.pacing import retry_countdown
+from app.workers.tasks.embed import index_job_embeddings
 from app.workers.tasks.score import score_job_for_user
 
 # A posting whose LLM read was blocked by a rate limit is worth coming back for,
@@ -40,6 +41,11 @@ async def _run(canonical_job_id: str, user_ids: list[str]) -> timedelta | None:
             build_llm_router(Capability.JOB_EXTRACTION, settings),
         )
         outcome = await service.extract_and_save(uuid.UUID(canonical_job_id))
+
+    if settings.multi_embedding_lanes:
+        # The posting's requirements just changed, so its section vectors have to
+        # follow — see app/workers/tasks/embed.py.
+        index_job_embeddings.delay(canonical_job_id)
 
     # Scoring runs either way: users see a result now, built on whatever
     # requirements this pass could get.

@@ -20,14 +20,21 @@ from app.repositories.job_repository import JobRepository
 from app.services.job_skill_extraction_service import JobSkillExtractionService
 from app.workers.celery_app import celery_app
 from app.workers.pacing import retry_countdown
+from app.workers.tasks.embed import index_profile_embeddings
 from app.workers.tasks.score import score_job_for_user
 
 _MAX_CAPACITY_RETRIES = 3
 
 
 async def _run(user_id: str) -> int:
+    settings = await get_effective_settings(get_settings())
     async with session_scope() as session:
         canonical_job_ids = await JobRepository(session).list_all_canonical_job_ids()
+
+    if settings.multi_embedding_lanes:
+        # This runs exactly when the profile changed (a new CV analysis or a skill
+        # correction), which is also when its section vectors are stale.
+        index_profile_embeddings.delay(user_id)
 
     for canonical_job_id in canonical_job_ids:
         score_job_for_user.delay(user_id, str(canonical_job_id))

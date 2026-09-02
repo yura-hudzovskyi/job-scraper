@@ -80,11 +80,13 @@ class EmbeddingRepository:
                 role=lane.role,
                 state=lane.state,
             )
-            # A lane's identity (model, dimension) is baked into its id, so a
-            # repeat registration only ever updates its role and state.
+            # `state` is deliberately not in the update set: it belongs to the
+            # readiness check (EmbeddingIndexingService.refresh_lane_readiness),
+            # and re-registering a lane on every write would knock a ready one
+            # back to "building" forever.
             .on_conflict_do_update(
                 index_elements=[EmbeddingLaneModel.id],
-                set_={"role": lane.role, "state": lane.state},
+                set_={"role": lane.role, "dimension": lane.dimension},
             )
         )
         await self._session.execute(stmt)

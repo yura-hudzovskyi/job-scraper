@@ -37,6 +37,8 @@ celery_app.conf.task_routes = {
     # watching for their jobs list to fill in.
     "backfill.score_existing_jobs_for_user": {"queue": "ai_interactive"},
     "backfill.*": {"queue": "ai_backfill"},
+    "embed.backfill_embeddings": {"queue": "ai_backfill"},
+    "embed.*": {"queue": "ai_extraction"},
     "extract.*": {"queue": "ai_extraction"},
     "score.*": {"queue": "ai_matching"},
 }
