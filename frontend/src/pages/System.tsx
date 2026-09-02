@@ -8,10 +8,77 @@ import {
   testAiModel,
   updateAiModels,
 } from "../api/endpoints";
-import type { AiModelField, AiModelsUpdateRequest } from "../api/types";
+import type { AiModelField, AiModelsUpdateRequest, CapabilityStatus } from "../api/types";
 import { Button, Card, ErrorBanner, Modal, SectionTitle, inputClass } from "../components/ui";
 
 type ModelFieldKey = keyof AiModelsUpdateRequest;
+
+const CAPABILITY_LABELS: Record<string, string> = {
+  profile_extraction: "CV analysis & preferences AI-fill",
+  job_extraction: "Job requirement extraction",
+  match_enrichment: '"Should I apply?" verdicts',
+};
+
+const REASON_LABELS: Record<string, string> = {
+  rate_limit: "rate limited",
+  quota_exhausted: "quota exhausted",
+  transient: "provider error",
+  fatal: "misconfigured — check the key and model id",
+  schema: "unusable response",
+};
+
+function waitLabel(seconds: number | null) {
+  if (seconds === null) return "";
+  if (seconds < 90) return `${seconds}s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m`;
+  return `${Math.round(seconds / 3600)}h`;
+}
+
+/** What the router is doing right now: which legs it can use, why it can't use
+ *  the others, and how much of today's budget each capability has spent. Every
+ *  failure path in this app degrades quietly by design, so without this "the AI
+ *  stopped working" looks exactly like "nothing needed the AI". */
+function CapabilityCard({ status }: { status: CapabilityStatus }) {
+  const spent = status.budget_limit > 0 ? status.budget_used / status.budget_limit : 0;
+
+  return (
+    <div className="rounded border border-slate-200 p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <span className="text-sm font-medium">
+          {CAPABILITY_LABELS[status.capability] ?? status.capability}
+        </span>
+        <span className={`text-xs ${spent >= 1 ? "text-amber-700" : "text-slate-500"}`}>
+          {status.budget_used} / {status.budget_limit} calls today
+        </span>
+      </div>
+      {status.legs.length === 0 ? (
+        <p className="mt-1 text-xs text-slate-400">No provider configured — this runs without AI.</p>
+      ) : (
+        <ol className="mt-2 flex flex-col gap-1 text-xs">
+          {status.legs.map((leg, index) => (
+            <li key={`${leg.provider}:${leg.model}`} className="flex items-center gap-2">
+              <span className="text-slate-400">{index + 1}.</span>
+              <span className="text-slate-600">
+                {leg.provider} · {leg.model}
+              </span>
+              <Badge
+                open={!leg.available}
+                label={
+                  leg.available
+                    ? "available"
+                    : `${REASON_LABELS[leg.reason ?? ""] ?? leg.reason ?? "unavailable"}` +
+                      (leg.retry_after_seconds !== null
+                        ? ` · back in ${waitLabel(leg.retry_after_seconds)}`
+                        : "")
+                }
+              />
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
 
 function Badge({ open, label }: { open: boolean; label: string }) {
   return (
@@ -146,28 +213,22 @@ export function System() {
       <Card>
         <SectionTitle>AI models</SectionTitle>
         <p className="mb-2 text-sm text-slate-600">
-          Changes here take effect on the very next AI call — no redeploy or restart needed. See
-          docs/matching-engine.md for how the job pipeline (skill extraction, "should I apply?"
-          reranker) and the CV-analysis/preferences pipeline pick a provider.
+          Each capability tries its providers in order, skipping any the router has parked after a
+          failure, and stops for the day when its own budget runs out — one budget per capability,
+          so background work can't spend what interactive work needs. Model changes take effect on
+          the very next call, no redeploy needed. See docs/matching-engine.md.
         </p>
         {modelsQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
         {modelsQuery.isError && <ErrorBanner message="Failed to load AI model config" />}
         {modelsQuery.data && (
           <div>
-            <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-              <Badge
-                open={modelsQuery.data.groq_circuit_open}
-                label={modelsQuery.data.groq_circuit_open ? "Groq cooling down" : "Groq available"}
-              />
-              <Badge
-                open={modelsQuery.data.gemini_circuit_open}
-                label={
-                  modelsQuery.data.gemini_circuit_open ? "Gemini cooling down" : "Gemini available"
-                }
-              />
+            <div className="mb-4 flex flex-col gap-2">
+              {modelsQuery.data.capabilities.map((capability) => (
+                <CapabilityCard key={capability.capability} status={capability} />
+              ))}
             </div>
             <p className="mb-3 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-              Job pipeline (skill extraction, AI matching) — Groq first, Gemini on rate limit
+              Job pipeline model
             </p>
             {renderModelRow("groq_model", "Groq model", modelsQuery.data.groq_model, {
               testTier: "groq",
@@ -175,7 +236,7 @@ export function System() {
             })}
 
             <p className="mt-5 mb-3 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-              CV analysis / preferences AI-fill — Gemini first, Groq on rate limit
+              CV analysis model
             </p>
             {renderModelRow("gemini_model", "Gemini model", modelsQuery.data.gemini_model, {
               testTier: "gemini",

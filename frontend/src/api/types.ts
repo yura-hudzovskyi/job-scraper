@@ -209,13 +209,29 @@ export interface AiModelField {
   default: string;
 }
 
+/** One provider/model pair as the router currently sees it. */
+export interface LegStatus {
+  provider: string;
+  model: string;
+  available: boolean;
+  /** Why it isn't: rate_limit, quota_exhausted, transient, fatal. */
+  reason: string | null;
+  retry_after_seconds: number | null;
+}
+
+export interface CapabilityStatus {
+  capability: string;
+  legs: LegStatus[];
+  budget_used: number;
+  budget_limit: number;
+}
+
 export interface AiModelsResponse {
   groq_configured: boolean;
   groq_model: AiModelField;
-  groq_circuit_open: boolean;
   gemini_configured: boolean;
   gemini_model: AiModelField;
-  gemini_circuit_open: boolean;
+  capabilities: CapabilityStatus[];
 }
 
 export interface AiModelsUpdateRequest {
