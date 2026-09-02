@@ -73,6 +73,9 @@ export const getJob = (jobId: string) => apiClient.get<JobSummary>(`/api/jobs/${
 export const getJobMatch = (jobId: string) => apiClient.get<JobMatch>(`/api/jobs/${jobId}/match`);
 export const rescoreJob = (jobId: string) =>
   apiClient.post<{ status: string; job_id: string }>(`/api/jobs/${jobId}/rescore`);
+/** Ask for an LLM review of this one match now, ahead of the daily ranking. */
+export const analyzeJob = (jobId: string) =>
+  apiClient.post<{ status: string; job_id: string }>(`/api/jobs/${jobId}/analyze`);
 export const rescoreAllJobs = () =>
   apiClient.post<{ status: string }>("/api/jobs/rescore-all");
 

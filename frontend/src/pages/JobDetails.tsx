@@ -3,7 +3,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { ApiError } from "../api/client";
-import { getJob, getJobMatch, rescoreJob } from "../api/endpoints";
+import { analyzeJob, getJob, getJobMatch, rescoreJob } from "../api/endpoints";
 import type { MatchProvenance } from "../api/types";
 import { Button, Card, ErrorBanner, SectionTitle } from "../components/ui";
 
@@ -139,6 +139,17 @@ export function JobDetails() {
 
   const rescoreMutation = useMutation({
     mutationFn: () => rescoreJob(jobId),
+    onSuccess: () => {
+      scoredAtBeforeRescore.current = matchQuery.data?.scored_at ?? null;
+      setPollDeadline(Date.now() + RESCORE_POLL_TIMEOUT_MS);
+      queryClient.invalidateQueries({ queryKey: ["job-match", jobId] });
+    },
+  });
+
+  // Enrichment upserts the match, so the same scored_at poll that watches a
+  // rescore watches this too.
+  const analyzeMutation = useMutation({
+    mutationFn: () => analyzeJob(jobId),
     onSuccess: () => {
       scoredAtBeforeRescore.current = matchQuery.data?.scored_at ?? null;
       setPollDeadline(Date.now() + RESCORE_POLL_TIMEOUT_MS);
@@ -321,13 +332,28 @@ export function JobDetails() {
               <AnalysisDetails provenance={matchQuery.data.provenance} />
             )}
 
-            <Button
-              onClick={() => rescoreMutation.mutate()}
-              disabled={rescoreMutation.isPending || isRescoring}
-              className="w-fit bg-slate-600 hover:bg-slate-500"
-            >
-              {rescoreMutation.isPending || isRescoring ? "Rescoring…" : "Rescore"}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => rescoreMutation.mutate()}
+                disabled={rescoreMutation.isPending || isRescoring}
+                className="w-fit bg-slate-600 hover:bg-slate-500"
+              >
+                {rescoreMutation.isPending || isRescoring ? "Rescoring…" : "Rescore"}
+              </Button>
+              {!matchQuery.data.llm_assessment && (
+                <Button
+                  onClick={() => analyzeMutation.mutate()}
+                  disabled={analyzeMutation.isPending || isRescoring}
+                  className="w-fit"
+                  title="Have an LLM review this analysis now, instead of waiting for it to come up in the daily ranking"
+                >
+                  {analyzeMutation.isPending ? "Queuing…" : "Analyze with AI"}
+                </Button>
+              )}
+            </div>
+            {analyzeMutation.isError && (
+              <ErrorBanner message="Failed to queue the analysis" />
+            )}
             {isRescoring && (
               <p className="text-sm text-slate-500">
                 Waiting for the new score to come back — this can take up to a couple of minutes.
