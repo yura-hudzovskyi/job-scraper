@@ -11,6 +11,8 @@ import asyncio
 import uuid
 from datetime import timedelta
 
+import redis.asyncio as redis
+
 from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
 from app.db.session import session_scope
@@ -18,6 +20,7 @@ from app.integrations.ai.llm.factory import build_llm_router
 from app.integrations.ai.routing.router import Capability
 from app.repositories.job_repository import JobRepository
 from app.services.job_skill_extraction_service import JobSkillExtractionService
+from app.services.pipeline_state import FANOUT_TTL_SECONDS, PipelineRunState, PipelineStage
 from app.workers.celery_app import celery_app
 from app.workers.pacing import retry_countdown
 from app.workers.tasks.embed import index_profile_embeddings
@@ -67,6 +70,11 @@ async def _run_reextract_and_rescore(user_id: str, canonical_job_id: str) -> tim
         )
 
     score_job_for_user.delay(user_id, canonical_job_id)
+    # Keeps the "scoring is running" flag alive while the fan-out is still being
+    # worked through; it lapses on its own once the queue drains.
+    await PipelineRunState(redis.from_url(settings.redis_url)).heartbeat(
+        PipelineStage.SCORING, FANOUT_TTL_SECONDS
+    )
     return outcome.retry_after
 
 
@@ -84,9 +92,13 @@ def reextract_and_rescore_job(self, user_id: str, canonical_job_id: str) -> dict
 
 
 async def _run_reextract_and_rescore_all(user_id: str) -> int:
+    settings = await get_effective_settings(get_settings())
     async with session_scope() as session:
         canonical_job_ids = await JobRepository(session).list_all_canonical_job_ids()
 
+    await PipelineRunState(redis.from_url(settings.redis_url)).start(
+        PipelineStage.SCORING, FANOUT_TTL_SECONDS
+    )
     for canonical_job_id in canonical_job_ids:
         reextract_and_rescore_job.delay(user_id, str(canonical_job_id))
 

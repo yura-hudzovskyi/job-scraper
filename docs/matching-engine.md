@@ -177,6 +177,33 @@ domain-mismatch gate's ceilings (`MatchingThresholds.domain_mismatch_*_ceiling`,
 see Stage 2) were validated against pure bi-encoder scores — re-check them against
 real traffic once the cross-encoder blend has been live for a while.
 
+### Running the pipeline
+
+The three stages depend on each other, in this order, and the System page's
+Pipeline panel is where they are started and watched:
+
+1. **Extraction + scoring** (`POST /api/ai/pipeline/scoring/run`) — reads every
+   posting for its requirements and rescores it. Everything below compares
+   against those requirements; a vacancy with none is scored on text similarity
+   alone, which is what "analysis level: limited" means on a match.
+2. **Embeddings** (`POST /api/ai/pipeline/embeddings/rebuild`) — deletes every
+   stored vector and rebuilds. Deliberately destructive: a lane half-filled by a
+   previous model, or marked ready when it only covers last month's corpus, is
+   harder to trust than an empty one, and vectors are derived data.
+3. **Retrieval + rerank** (`POST /api/ai/pipeline/retrieval/run`) — ranks the
+   whole corpus for one candidate inside one ready lane, reranks the shortlist,
+   and writes the calibrated relevance onto each match. Scoring folds that in on
+   its next pass as the role/domain signal, so the ordering ends up in the score
+   rather than in a list nobody reads. Which is why step 1 is worth running once
+   more after step 3.
+
+Each stage takes a server-side lock (`app/services/pipeline_state.py`) rather
+than relying on a disabled button: a second tab or a `curl` call reaches the
+endpoint just the same. The locks carry a TTL, so a worker that dies mid-run
+can't leave the pipeline "running" forever, and long runs push the expiry out as
+they go. Scoring's fan-out has no finish line, so its flag is kept alive by the
+work itself and lapses once the queue drains.
+
 ### Retrieval and embedding lanes
 
 Scoring every job for every user is affordable only while scoring is cheap.

@@ -12,6 +12,7 @@ import type {
   JobSummary,
   MeResponse,
   NotificationThresholds,
+  PipelineStatus,
   Preferences,
   ProfileSummary,
   PurgeCeleryResponse,
@@ -88,6 +89,14 @@ export const updateNotificationThresholds = (thresholds: NotificationThresholds)
 export const getAiModels = () => apiClient.get<AiModelsResponse>("/api/ai/models");
 export const updateAiModels = (payload: AiModelsUpdateRequest) =>
   apiClient.patch<AiModelsResponse>("/api/ai/models", payload);
+export const getPipelineStatus = () => apiClient.get<PipelineStatus>("/api/ai/pipeline");
+export const runScoring = () =>
+  apiClient.post<{ status: string; detail: string }>("/api/ai/pipeline/scoring/run");
+export const rebuildEmbeddings = () =>
+  apiClient.post<{ status: string; detail: string }>("/api/ai/pipeline/embeddings/rebuild");
+export const runRetrieval = () =>
+  apiClient.post<{ status: string; detail: string }>("/api/ai/pipeline/retrieval/run");
+
 export const getAiUsage = (hours = 24) => apiClient.get<AiUsage>(`/api/ai/usage?hours=${hours}`);
 export const testAiModel = (tier: "groq" | "gemini", model: string) =>
   apiClient.post<TestModelResponse>("/api/ai/models/test", { tier, model });

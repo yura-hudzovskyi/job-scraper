@@ -81,6 +81,27 @@ export interface UsageRow {
   calls: number;
 }
 
+export interface PipelineLane {
+  id: string;
+  role: string;
+  state: string;
+  jobs_covered: number;
+}
+
+/** What the pipeline panel needs to decide which buttons make sense right now. */
+export interface PipelineStatus {
+  jobs_total: number;
+  matches_total: number;
+  matches_hybrid_scored: number;
+  matches_enriched: number;
+  matches_with_relevance: number;
+  profile_indexed: boolean;
+  has_profile: boolean;
+  lanes: PipelineLane[];
+  embeddings_ready: boolean;
+  running: Record<string, boolean>;
+}
+
 export interface AiUsage {
   since_hours: number;
   rows: UsageRow[];

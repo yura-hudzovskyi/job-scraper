@@ -12,6 +12,8 @@ re-running it after any edit to a posting is always safe.
 import asyncio
 import uuid
 
+import redis.asyncio as redis
+
 from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
 from app.db.session import session_scope
@@ -20,12 +22,17 @@ from app.repositories.candidate_repository import CandidateRepository
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.job_repository import JobRepository
 from app.services.embedding_indexing_service import EmbeddingIndexingService
+from app.services.pipeline_state import PipelineRunState, PipelineStage
 from app.workers.celery_app import celery_app
 
 # One backfill pass indexes this many jobs, then re-queues itself. Keeps a first
 # run over a full corpus from becoming one enormous transaction — and from
 # holding a worker for the whole of it.
 _BACKFILL_BATCH = 50
+
+
+def _run_state() -> PipelineRunState:
+    return PipelineRunState(redis.from_url(get_settings().redis_url))
 
 
 async def _service(session) -> tuple[EmbeddingIndexingService, JobRepository]:
@@ -93,9 +100,42 @@ async def _run_backfill(offset: int) -> dict[str, int]:
         await service.refresh_lane_readiness(len(canonical_job_ids))
         remaining = max(0, len(canonical_job_ids) - (offset + len(batch)))
 
+    state = _run_state()
     if remaining:
+        # Push the lock's expiry out every batch, so a genuinely long backfill
+        # never looks abandoned while it is still working.
+        await state.heartbeat(PipelineStage.EMBEDDINGS)
         backfill_embeddings.delay(offset + _BACKFILL_BATCH)
+    else:
+        await state.finish(PipelineStage.EMBEDDINGS)
     return {"indexed": len(batch), "written": written, "remaining": remaining}
+
+
+async def _run_rebuild(user_ids: list[str]) -> dict[str, int]:
+    """Wipe every vector, then rebuild from scratch.
+
+    Purging first is the point: a lane half-filled by a previous model, or marked
+    ready when it only covers last month's corpus, is harder to reason about than
+    an empty one. Everything here is recomputable from the postings, so starting
+    clean costs time and nothing else.
+    """
+    state = _run_state()
+    if not await state.start(PipelineStage.EMBEDDINGS):
+        return {"started": 0, "purged": 0}
+
+    async with session_scope() as session:
+        purged = await EmbeddingRepository(session).purge_all()
+
+    for user_id in user_ids:
+        index_profile_embeddings.delay(user_id)
+    backfill_embeddings.delay(0)
+    return {"started": 1, "purged": purged}
+
+
+@celery_app.task(name="embed.rebuild_all")
+def rebuild_all_embeddings(user_ids: list[str]) -> dict[str, int]:
+    """The "start clean" entry point behind the System page's confirmation."""
+    return asyncio.run(_run_rebuild(user_ids))
 
 
 @celery_app.task(name="embed.backfill_embeddings")

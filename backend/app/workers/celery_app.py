@@ -19,6 +19,7 @@ celery_app = Celery(
         "app.workers.tasks.backfill",
         "app.workers.tasks.ai_ledger",
         "app.workers.tasks.enrich",
+        "app.workers.tasks.retrieve",
     ],
 )
 
@@ -42,6 +43,7 @@ celery_app.conf.task_routes = {
     "embed.*": {"queue": "ai_extraction"},
     "extract.*": {"queue": "ai_extraction"},
     "score.*": {"queue": "ai_matching"},
+    "retrieve.*": {"queue": "ai_matching"},
     # A user pressing "analyze" is waiting for the answer.
     "enrich.enrich_match": {"queue": "ai_interactive"},
     "enrich.*": {"queue": "ai_matching"},

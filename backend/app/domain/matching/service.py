@@ -122,6 +122,8 @@ class MatchingService:
         profile: CandidateProfile,
         preferences: UserPreference,
         job_version: DocumentVersion | None = None,
+        rerank_relevance: float | None = None,
+        rerank_model: str | None = None,
     ) -> JobMatch:
         """Run the full pipeline for a single job and return an explainable JobMatch.
         Hard filters gate eligibility first; the deterministic pipeline then decides
@@ -145,7 +147,7 @@ class MatchingService:
             )
 
         return await self._evaluate_deterministic(
-            canonical_job_id, job, profile, preferences, job_version
+            canonical_job_id, job, profile, preferences, job_version, rerank_relevance, rerank_model
         )
 
     async def _evaluate_deterministic(
@@ -155,9 +157,13 @@ class MatchingService:
         profile: CandidateProfile,
         preferences: UserPreference,
         job_version: DocumentVersion | None = None,
+        rerank_relevance: float | None = None,
+        rerank_model: str | None = None,
     ) -> JobMatch:
         """The authoritative scoring path: deterministic + semantic + skill, no LLM
-        involved (see module docstring)."""
+        involved (see module docstring). `rerank_relevance`, when the retrieval
+        pass has produced one, replaces semantic similarity as the role/domain
+        signal — a model that read both documents beats comparing two vectors."""
         experience, salary, location = self._deterministic_scorer.score(job, profile, preferences)
         skill_assessment, semantic_similarity, role = await asyncio.gather(
             self._skill_matcher.assess(
@@ -186,6 +192,7 @@ class MatchingService:
                     role_fit=role,
                     salary_score=salary,
                     location_score=location,
+                    rerank_relevance=rerank_relevance,
                     # Keyword-heavy postings from another profession look similar
                     # to everything; their category doesn't.
                     category=decide(
@@ -198,6 +205,7 @@ class MatchingService:
                 salary=salary,
                 location=location,
                 transferable=skill_assessment.transferable_score,
+                rerank_model=rerank_model,
             )
 
         deterministic = DeterministicScore(
@@ -290,6 +298,7 @@ class MatchingService:
         salary: float,
         location: float,
         transferable: float,
+        rerank_model: str | None = None,
     ) -> JobMatch:
         """Shape the engine's result into the JobMatch every consumer already
         reads. The breakdown keeps its field names — the UI, the notifications
@@ -298,6 +307,7 @@ class MatchingService:
         provenance = replace(
             self._provenance(result.analysis_level, profile, job, job_version),
             engine=MatchEngine.HYBRID,
+            rerank_model=rerank_model,
             versions=replace(
                 PipelineVersions(),
                 scorer=result.scorer_version,

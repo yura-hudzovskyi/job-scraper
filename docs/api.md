@@ -35,6 +35,12 @@ POST   /api/jobs/{id}/reject
 GET    /api/ai/models            model config plus live router state: each capability's
                                    provider chain, why a leg is parked, budget used today,
                                    and embedding lane coverage
+GET    /api/ai/pipeline          pipeline state: vacancies, matches, lane coverage, whether
+                                   the CV is indexed, and which stages are running now
+POST   /api/ai/pipeline/scoring/run        re-extract requirements + rescore every vacancy
+POST   /api/ai/pipeline/embeddings/rebuild delete every vector, then re-index everything
+POST   /api/ai/pipeline/retrieval/run      rank the corpus by embeddings, rerank the shortlist,
+                                   and store the relevance the next scoring pass folds in
 GET    /api/ai/usage             LLM calls by capability and outcome over a window, from
                                    the ai_invocations ledger
 
