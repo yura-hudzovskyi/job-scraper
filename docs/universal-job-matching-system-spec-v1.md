@@ -2,8 +2,11 @@
 
 ## Технічна специфікація та план реалізації v1.0
 
-**Статус:** implementation-ready draft  
+**Статус:** draft, узгоджений із наявним репозиторієм; готовий до реалізації після
+рішень із 3.5  
 **Основна мова документа:** українська  
+**Читати першими:** 3.3 (що вже є в коді), 3.4 (конфлікти), 3.5 (відкриті
+рішення), 24.0 (інваріанти), 24.1 (скорочений шлях)  
 **Ціль:** універсальний матчинг CV ↔ вакансія для IT, продажів, фінансів, медицини, логістики, виробництва, сервісу та інших професій без генеративної LLM у core pipeline.  
 **Базовий стек:** FastAPI, PostgreSQL + pgvector, Redis, Celery, React + TypeScript.  
 **Початкова інфраструктура:** одна Oracle Always Free VM, орієнтовно 4 OCPU / 24 GB RAM.  
@@ -113,9 +116,9 @@ ESCO/O*NET потрібні для normalization, aliases, related concepts, fil
 
 ---
 
-## 3. Межі v1
+## 3. Межі v1 та стан репозиторію
 
-### У v1 входить
+### 3.1. У v1 входить
 
 - ingestion вакансій із JSON/API/HTML/plain text;
 - ingestion CV із PDF/DOCX/plain text;
@@ -135,7 +138,7 @@ ESCO/O*NET потрібні для normalization, aliases, related concepts, fil
 - evaluation harness;
 - basic operational monitoring.
 
-### У v1 не входить
+### 3.2. У v1 не входить
 
 - автоматична відмова кандидату;
 - ranking на основі фото, віку, статі, імені, етнічності, сімейного стану, інвалідності або інших protected attributes;
@@ -145,6 +148,105 @@ ESCO/O*NET потрібні для normalization, aliases, related concepts, fil
 - окремі fine-tuned models для кожної галузі;
 - real-time streaming architecture;
 - Kubernetes.
+
+### 3.3. Що вже є в репозиторії (baseline, станом на 2026-09-02)
+
+Цей документ написаний як greenfield-специфікація, але репозиторій уже містить
+працюючий pipeline. Комміт `b5569d7` цілеспрямовано **видалив** попередній
+LLM-шар (skill extraction, `candidate_profiles`, `ai_invocations`,
+`document_versions`) і залишив вузьку систему на двох викликах Voyage. Робота за
+цим документом починається не з нуля, а з наступного стану.
+
+| Область специфікації | Що є в коді | Висновок |
+|---|---|---|
+| Modular monolith (4) | FastAPI + Celery + PostgreSQL/pgvector + Redis + React, Docker Compose, Caddy | є; окремого `ml-service` немає |
+| Source adapters (Phase 2) | `JobSourceAdapter` + registry, DOU і Djinni, ротація категорій | є; цей контракт треба визнати джерелом істини, а не писати другий |
+| Raw → Normalized → Canonical (14.1) | `raw_jobs`, `job_source_records`, `canonical_jobs`, `DeduplicationService` (company + title + description similarity) | конфлікт із `source_items`/`document_revisions`, див. 3.4 |
+| Immutable revisions, blocks, offsets (7.1) | немає | будувати з нуля |
+| Language detection (5.1) | немає | будувати з нуля |
+| Neural extraction, evidence spans, profile revisions (8) | немає; було і свідомо видалено | див. 3.4 |
+| Taxonomy / ESCO / concept linking (9) | немає | будувати з нуля |
+| Embeddings (10) | Voyage `voyage-4-large` через REST; **один вектор на весь документ**, `unique(document_type, document_id, model)`, `content_hash` для пропуску повторного embedding, точний cosine scan без ANN | інша архітектура: зовнішній провайдер, немає field-level векторів і model registry |
+| Lexical retrieval, `tsvector` (11.2) | немає | будувати з нуля |
+| Hybrid retrieval + RRF (11) | один dense-канал | будувати з нуля |
+| Reranker (12) | Voyage `rerank-3` через REST, top-`rerank_top_k` (60) | зовнішній провайдер замість локального cross-encoder |
+| Requirement evaluation, чотири статуси, explanations (13) | немає | будувати з нуля |
+| Score | `similarity × (1−w) + relevance × w`; усі три числа зберігаються на рядку матчу і показуються в UI | принцип «score — це арифметика, а не вирок» уже виконано |
+| Hard filters (2.4) | `HardFilterService`: blocked stack, salary floor, локації, blacklist компаній, стеля досвіду; кожна відмова зберігає причину, а відхилена вакансія все одно записується | збігається за духом, але фільтри керуються **преференціями кандидата**, а не вимогами вакансії |
+| `match_runs` / `match_results` (7.5) | `job_matches` з `unique(user_id, canonical_job_id)` — upsert, не append-only | пряма суперечність, див. 3.4 |
+| `feedback_events` (7.5) | лише `job_matches.decision` (`pending`/`approved`/`rejected`) з кнопок Telegram | частково |
+| Version bundle (2.6) | `embedding_model`, `rerank_model`, `rerank_weight` на кожному матчі | немає `model_registry` і pinned revisions — Voyage дає лише назву моделі |
+| Idempotency (15, 16) | через unique-констрейнти; немає `Idempotency-Key` і немає outbox | частково |
+| Evaluation harness (20) | немає | будувати з нуля |
+| Observability (19) | структуровані логи, `pipeline_runs` з лічильниками кожного кроку, System page | немає метрик і дашбордів |
+| Тести | 23 unit-файли, `ruff`, `mypy --strict`; немає integration/contract/evaluation каталогів | частково |
+
+Крім того, у репозиторії є функціональність, якої **немає в цій специфікації** і
+яку не можна зламати. Вона не «поза scope» — вона вже в продакшені:
+
+- **Notifications.** Telegram-картки з Approve/Reject через webhook, quiet hours,
+  поріг за score, ідемпотентна доставка per (notification, channel).
+- **Pipeline config у базі.** Кожне число, на якому працює pipeline, редагується
+  на System page разом із власним описом і межами; `.env` тримає лише секрети.
+  Будь-яке нове число з цього документа (`rrf_k`, ліміти каналів, пороги
+  confidence) має потрапити в той самий механізм, а не в YAML-файл поруч.
+- **Operator surface.** System page: readiness і блокери, ручний запуск того
+  самого Celery-таска, що й розклад, run locks, reset-дії з підрахунком
+  видалених рядків.
+- **Retention.** `job_retention_days` видаляє вакансію та все, що на неї
+  посилається, після того як вона зникла зі скрейпів.
+- **Category rotation.** Один категорійний скрейп на джерело за запуск,
+  найдавніший першим.
+
+### 3.4. Конфлікти, які специфікація зараз не вирішує
+
+1. **Voyage проти локальних моделей.** Уся AI-частина застосунку — два REST-виклики
+   до платного провайдера. Специфікація припускає self-hosted GLiNER2 + E5/BGE-M3 +
+   cross-encoder, які резервують 8–11 GB RAM на Oracle VM. Документ ніде не каже,
+   чи Voyage лишається, замінюється, чи співіснує — а це визначає 10, 12, 17 і
+   майже весь план фаз. Додатково 25.1 забороняє агенту додавати платний
+   зовнішній сервіс, хоча він уже в системі.
+2. **Екстракція вже була, і її видалили.** Специфікація повертає структуровану
+   екстракцію як фундамент. Це саме те, що команда свідомо прибрала, бо екстракція
+   виявилася найненадійнішою частиною системи, а впевнений вердикт на поганому
+   списку скілів гірший за відсутність вердикту. Документ мусить явно сказати,
+   **що цього разу інакше** — інакше він читається як пропозиція повторити те, що
+   вже відкотили. Три відмінності, які варто зафіксувати як умову: кожен факт має
+   evidence span у вихідному тексті, кандидат бачить і виправляє видобуте до того,
+   як воно впливає на ranking, і жодна екстракція не потрапляє в score, поки
+   eval-набір не покаже, що вона краща за поточний baseline.
+3. **Дві моделі дедуплікації.** `source_items` + `document_revisions` (7.1) дають
+   одну вакансію на одне джерело, а 14.2 окремо описує кластери крос-джерельних
+   дублікатів — але таблиці кластерів у 7 немає. У репозиторії ж `canonical_jobs`
+   уже виконує роль «одна реальна вакансія, кілька джерел». Треба обрати одну
+   модель і описати міграцію, а не тримати обидві.
+4. **Upsert проти append-only.** `job_matches` тримає один рядок на (user, job) і
+   зберігає рішення користувача між запусками. `match_runs`/`match_results` —
+   незмінні per-run. За `retrieval_limit = 400` і щоденними запусками це дає
+   ~146 000 рядків результатів на користувача за рік без політики retention, якої
+   в 7.5 немає. Потрібен також шлях міграції наявного `job_matches.decision` у
+   `feedback_events`, інакше історія рішень користувача зникне.
+5. **Напрям продукту.** 7 містить `tenant_id`, RLS і права рекрутера, а 18.4
+   класифікує систему як high-risk employment за AI Act. Наявний застосунок шукає
+   **вакансії для кандидата**, а не кандидатів для роботодавця. Це різні продукти
+   з різним регуляторним навантаженням, і специфікація зараз змішує їх у одному
+   наборі таблиць.
+
+### 3.5. Рішення, які треба ухвалити до Phase 1
+
+Кожна відповідь тут змінює схему, бюджет RAM і план фаз. Жодну фазу після
+Phase 0 не можна починати, поки вони відкриті.
+
+| Рішення | Варіанти | Що воно змінює |
+|---|---|---|
+| **Провайдер моделей** | (a) лишити Voyage, додати лише локальний extractor; (b) повністю self-hosted; (c) гібрид — локальні embeddings, Voyage rerank | 10, 12, 17.2, `model_registry`, вартість одного запуску |
+| **Напрям продукту** | (a) candidate-side, як зараз; (b) recruiter-side; (c) обидва | 7 (tenant/RLS), 18.4 (AI Act), пріоритет UI |
+| **Ambition ranking** | (a) hybrid retrieval без ESCO; (b) повний стек із taxonomy | 9 і Phase 4 — найдорожча фаза документа |
+| **Обсяг eval-набору** | (a) 200–300 пар, дві мови, три домени; (b) 3 000+ пар, як у 20.1 | реалістичність усього плану для одного оператора |
+| **Форма VM** | Oracle A1.Flex (ARM Ampere) чи x86 | доступність wheels, латентність CPU-інференсу, 17.2 |
+
+Поки ці рішення не зафіксовані як ADR, документ описує щонайменше два різні
+продукти на двох різних стеках.
 
 ---
 
@@ -222,6 +324,23 @@ Detailed steps:
 15. Mark job revision `SEARCHABLE` in the same final transaction.
 16. Trigger match refresh only for active candidates affected by the source/user policy; do not synchronously rerank every candidate.
 
+"Affected" needs a definition, or step 16 is unimplementable. A candidate is
+affected by a newly searchable job revision when all of these hold:
+
+- the candidate has `matching_enabled` and a reviewed or extracted current
+  profile revision;
+- the job passes the candidate's hard filters (2.4) — cheap, structured, and it
+  eliminates most pairs before any model runs;
+- the job is within the candidate's retrieval reach: either it enters the
+  candidate's top `fused_limit`, or the candidate has no match run newer than
+  the job's revision.
+
+Everything else waits for the candidate's next scheduled run. The existing
+pipeline already refreshes every user on a timer rather than per document, which
+is a perfectly good v1 answer at this corpus size — per-document fan-out is an
+optimisation to reach for when the timer stops keeping up, and the definition
+above is what it should mean when it arrives.
+
 ### 5.2. Ingestion CV
 
 CV follows the same flow, with two differences:
@@ -294,6 +413,21 @@ Candidate edits create a new `profile_revision` with `origin = user_override`; t
   }
 }
 ```
+
+`operator: "not"` needs its interaction with the four statuses spelled out,
+because negation inverts them and a naive implementation gets 2.3 exactly
+backwards. For a negated requirement ("must not require relocation", "no night
+shifts"):
+
+- candidate evidence that contradicts the negated value → `conflicting`;
+- candidate evidence consistent with it → `satisfied`;
+- **silence stays `unknown`, not `satisfied`.** The temptation is to read "the CV
+  never mentions night shifts" as compliance. It is absence of evidence, and
+  treating it as satisfaction is the mirror image of treating a missing skill as
+  `false`.
+
+Negated requirements may never become hard filters on `unknown`, whatever their
+confidence.
 
 ### 6.3. JobProfile v1
 
@@ -653,6 +787,67 @@ Do not add five vector columns to `jobs`; a row-per-field table makes model migr
 - `value jsonb`, `occurred_at`, `source`;
 - immutable append-only events.
 
+Migration note: the repository already stores one user verdict per match
+(`job_matches.decision`, set from the Telegram Approve/Reject buttons and
+deliberately never overwritten by a re-match). That history is real feedback and
+must be backfilled into `feedback_events` as `save`/`dismiss` events with their
+original timestamps before `job_matches` is reshaped.
+
+### 7.6. Operational tables
+
+Sections 15, 16 and 14.2 require tables that the schema above does not define.
+Without them those sections cannot be implemented as written.
+
+#### `idempotency_keys`
+
+Required by 15 ("all async mutation endpoints accept `Idempotency-Key`").
+
+- `key text`, `endpoint text`, `tenant_id uuid nullable`
+- `request_hash char(64)` — rejects a reused key carrying a different body
+- `response_status int`, `response_body jsonb`
+- `created_at`, `expires_at`
+- primary key `(tenant_id, endpoint, key)`
+- a `maintenance` task purges expired rows
+
+#### `outbox_events`
+
+Required by 16 ("transactional outbox").
+
+- `id bigserial pk`, `aggregate_type text`, `aggregate_id uuid`
+- `event_type text`, `payload jsonb`
+- `created_at`, `published_at timestamptz nullable`, `attempts int`
+- partial index on `published_at is null`
+- written in the same transaction as the state change; a relay publishes to
+  Celery and stamps `published_at`
+
+#### `job_clusters` / `job_cluster_members`
+
+Required by 14.2 ("select a representative for display, retain all source
+records"). With `jobs.source_item_id` unique, one job row is one source posting,
+so cross-source duplicates need an explicit cluster:
+
+- `job_clusters`: `id uuid pk`, `representative_job_id uuid`, `method text`,
+  `method_version text`, `created_at`
+- `job_cluster_members`: `cluster_id`, `job_id`, `similarity real`,
+  `matched_on jsonb`, primary key `(cluster_id, job_id)`
+- the existing `canonical_jobs` table is the same idea under another name —
+  decision 3.4.3 picks one and the other becomes a migration, not a second
+  mechanism
+
+#### Retention for match artifacts
+
+`match_runs` and `match_results` are append-only per run. At
+`retrieval_limit = 400` with a daily run that is ~146 000 result rows per
+candidate per year, plus their explanations. Define, and make configurable
+alongside the existing `job_retention_days`:
+
+- keep the newest N runs per candidate in full (`match_run_retention_count`);
+- keep older runs as the run row plus aggregate counters, dropping
+  `match_results` and `explanation_jsonb`;
+- never delete a run referenced by a `feedback_event`;
+- deletion of a candidate removes runs, results, embeddings and evidence — this
+  is the same flow 18.1 requires, so build it once.
+
 ---
 
 ## 8. Extraction design
@@ -765,6 +960,40 @@ New tools and market-specific terms will appear before ESCO updates. Allow `inte
 
 Do not automatically create a new concept for every unknown mention. Cluster unknown mentions offline and require review before promotion.
 
+### 9.5. Linking cost budget
+
+Step 4 of 9.3 reranks each mention against ~20 concept candidates. That is the
+most expensive thing in the whole ingestion path and the throughput target in
+17.3 does not account for it.
+
+Order of magnitude: 30 linkable mentions per document × 20 candidates = 600
+cross-encoder pairs per document. At 5 000 documents/day that is 3 000 000 pairs
+per day on the same CPU that also has to serve interactive reranking. It does not
+fit, and no amount of batching makes it fit.
+
+So the linker must be budgeted explicitly, and every one of these is a benchmark
+input rather than a fixed value:
+
+- **Cache by mention text.** Linking is a function of `(normalized mention,
+  taxonomy_version, model bundle)`, not of the document. A `mention_link_cache`
+  table keyed on that tuple collapses the repeated 80% of mentions across a
+  corpus — measure the hit rate before assuming a number.
+- **Skip the reranker on confident cases.** If the top embedding candidate is
+  above a high threshold and the gap to top-2 is wide, accept it without a
+  cross-encoder pass. Reserve reranking for the ambiguous band.
+- **Cut the candidate list.** 20 is a recall setting; measure top-5 recall and
+  use the smallest list that holds it.
+- **Link asynchronously.** Concept links are a retrieval *signal*, not a
+  precondition. A revision can become `SEARCHABLE` on dense + lexical channels
+  and gain its concept channel when linking completes, as long as the retrieval
+  code treats a missing channel as absent rather than as zero.
+- **Measure before Phase 4, not during it.** Phase 0's benchmark should include
+  "cost to link one document" for exactly this reason.
+
+If the measured cost still does not fit the VM, the honest fallback is embedding
+similarity against concept vectors with abstention and no cross-encoder — worse
+top-1 accuracy, and a linker that actually runs.
+
 ---
 
 ## 10. Embeddings and representations
@@ -817,6 +1046,14 @@ Do not include name, email, photo, age, address or other irrelevant PII.
 
 Do not hard-code a winner before measuring on Ukrainian/English/Polish job data.
 
+The list below is the **self-hosted** shortlist and only applies if 3.5 answers
+(b) or (c). If Voyage stays, the incumbent is `voyage-4-large` and the benchmark
+question is different: does a self-hosted model close enough of the quality gap
+to be worth 2–4 GB of RAM and the operational burden, given that the current
+provider costs nothing to run and the corpus is small? Measure the incumbent as a
+baseline row in the same table either way — a benchmark that omits what is
+already deployed cannot tell you whether to change anything.
+
 Candidates:
 
 - fast baseline: `intfloat/multilingual-e5-small`;
@@ -853,6 +1090,26 @@ Run independently:
 ### 11.2. Lexical MVP
 
 Use PostgreSQL Full Text Search with a language-safe/simple configuration plus normalization. It is not strict BM25, so name it `lexical_score`, not `bm25_score`.
+
+**Ukrainian is the hard case, and `simple` does not solve it.** PostgreSQL ships
+no Ukrainian dictionary. Under the `simple` configuration there is no stemming at
+all, so `розробника`, `розробники` and `розробник` are three unrelated lexemes —
+in a heavily inflected language that costs most of the lexical channel's recall.
+Decide this explicitly rather than inheriting the default:
+
+- install `unaccent` and a hunspell/ispell `uk_UA` dictionary into a custom text
+  search configuration, and pin the dictionary files the way models are pinned;
+- or accept `simple` plus `pg_trgm` similarity as the Ukrainian path, and say so;
+- benchmark both against the evaluation set — this is a measurable choice, not a
+  matter of taste.
+
+The configuration is also per-document, not global: a Polish vacancy and a
+Ukrainian CV need different ones. Either store `search_vector` per
+`language_code` with the config chosen at write time, or keep one column per
+supported configuration. A generated column cannot depend on another row's
+language, so a transactionally updated column is the simpler option here. Mixed
+language documents (a Ukrainian CV with English skill names) must be indexed
+under both their detected language and `simple`, or the English half disappears.
 
 If benchmark proves lexical quality insufficient, replace this adapter with:
 
@@ -982,6 +1239,31 @@ status_values:
 
 These values must live in `match-policy/v1.yaml`, be stored with each match run and never appear as unexplained constants in Python.
 
+Two constraints on those numbers:
+
+- **Ordering is an invariant, not a tuning choice:**
+  `conflicting < unknown ≤ partial < satisfied`. A policy file that violates it
+  should fail to load. This is what mechanically enforces 2.3 — `unknown` may
+  never collapse onto `conflicting`.
+- **`unknown` is a prior, so measure it.** `0.45` is a guess about how often a
+  requirement the CV is silent on turns out to be satisfied. Once the evaluation
+  set exists, estimate it from the data — the rate at which requirements marked
+  `unknown` were judged satisfied by an annotator — instead of leaving a guess in
+  the file forever. Note the visible consequence of any value: at `0.45` against
+  `partial = 0.65`, a candidate who says nothing scores 69% of one with weak
+  evidence, which is a product decision worth stating out loud rather than
+  discovering from a support ticket.
+
+**Where the policy lives.** The repository's existing convention is that every
+number the pipeline runs on is stored in the database and edited from the System
+page (see 3.3), while this document specifies a versioned YAML file. Both are
+right about different things: a file gives a reproducible, reviewable version,
+and a UI-editable value gives an operator control. Reconcile them as follows —
+policy *versions* are files, checked in and immutable once published; the
+*active policy version* is the DB-editable setting; and the full resolved policy
+is snapshotted onto every `match_run`, so an edit can never retroactively change
+what an old score meant.
+
 ### 13.3. Component scores
 
 Calculate:
@@ -1007,6 +1289,37 @@ final = clamp(base - explicit_constraint_penalties, 0, 1)
 ```
 
 This formula is a transparent baseline only. Keep all components so it can later be replaced by Logistic Regression, LightGBM or LambdaMART without reprocessing source documents.
+
+`requirement_coverage` is not in the component list above; define it, rather than
+leaving the formula referring to a name nothing produces:
+
+```text
+requirement_coverage =
+    (w_required * required_coverage + w_preferred * preferred_coverage)
+  / (w_required + w_preferred)
+```
+
+with `w_required` / `w_preferred` taken from `requirement_weights` in the policy
+file, so the same weights drive requirement scoring and its rollup.
+
+Four components appear in the list but not in the formula:
+`experience_alignment`, `constraints_status`, `evidence_completeness` and
+`preferred_coverage` (which enters only through `requirement_coverage`). This is
+deliberate and should be stated where a reader will see it: they are **stored,
+displayed and unscored** in v1. Storing them is what makes a later learned model
+trainable on historical rows; scoring them now would mean inventing four more
+weights with nothing to fit them against. `constraints_status` is the same
+quantity as `explicit_constraint_penalties` in the formula — use one name.
+
+**What the number may be called on screen.** 12.4 forbids presenting a raw
+reranker sigmoid as a percentage fit; the same objection applies one level up.
+Until calibration exists, `calibrated_reranker` is literally the raw score, so
+`final` is an *ordinal* quantity — good for sorting, not for "78% match". Until
+the evaluation set supports calibration, the UI shows rank order and bands
+(strong / possible / weak) and the numeric breakdown on demand, exactly as the
+existing app already shows `similarity`, `relevance` and the weight rather than a
+verdict. After calibration, a percentage may appear — next to `confidence`, never
+instead of it.
 
 ### 13.4. Explanations without a generative LLM
 
@@ -1132,6 +1445,24 @@ Every match response includes:
 
 Actual concurrency must come from benchmark. `ml-service` should batch requests and prioritize interactive reranking over background embeddings.
 
+**This is six queues where the repository has one worker running one sequential
+task** (`scrape → embed → match → notify`), chosen so that "what is the pipeline
+doing right now" has a single honest answer. Do not split it into six on the
+strength of this table. The split earns its complexity only when a specific
+problem appears, and each queue has a different trigger:
+
+- `ml_rerank` separates first, and only when interactive match latency is hurt by
+  background embedding work — that is the one genuine priority inversion here;
+- `ingest_io` separates when a slow source blocks the rest of a run;
+- `maintenance` separates when taxonomy imports or reindexing start colliding
+  with normal runs;
+- `notifications` is already separate in the repository (`notify.dispatch`).
+
+Until then, one worker with the stage counters it already writes to
+`pipeline_runs` is easier to operate and easier to debug on a 4-core VM. Whatever
+the split, keep the property the existing design has: the scheduled run and the
+System page button execute the same code path.
+
 ### Task properties
 
 - tasks receive stable IDs, not entire documents;
@@ -1176,8 +1507,32 @@ Initial guardrails, not promises:
 | Redis/API/frontend/workers | 2–3 GB |
 | loaded ML models/runtime | 8–11 GB |
 | safety reserve/page cache | 3–5 GB |
+| **total** | **19–28 GB** |
 
-If all three models do not fit comfortably, ML service must support lazy loading or separate operating modes. Avoid swap-dependent normal operation.
+The upper bound does not fit a 24 GB machine, which is the point of writing the
+total down. Three of the rows have to give:
+
+- **Models are the swing factor.** Extractor + embedder + reranker resident
+  simultaneously is the 11 GB case. Lazy loading with an idle eviction timer, or
+  two operating modes (ingestion mode holds extractor + embedder; interactive
+  mode holds reranker), brings it to 4–6 GB at the cost of load latency on a cold
+  path. Benchmark both.
+- **PostgreSQL 4–6 GB assumes HNSW indexes are resident.** At the corpus size
+  this system actually has, exact search may be enough (10.4 already says start
+  there), and that row drops to 2–3 GB.
+- **If decision 3.5 keeps Voyage**, the ML row is roughly zero and the whole
+  budget stops being interesting — which is exactly why that decision comes
+  first.
+
+Avoid swap-dependent normal operation, and set a hard container memory limit on
+`ml-service` so an OOM kills one process rather than the database.
+
+**Architecture check.** Oracle's Always Free 4 OCPU / 24 GB shape is
+`VM.Standard.A1.Flex` — ARM (Ampere), not x86. That affects this plan in ways
+worth confirming in Phase 0, not in Phase 7: wheel availability for `torch` and
+ONNX runtimes, absence of x86-only quantized kernels, and CPU inference latency
+that does not transfer from an x86 laptop benchmark. Measure reranker latency for
+a 75-pair batch on the actual VM before committing to synchronous match UX.
 
 ### 17.3. Throughput target
 
@@ -1235,6 +1590,14 @@ The product must present ranking as decision support, not an automatic hiring de
 - reporting path for incorrect or discriminatory results.
 
 ### 18.4. EU note
+
+Scope this against decision 3.5 before paying for it. The application as it
+stands is candidate-side: it ranks vacancies for a person looking for work, which
+is not the employment use case the AI Act's high-risk annex is aimed at. The
+obligations below attach when the direction changes — when an employer uses the
+system to screen, filter or rank *applicants*. Building the whole compliance
+apparatus for a product nobody has decided to build is as much a mistake as
+bolting it on late; deciding first is what avoids both.
 
 If this system is offered to employers for CV sorting/recruitment in the EU, it can fall into the AI Act high-risk employment category. Therefore audit logs, dataset quality, technical documentation, accuracy/robustness testing, human oversight and post-market monitoring should be designed in now rather than bolted on later. This document is an engineering control plan, not legal advice; obtain specialist legal review before commercial recruitment deployment.
 
@@ -1298,6 +1661,27 @@ Minimum useful v1 set:
 - double annotation on at least 15% to measure agreement.
 
 Split by candidate and near-duplicate vacancy cluster, not random pairs, to prevent leakage.
+
+**Annotation is the critical path, so start it in Phase 0.** 3 000 judged pairs
+at roughly a minute of careful reading each is about 50 hours of one person's
+attention, and that work is a hard dependency of the recall gate (20.4), the
+confidence thresholds (8.4), the `unknown` prior (13.2) and calibration (12.4).
+Placing it in Phase 9 means every one of those is tuned on nothing. Split it:
+
+| Tier | Size | Gates | When |
+|---|---:|---|---|
+| **Seed** | 300 pairs, 2 languages, 3 occupational families | Phase 6 recall measurement, Phase 7 sanity | annotate during Phases 1–3 |
+| **Core** | 1 200 pairs, 3 languages, 6 families | threshold and weight tuning, first calibration | before Phase 7 ships |
+| **Full** | 3 000+, as above | release gates, counterfactual slices, LTR | before Phase 10 |
+
+Two shortcuts that are legitimate and two that are not. Legitimate: sample the
+pairs to judge from what the current system already retrieved, so annotators
+spend their time in the region where ranking decisions actually happen, and mine
+the existing `job_matches.decision` history — real Approve/Reject verdicts on
+real vacancies — as weak labels for agreement checks and for prioritising which
+pairs a human should look at. Not legitimate: generating judgements with an LLM
+and calling them ground truth, or letting the same person who tuned a weight be
+the only annotator for the slice that weight affects.
 
 Suggested occupational coverage:
 
@@ -1478,28 +1862,122 @@ docs/
 
 Keep domain logic independent from FastAPI, Celery and particular model libraries. Do not create abstractions with no second implementation unless the boundary is explicitly required here for model replacement/testing.
 
+**The tree above is illustrative; the repository's existing layout wins.** It
+already satisfies the requirement this section is really making — framework-free
+domain logic, adapters at the edges — under different names. Use this mapping and
+do not create the left column:
+
+| Above | Actual | Note |
+|---|---|---|
+| `app/api/v1/` | `app/api/routes/` + `app/api/router.py` | no version prefix in the tree; versioning is in the URL |
+| `app/core/` | `app/config/`, `app/observability/` | `errors.py` does not exist yet — add it where the API layer already lives |
+| `app/domain/documents|profiles|taxonomy|matching|feedback/` | `app/domain/{jobs,candidates,matching,notifications}/` | add `documents/`, `profiles/`, `taxonomy/`, `feedback/` alongside; **keep `notifications/`** |
+| `app/application/ingestion|extraction|indexing|matching/` | `app/services/` | this repository calls the use-case layer `services`; do not introduce a second one |
+| `app/infrastructure/db|queues|parsers|ml_client|taxonomy_importers/` | `app/db/`, `app/workers/`, `app/integrations/` | `integrations/sources/` is the existing adapter home; `ml_client` goes beside `integrations/voyage.py` |
+| `app/workers/` | `app/workers/tasks/` | already exists, with `pipeline`, `notify`, `retention` |
+| `ml_service/` | new top-level, if 3.5 chooses self-hosted | otherwise it does not exist |
+| `migrations/` | `backend/alembic/versions/` | |
+| `tests/unit|integration|contract|evaluation/` | `backend/tests/unit/` + `fixtures/` | the other three directories are genuinely missing and should be added |
+| `config/extraction|match-policies|models/` | new — but see 13.2 | versioned policy files; runtime tunables stay in the database |
+| `frontend/src/features/...` | `frontend/src/pages/` + `api/` + `components/` | page-based, not feature-folder-based; follow what is there |
+
+Two directories in the tree have no counterpart because the corresponding
+functionality does not exist yet and is genuinely new: `evaluation/` and
+`docs/adr/`. Create those as written.
+
 ---
 
 ## 24. Detailed implementation plan
 
-### Phase 0 — Repository audit and measurable baseline
+### 24.0. Invariants that survive every phase
 
-**Goal:** understand existing code and avoid destructive rewrite.
+These hold in every phase below. A change that breaks one is wrong even if the
+phase's own definition of done is met:
+
+1. **The app keeps working throughout.** Scraping, matching, Telegram delivery
+   and the System page must function at the end of every phase, not only at the
+   end of Phase 10. Nothing in this document is worth a week of downtime.
+2. **The operator surface stays truthful.** Every new pipeline stage reports its
+   counts onto the `pipeline_runs` row and appears on the System page. A stage
+   that runs invisibly is a stage nobody can debug.
+3. **New tunables go where the existing ones are** — database-backed, with a
+   description and bounds rendered by the UI (3.3), not a YAML file nobody can
+   see. The exception is versioned policy, resolved in 13.2.
+4. **Nothing that costs money runs twice for the same input.** The existing
+   `content_hash` skip is the pattern: every new model call gets the same
+   treatment.
+5. **User data is never destroyed by a migration.** Uploaded CVs, preferences,
+   Telegram connections, pipeline config and Approve/Reject decisions survive
+   every schema change in this plan.
+6. **Retention comes with the table.** Any new table that grows per run ships
+   with its cleanup in the same phase, not in Phase 9.
+
+### 24.1. Cut-down path (v0.5), if this is one person's project
+
+Phases 0–10 as written are a team's roadmap: ESCO import, 3 000 judged pairs,
+counterfactual fairness suites, an LTR programme. If the answer to 3.5's
+"ambition" question is (a), the following subset delivers most of the quality
+gain and can be built alone. It is the recommended default until the evaluation
+set says otherwise.
+
+| Include | Skip for now |
+|---|---|
+| Phase 1 revisions and versioning (the foundation everything else needs) | Phase 4 ESCO import and concept linking entirely |
+| Phase 2 parsing, blocks, offsets, language detection | Domain adapters (22) |
+| Phase 3 extraction, but candidate-side only at first | Multi-tenant, RLS, recruiter roles |
+| Phase 5 field-level embeddings and lexical projections | Sparse retrieval / BGE-M3 multi-vector |
+| Phase 6 hybrid retrieval with dense + lexical channels and RRF | The concept channel (it needs Phase 4) |
+| Phase 7 requirement evaluation and explanations | Learned ranking (21) |
+| Seed evaluation tier (20.1) | Full 3 000-pair set |
+
+The single highest-value item on that list is **Phase 7's requirement evaluation
+with explanations**, because it is the one thing the current system genuinely
+cannot do: it can say "this vacancy is near your experience" but has no opinion
+on "do you meet requirement 3". Everything upstream exists to make that answer
+checkable.
+
+The single highest-*risk* item is **Phase 3 extraction**, for the reason in
+3.4.2 — it is the component that was already built once and removed. Treat its
+definition of done as a gate, not a milestone.
+
+### Phase 0 — Baseline, decisions and measurement
+
+**Goal:** replace assumptions with measurements, and close the open decisions
+before any schema changes.
+
+The repository audit this phase used to ask for is already written up in 3.3,
+with its conflicts in 3.4 — do not redo it, verify it.
 
 Tasks:
 
-1. Read repository tree, existing models, migrations, queues, configuration and tests.
-2. Document current ingestion/matching behavior and data ownership.
-3. Add ADRs for canonical revisions, ML service boundary, taxonomy namespace and score semantics.
-4. Create a small representative fixture set across at least five domains and three languages.
-5. Add baseline timings and current behavior tests before refactoring.
+1. Verify 3.3 against the current tree and correct anything that has drifted.
+2. Resolve every decision in 3.5 and record each as an ADR under `docs/adr/`.
+   Until this is done, no migration in Phase 1 has a fixed shape.
+3. Add ADRs for the four boundaries this document introduces: canonical
+   revisions vs the existing `canonical_jobs`, the ML service boundary, the
+   taxonomy namespace, and score semantics.
+4. Create a fixture set across at least five occupational domains and three
+   languages, drawn from the corpus already in the database rather than invented.
+5. **Benchmark on the target VM, not a laptop** — this is the deliverable that
+   makes the rest of the plan real:
+   - extractor latency and RSS for one document, per pass count;
+   - embedding throughput per model candidate (10.3);
+   - reranker latency for a 75-pair batch (12.3), cold and warm;
+   - cost to link one document (9.5);
+   - all of it under the ARM/x86 answer from 3.5.
+6. Start seed-tier annotation (20.1) in parallel — it has the longest lead time.
+7. Record current end-to-end pipeline timings and add characterization tests for
+   present behavior before anything is refactored.
 
 Definition of done:
 
 - no production behavior changed;
-- architecture conflicts with the existing code are listed;
-- migration sequence is proposed;
-- baseline tests run in CI/local compose.
+- every decision in 3.5 is closed and recorded as an ADR;
+- a benchmark report exists with numbers from the deployment VM, and 17.2's
+  budget has been rewritten against them;
+- migration sequence is proposed and reviewed;
+- seed annotation is underway with an agreed labelling guide;
+- baseline tests run in CI and local compose.
 
 ### Phase 1 — Storage foundation and versioning
 
@@ -1686,10 +2164,15 @@ Give the coding agent this document and the following instruction:
 You are modifying an existing production-oriented repository. Implement only the requested phase from Universal Job–Candidate Matching Engine Spec v1.0.
 
 Before editing:
-1. Read AGENTS.md and repository documentation completely.
-2. Inspect the relevant tree, current models, migrations, services, tests and Docker configuration.
-3. Summarize the existing behavior and identify conflicts between the spec and repository.
-4. Propose the smallest migration-compatible implementation plan for this phase.
+1. Read ARCHITECTURE.md, README.md and docs/ completely — especially
+   docs/pipeline.md, docs/domain-model.md and docs/source-adapters.md, which
+   describe the behavior you are extending.
+2. Read sections 3.3, 3.4, 3.5, 23 and 24.0 of this specification. They record
+   what already exists, where this document conflicts with it, which decisions
+   are open, and which invariants hold in every phase.
+3. Inspect the relevant tree, current models, migrations, services, tests and Docker configuration.
+4. Confirm or correct 3.3 against what you find; report any drift.
+5. Propose the smallest migration-compatible implementation plan for this phase.
 
 Implementation rules:
 - Do not rewrite unrelated code.
@@ -1706,6 +2189,14 @@ Implementation rules:
 - Add reversible migrations and idempotent tasks.
 - Pin model IDs and revisions; never depend on floating latest/main in production.
 - No placeholder TODO implementation in a path claimed complete.
+- The repository already depends on Voyage for embeddings and reranking. Keeping,
+  replacing or supplementing it is decision 3.5, resolved by an ADR — never an
+  agent's inline choice, and never a silent second provider.
+- Do not create a parallel use-case layer, adapter registry, config mechanism or
+  documentation set beside the ones that exist; see the mapping in 23.
+- Leave scraping, matching, notifications and the System page working at the end
+  of every phase.
+- New per-run tables ship with their retention in the same change.
 
 Testing rules:
 - Add/update unit, integration and contract tests for every changed behavior.
@@ -1759,7 +2250,15 @@ Reject the change if any of these appear:
 - migrations that drop/overwrite current data without a staged path;
 - embeddings containing candidate PII;
 - tests only for software-engineer vacancies;
-- “works locally” without memory/latency measurements.
+- “works locally” without memory/latency measurements;
+- a new per-run table with no retention policy in the same change;
+- a model call that repeats for input whose content hash has not changed;
+- a second use-case layer, adapter registry or config mechanism parallel to the
+  one the repository already has;
+- a phase that leaves scraping, matching, notifications or the System page
+  broken “until the next phase”;
+- a displayed percentage backed by an uncalibrated score;
+- silence in a CV read as compliance with a negated requirement.
 
 ---
 
@@ -1868,14 +2367,20 @@ Never couple database migration completion with immediate activation of a new mo
 
 Do not begin by wiring all three neural models. The first sprint should produce a vertical but narrow foundation:
 
-1. Repository audit and ADRs.
-2. pgvector-enabled Postgres migration.
-3. `source_items` + `document_revisions` + `profile_revisions`.
-4. Plain-text job ingestion with idempotency.
-5. One versioned JobProfile Pydantic schema.
-6. Fake/deterministic extractor adapter for contract tests only.
-7. One real GLiNER2 spike in a benchmark command, not yet production path.
-8. Metrics for stage duration and failures.
+1. Close the decisions in 3.5 and write them up as ADRs.
+2. `document_revisions` + `profile_revisions`, attached to the **existing**
+   `job_source_records` rather than a new `source_items` table — pgvector is
+   already enabled and ingestion is already idempotent on
+   `unique(source, external_id)`, so neither needs rebuilding.
+3. Store `raw_text`, `parsed_text`, `content_hash` and `language_code` on each
+   revision, and make a re-scrape that changed nothing create no new revision.
+4. One versioned JobProfile Pydantic schema.
+5. Fake/deterministic extractor adapter for contract tests only.
+6. One real extractor spike in a benchmark command on the target VM, not yet in
+   the production path.
+7. Stage duration and failure counts reported onto the existing `pipeline_runs`
+   row and rendered on the System page.
+8. Seed-tier annotation started (20.1).
 
 Sprint acceptance demo:
 
