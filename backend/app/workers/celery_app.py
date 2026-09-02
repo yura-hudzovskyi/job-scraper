@@ -18,6 +18,7 @@ celery_app = Celery(
         "app.workers.tasks.retention",
         "app.workers.tasks.backfill",
         "app.workers.tasks.ai_ledger",
+        "app.workers.tasks.enrich",
     ],
 )
 
@@ -41,6 +42,9 @@ celery_app.conf.task_routes = {
     "embed.*": {"queue": "ai_extraction"},
     "extract.*": {"queue": "ai_extraction"},
     "score.*": {"queue": "ai_matching"},
+    # A user pressing "analyze" is waiting for the answer.
+    "enrich.enrich_match": {"queue": "ai_interactive"},
+    "enrich.*": {"queue": "ai_matching"},
 }
 
 # Each tick scrapes one category (rotating through app/integrations/sources/
@@ -67,5 +71,12 @@ celery_app.conf.beat_schedule = {
     "flush-ai-invocations": {
         "task": "ai_ledger.flush",
         "schedule": 5 * 60,
+    },
+    # Once a day, spend what's left of the enrichment budget on the matches where
+    # a second opinion could still change the user's decision. No-op unless
+    # MATCHING_PIPELINE_V3 moved enrichment off the scoring path.
+    "enrich-top-matches": {
+        "task": "enrich.enrich_all_users",
+        "schedule": 24 * 60 * 60,
     },
 }

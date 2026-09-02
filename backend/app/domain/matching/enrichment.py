@@ -21,7 +21,7 @@ Two guardrails make its answer usable:
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -37,7 +37,13 @@ from app.domain.matching.hybrid import (
     WEIGHT_SENIORITY,
     MatchDimensions,
 )
-from app.domain.matching.models import Recommendation
+from app.domain.matching.models import (
+    JobMatch,
+    LlmAssessment,
+    MatchGap,
+    Recommendation,
+)
+from app.domain.matching.provenance import AnalysisLevel, MatchEngine
 from app.domain.skills.normalizer import dedupe_key
 from app.integrations.ai.llm.base import LLMProvider
 
@@ -277,3 +283,58 @@ class LlmMatchEnricher:
             model_label=result.model_label,
             rejected_claims=rejected,
         )
+
+
+def apply_enrichment(match: JobMatch, result: EnrichedResult) -> JobMatch:
+    """Fold a review back into the match it reviewed.
+
+    The recommendation comes from the *score band*, not from the model's own
+    label: the model's opinion already moved the score (and agreeing with it was
+    rewarded), so letting it also set the label directly would count it twice and
+    break comparability with unenriched results. Its label is still stored, in
+    `llm_assessment`, where a user can see the two side by side.
+
+    A gap the model downgraded stops being shown as a gap — that judgement is the
+    whole reason to ask — while a confirmed one is marked critical.
+    """
+    downgraded = {dedupe_key(name) for name in result.downgraded_gaps}
+    confirmed = {dedupe_key(name) for name in result.confirmed_gaps}
+    gaps = [
+        MatchGap(label=gap.label, critical=gap.critical or dedupe_key(gap.label) in confirmed)
+        for gap in match.gaps
+        if dedupe_key(gap.label) not in downgraded
+    ]
+
+    provenance = match.provenance
+    if provenance is not None:
+        provenance = replace(
+            provenance,
+            engine=MatchEngine.LLM_ENRICHED,
+            analysis_level=AnalysisLevel.FULL,
+            match_model=result.model_label,
+            fallback_reason=None,
+            versions=replace(provenance.versions, match_prompt=result.prompt_version),
+        )
+
+    return replace(
+        match,
+        practical_fit=result.score,
+        recommendation=_band(result.score),
+        confidence=result.confidence,
+        gaps=gaps,
+        risks=result.risks or match.risks,
+        llm_assessment=LlmAssessment(
+            overall_fit=result.score,
+            recommendation=result.recommendation,
+            confidence=result.confidence,
+            strengths=result.transferable_strengths,
+            gaps=result.confirmed_gaps,
+            critical_gaps=result.confirmed_gaps,
+            transferable_experience=result.transferable_strengths,
+            interview_risk="high" if len(result.risks) > 2 else "medium" if result.risks else "low",
+            summary=result.summary,
+            recommended_cv=None,
+            model_label=result.model_label,
+        ),
+        provenance=provenance,
+    )

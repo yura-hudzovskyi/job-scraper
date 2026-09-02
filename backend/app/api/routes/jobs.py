@@ -16,6 +16,7 @@ from app.domain.matching.provenance import MatchProvenance
 from app.repositories.match_repository import MatchRepository
 from app.services.job_service import JobService
 from app.workers.tasks.backfill import rescore_all_jobs
+from app.workers.tasks.enrich import enrich_match
 from app.workers.tasks.score import score_job_for_user
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -258,6 +259,18 @@ async def rescore_job(
     job_id: uuid.UUID, user_id: uuid.UUID = Depends(get_current_user_id)
 ) -> dict[str, str]:
     score_job_for_user.delay(str(user_id), str(job_id))
+    return {"status": "queued", "job_id": str(job_id)}
+
+
+@router.post("/{job_id}/analyze")
+async def analyze_job(
+    job_id: uuid.UUID, user_id: uuid.UUID = Depends(get_current_user_id)
+) -> dict[str, str]:
+    """Ask for an LLM review of this one match now, ahead of the daily ranking.
+    Someone opening a vacancy and pressing the button is the strongest
+    value-of-information signal there is, so it goes on the interactive queue —
+    see app/workers/tasks/enrich.py."""
+    enrich_match.delay(str(user_id), str(job_id))
     return {"status": "queued", "job_id": str(job_id)}
 
 
