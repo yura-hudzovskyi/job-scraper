@@ -136,6 +136,7 @@ export interface PipelineVersions {
   scorer: string;
   match_prompt: string;
   skill_taxonomy: string;
+  rerank_instruction: string | null;
   calibration: string | null;
 }
 
@@ -149,6 +150,7 @@ export interface MatchProvenance {
   embedding_model: string | null;
   cross_encoder_model: string | null;
   skills_model: string | null;
+  rerank_model: string | null;
   match_model: string | null;
   fallback_reason: string | null;
   versions: PipelineVersions;
@@ -164,6 +166,11 @@ export interface JobMatch {
   strengths: MatchReason[];
   gaps: MatchGap[];
   recommendation: string | null;
+  /** How much evidence stood behind the score, 0-1. Null for matches scored
+   *  before the hybrid engine — shown as "not recorded", never as zero. */
+  confidence: number | null;
+  /** What the result could not establish. Never gaps. */
+  risks: string[];
   llm_assessment: LlmAssessment | null;
   provenance: MatchProvenance | null;
   scored_at: string | null;

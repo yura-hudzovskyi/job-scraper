@@ -66,9 +66,10 @@ function AnalysisDetails({ provenance }: { provenance: MatchProvenance }) {
       ANALYSIS_LEVEL_LABELS[provenance.analysis_level] ?? provenance.analysis_level,
     ],
     ["Match model", provenance.match_model],
+    ["Reranker", provenance.rerank_model],
     ["Skill extraction", provenance.skills_model],
     ["Embedding", provenance.embedding_model],
-    ["Reranker", provenance.cross_encoder_model],
+    ["Cross-encoder", provenance.cross_encoder_model],
     ["CV version", documentLabel(provenance.profile)],
     ["Job version", documentLabel(provenance.job)],
     [
@@ -215,6 +216,19 @@ export function JobDetails() {
                 </p>
                 <p className="text-sm text-slate-500">Requirement match</p>
               </div>
+              {matchQuery.data.confidence !== null && (
+                <div>
+                  <p className="text-xl font-semibold text-slate-600">
+                    {(matchQuery.data.confidence * 100).toFixed(0)}%
+                  </p>
+                  <p
+                    className="text-sm text-slate-500"
+                    title="How much evidence stood behind this score — kept separate from the score itself"
+                  >
+                    Confidence
+                  </p>
+                </div>
+              )}
               {matchQuery.data.recommendation && (
                 <span className="rounded-full bg-slate-900 px-3 py-1 text-sm text-white uppercase">
                   {matchQuery.data.recommendation}
@@ -276,6 +290,22 @@ export function JobDetails() {
                     </span>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {matchQuery.data.risks.length > 0 && (
+              <div>
+                <p className="mb-1 text-sm text-slate-500">
+                  Unknowns{" "}
+                  <span className="text-xs text-slate-400">
+                    — things this result could not establish, not gaps
+                  </span>
+                </p>
+                <ul className="list-inside list-disc text-sm text-slate-600">
+                  {matchQuery.data.risks.map((risk) => (
+                    <li key={risk}>{risk}</li>
+                  ))}
+                </ul>
               </div>
             )}
 
