@@ -47,6 +47,8 @@ def _to_job_match(model: JobMatchModel) -> JobMatch:
         recommendation=Recommendation(model.recommendation) if model.recommendation else None,
         confidence=model.confidence,
         risks=list(model.risks or []),
+        relevance=model.relevance,
+        relevance_model=model.relevance_model,
         llm_assessment=_to_llm_assessment(model.llm_assessment),
         provenance=provenance_from_payload(model.provenance),
         scored_at=model.scored_at,
@@ -115,6 +117,53 @@ class MatchRepository:
             .order_by(JobMatchModel.practical_fit.desc())
         )
         return [_to_job_match(model) for model in result.scalars()]
+
+    async def set_relevance(
+        self,
+        user_id: uuid.UUID,
+        relevance: dict[uuid.UUID, float],
+        rerank_model: str | None,
+        lane_id: str | None,
+    ) -> int:
+        """Store what the retrieval/rerank pass concluded, without touching a
+        single scoring field. The label records both models, because a relevance
+        from a lane alone and one a reranker refined are different claims."""
+        if not relevance:
+            return 0
+        label = " + ".join(part for part in (lane_id, rerank_model) if part) or None
+        updated = 0
+        for canonical_job_id, score in relevance.items():
+            result = await self._session.execute(
+                JobMatchModel.__table__.update()
+                .where(
+                    JobMatchModel.user_id == user_id,
+                    JobMatchModel.canonical_job_id == canonical_job_id,
+                )
+                .values(relevance=score, relevance_model=label)
+            )
+            updated += result.rowcount or 0
+        await self._session.flush()
+        return updated
+
+    async def count_for_user(self, user_id: uuid.UUID) -> dict[str, int]:
+        """Totals for the pipeline panel: how many matches exist, how many an LLM
+        has reviewed, and how many were scored without any extracted requirements
+        (the number that says extraction, not matching, is what needs attention)."""
+        result = await self._session.execute(
+            select(
+                func.count(),
+                func.count(JobMatchModel.llm_assessment),
+                func.count(JobMatchModel.confidence),
+                func.count(JobMatchModel.relevance),
+            ).where(JobMatchModel.user_id == user_id)
+        )
+        total, enriched, with_confidence, with_relevance = result.one()
+        return {
+            "total": int(total),
+            "enriched": int(enriched),
+            "hybrid_scored": int(with_confidence),
+            "with_relevance": int(with_relevance),
+        }
 
     async def list_skipped_canonical_job_ids(self, user_id: uuid.UUID) -> set[uuid.UUID]:
         """Canonical job ids to hide from the default jobs-list view — either the

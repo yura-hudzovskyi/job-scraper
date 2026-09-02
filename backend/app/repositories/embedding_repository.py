@@ -180,6 +180,39 @@ class EmbeddingRepository:
         await self._session.flush()
         return len(vectors)
 
+    async def purge_all(self) -> int:
+        """Delete every stored vector and put every lane back to "building".
+
+        This is the "start clean" button behind a confirmation, and it exists
+        because half-migrated vector state is the hardest kind to reason about:
+        vectors from a retired model, a lane marked ready that only covers the
+        jobs that existed last month, sections whose text moved on. Wiping is
+        cheap here — everything can be recomputed from the postings — and a clean
+        rebuild is far easier to trust than a partial one.
+        """
+        result = await self._session.execute(delete(DocumentEmbeddingModel))
+        await self._session.execute(
+            EmbeddingLaneModel.__table__.update().values(state="building")
+        )
+        await self._session.flush()
+        return result.rowcount or 0
+
+    async def has_vectors(
+        self, document_type: str, document_id: uuid.UUID, lane_id: str | None = None
+    ) -> bool:
+        """Whether anything is indexed for this document. Used to tell an operator
+        that their CV still needs indexing before retrieval can mean anything."""
+        conditions = [
+            DocumentEmbeddingModel.document_type == document_type,
+            DocumentEmbeddingModel.document_id == document_id,
+        ]
+        if lane_id is not None:
+            conditions.append(DocumentEmbeddingModel.lane_id == lane_id)
+        result = await self._session.execute(
+            select(DocumentEmbeddingModel.id).where(*conditions).limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def delete_for_documents(
         self, document_type: str, document_ids: list[uuid.UUID]
     ) -> None:

@@ -31,6 +31,11 @@ class JobMatchModel(UUIDPrimaryKeyMixin, Base):
     # folded into it.
     confidence: Mapped[float | None] = mapped_column(default=None)
     risks: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    # Written by the retrieval/rerank pass, not by scoring — which is why both are
+    # deliberately absent from MatchRepository.upsert's on-conflict set: a rescore
+    # must not wipe an ordering that cost provider calls to produce.
+    relevance: Mapped[float | None] = mapped_column(default=None)
+    relevance_model: Mapped[str | None] = mapped_column(default=None)
     llm_assessment: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
     # How this result was produced — see app/domain/matching/provenance.py. Kept
     # as a snapshot, so it keeps naming the models that really ran even after the

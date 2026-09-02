@@ -95,6 +95,11 @@ class JobMatch:
     confidence: float | None = None
     # What the result could not establish. Never gaps — see HybridMatchEngine.
     risks: list[str] = field(default_factory=list)
+    # Calibrated 0-1 relevance from the retrieval/rerank pass, and which model
+    # produced it. Written by that pass and read by the next scoring run — see
+    # app/workers/tasks/retrieve.py. None until it has run.
+    relevance: float | None = None
+    relevance_model: str | None = None
     llm_assessment: LlmAssessment | None = None
     # How this result was produced — engine, analysis level, the CV/job revisions
     # it was scored against, the models involved. See provenance.py; None only for

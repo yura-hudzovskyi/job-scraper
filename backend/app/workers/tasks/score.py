@@ -49,8 +49,19 @@ async def _run(user_id: str, canonical_job_id: str) -> dict[str, float | str]:
             uuid.UUID(canonical_job_id)
         )
 
+        # Whatever the retrieval/rerank pass concluded about this vacancy, if it
+        # has run — see app/workers/tasks/retrieve.py.
+        existing = await match_repository.get_for_canonical_job(
+            uuid.UUID(user_id), uuid.UUID(canonical_job_id)
+        )
         match = await matching_service.evaluate(
-            canonical_job_id, job, profile, preferences, job_version
+            canonical_job_id,
+            job,
+            profile,
+            preferences,
+            job_version,
+            rerank_relevance=existing.relevance if existing else None,
+            rerank_model=existing.relevance_model if existing else None,
         )
         if not settings.matching_pipeline_v3:
             # Pre-v3: every CONSIDER+APPLY match asks an LLM here, in scrape
