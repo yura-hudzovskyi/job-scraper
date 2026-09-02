@@ -10,6 +10,7 @@ from app.domain.candidates.models import (
     SkillLevel,
     UserPreference,
 )
+from app.domain.categories import CategoryDecision
 from app.domain.jobs.models import (
     EmploymentType,
     JobLocation,
@@ -256,3 +257,52 @@ def test_an_unlabelled_seniority_does_not_penalise_anyone() -> None:
     result = _evaluate(findings, job=_job(seniority=None))
 
     assert result.dimensions.seniority == 100.0
+
+
+def test_a_posting_that_requires_nothing_does_not_get_full_marks_for_coverage() -> None:
+    # Found by the evaluation harness: a sales vacancy listing Python, React and
+    # AWS as background scored 89 because "no requirements" read as "every
+    # requirement met".
+    mentions_only = _evaluate(
+        [
+            _finding("Python", SkillOutcome.MATCHED, RequirementType.CONTEXT),
+            _finding("AWS", SkillOutcome.MATCHED, RequirementType.CONTEXT),
+        ]
+    )
+    real_requirement = _evaluate(
+        [_finding("Python", SkillOutcome.MATCHED, RequirementType.REQUIRED_EXPLICIT)]
+    )
+
+    assert mentions_only.analysis_level is AnalysisLevel.LIMITED
+    assert mentions_only.score < real_requirement.score
+    assert any("asks for none of them" in risk for risk in mentions_only.risks)
+
+
+def test_a_confident_category_mismatch_forces_a_skip_however_similar_the_text() -> None:
+    # The keyword trap: the words all match, so similarity can't catch it. The
+    # category can.
+    findings = [_finding("Python", SkillOutcome.MATCHED, RequirementType.CONTEXT)]
+
+    result = _evaluate(findings, category=CategoryDecision.HARD_MISMATCH, semantic_fit=80.0)
+
+    assert result.domain_mismatch is True
+    assert result.gaps[0].label == "role/domain mismatch"
+
+
+def test_an_adjacent_category_discounts_fit_without_ruling_anything_out() -> None:
+    findings = [_finding("Python", SkillOutcome.MATCHED, RequirementType.REQUIRED_EXPLICIT)]
+
+    on_target = _evaluate(findings)
+    adjacent = _evaluate(findings, category=CategoryDecision.SOFT_MISMATCH)
+
+    assert adjacent.domain_mismatch is False
+    assert adjacent.dimensions.role_domain_fit < on_target.dimensions.role_domain_fit
+    assert adjacent.score < on_target.score
+
+
+def test_both_signals_low_still_means_a_domain_mismatch() -> None:
+    findings = [_finding("Python", SkillOutcome.MATCHED, RequirementType.REQUIRED_EXPLICIT)]
+
+    result = _evaluate(findings, semantic_fit=20.0, role_fit=20.0)
+
+    assert result.domain_mismatch is True

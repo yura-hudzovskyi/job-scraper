@@ -1,0 +1,199 @@
+{
+  "_comment": [
+    "Three hand-written EXAMPLES showing the format — not a validation set.",
+    "A real one is 200-300 pairs across specialties, languages and difficulty,",
+    "labelled by a person who read both documents (docs/ai-pipeline-v3.md, 12).",
+    "Nothing here should be used to claim a quality number."
+  ],
+  "pairs": [
+    {
+      "id": "obvious-match",
+      "job": {
+        "title": "Senior Python Engineer",
+        "company": "Acme",
+        "description": "You will own our payments API. 5+ years of Python required, PostgreSQL daily, Docker for local development.",
+        "seniority": "senior",
+        "required_experience_years": 5,
+        "skills": [
+          {
+            "name": "Python",
+            "requirement": "required_explicit",
+            "evidence": "5+ years of Python required"
+          },
+          {
+            "name": "PostgreSQL",
+            "requirement": "required_explicit",
+            "evidence": "PostgreSQL daily"
+          },
+          {
+            "name": "Docker",
+            "requirement": "optional_explicit",
+            "evidence": "Docker for local development"
+          }
+        ],
+        "category": "backend",
+        "category_confidence": 0.9
+      },
+      "profile": {
+        "experience_years": 7,
+        "roles": [
+          "Backend Engineer"
+        ],
+        "skills": [
+          {
+            "name": "Python",
+            "level": "expert",
+            "years": 7
+          },
+          {
+            "name": "Postgres",
+            "level": "strong",
+            "years": 5
+          },
+          {
+            "name": "Docker",
+            "level": "commercial"
+          }
+        ],
+        "experience": [
+          {
+            "company": "Fintech Co",
+            "title": "Senior Backend Engineer",
+            "start_date": "2019-01",
+            "end_date": "2026-01",
+            "description": "Payments APIs",
+            "skills": [
+              "Python",
+              "PostgreSQL"
+            ]
+          }
+        ]
+      },
+      "label": {
+        "recommendation": "apply",
+        "missing_required": [],
+        "notes": "Every requirement met, including the alias case (Postgres/PostgreSQL)."
+      }
+    },
+    {
+      "id": "one-real-blocker",
+      "job": {
+        "title": "Backend Engineer (Go)",
+        "company": "Beta",
+        "description": "Go services at scale. Strong Go required. Kubernetes experience is a plus.",
+        "seniority": "middle",
+        "required_experience_years": 3,
+        "skills": [
+          {
+            "name": "Go",
+            "requirement": "required_explicit",
+            "evidence": "Strong Go required"
+          },
+          {
+            "name": "Kubernetes",
+            "requirement": "optional_explicit",
+            "evidence": "Kubernetes experience is a plus"
+          }
+        ],
+        "category": "backend",
+        "category_confidence": 0.9
+      },
+      "profile": {
+        "experience_years": 4,
+        "roles": [
+          "Backend Engineer"
+        ],
+        "skills": [
+          {
+            "name": "Python",
+            "level": "expert",
+            "years": 4
+          },
+          {
+            "name": "Docker",
+            "level": "commercial"
+          }
+        ],
+        "experience": [
+          {
+            "company": "Acme",
+            "title": "Backend Engineer",
+            "start_date": "2022-01",
+            "end_date": "2026-01",
+            "description": "Python services",
+            "skills": [
+              "Python"
+            ]
+          }
+        ]
+      },
+      "label": {
+        "recommendation": "consider",
+        "missing_required": [
+          "Go"
+        ],
+        "notes": "The language gap is real; the optional Kubernetes one is covered adjacently by Docker."
+      }
+    },
+    {
+      "id": "keyword-heavy-mismatch",
+      "job": {
+        "title": "Sales Manager (IT outsourcing)",
+        "company": "Gamma",
+        "description": "Sell development services. You will talk to CTOs about Python, React and AWS projects; no engineering work involved.",
+        "seniority": "middle",
+        "skills": [
+          {
+            "name": "Python",
+            "requirement": "context",
+            "evidence": "Python, React and AWS projects"
+          },
+          {
+            "name": "React",
+            "requirement": "context"
+          },
+          {
+            "name": "AWS",
+            "requirement": "context"
+          }
+        ],
+        "category": "sales",
+        "category_confidence": 0.95
+      },
+      "profile": {
+        "experience_years": 5,
+        "roles": [
+          "Backend Engineer"
+        ],
+        "skills": [
+          {
+            "name": "Python",
+            "level": "expert",
+            "years": 5
+          },
+          {
+            "name": "AWS",
+            "level": "commercial"
+          }
+        ],
+        "experience": [
+          {
+            "company": "Acme",
+            "title": "Backend Engineer",
+            "start_date": "2021-01",
+            "end_date": "2026-01",
+            "description": "Python services",
+            "skills": [
+              "Python"
+            ]
+          }
+        ]
+      },
+      "label": {
+        "recommendation": "skip",
+        "missing_required": [],
+        "notes": "Every technology matches and none of them is a requirement — the classic keyword trap. Nothing here is a gap either."
+      }
+    }
+  ]
+}

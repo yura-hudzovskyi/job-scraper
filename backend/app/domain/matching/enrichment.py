@@ -36,6 +36,7 @@ from app.domain.matching.hybrid import (
     WEIGHT_RESPONSIBILITIES,
     WEIGHT_SENIORITY,
     MatchDimensions,
+    recommend,
 )
 from app.domain.matching.models import (
     JobMatch,
@@ -156,11 +157,9 @@ pipeline didn't credit it. Name skills that appear above.
 
 
 def _band(score: float) -> Recommendation:
-    if score >= 75:
-        return Recommendation.APPLY
-    if score >= 55:
-        return Recommendation.CONSIDER
-    return Recommendation.SKIP
+    """One definition of the bands, shared with the engine that produced the
+    score (app/domain/matching/hybrid.py)."""
+    return recommend(score)
 
 
 def _consistency(llm: Recommendation, scored: Recommendation) -> float:

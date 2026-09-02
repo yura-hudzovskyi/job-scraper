@@ -14,7 +14,7 @@ from app.domain.jobs.models import (
     RequirementType,
 )
 from app.domain.matching.filters import HardFilterService
-from app.domain.matching.hybrid import HybridMatchEngine
+from app.domain.matching.hybrid import SCORER_VERSION, HybridMatchEngine
 from app.domain.matching.models import (
     JobMatch,
     LlmAssessment,
@@ -421,7 +421,9 @@ async def test_the_hybrid_engine_owns_the_score_when_it_is_enabled() -> None:
     assert match.provenance.engine is MatchEngine.HYBRID
     # The score now says how sure it is, separately from how high it is.
     assert match.confidence is not None and 0.0 < match.confidence <= 1.0
-    assert match.provenance.versions.scorer == "hybrid-1"
+    # Pinning the constant rather than a literal: the point is that the scorer
+    # version is recorded, and it moves whenever the rules change.
+    assert match.provenance.versions.scorer == SCORER_VERSION
     assert match.requirement_match == 100.0
 
 

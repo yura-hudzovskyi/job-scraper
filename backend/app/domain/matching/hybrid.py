@@ -23,13 +23,16 @@ from dataclasses import dataclass
 
 from app.domain.candidates.experience import total_years
 from app.domain.candidates.models import CandidateProfile, UserPreference
+from app.domain.categories import CategoryDecision
 from app.domain.jobs.models import NormalizedJob, RequirementType
 from app.domain.matching.calibration import CALIBRATION_VERSION
-from app.domain.matching.models import MatchGap, MatchReason
+from app.domain.matching.models import MatchGap, MatchReason, Recommendation
 from app.domain.matching.provenance import AnalysisLevel
 from app.domain.matching.skill_matching import SkillAssessment, SkillFinding, SkillOutcome
 
-SCORER_VERSION = "hybrid-1"
+SCORER_VERSION = "hybrid-2"
+
+_REQUIRED_FRAMINGS = (RequirementType.REQUIRED_EXPLICIT, RequirementType.REQUIRED_INFERRED)
 
 # Starting weights from the plan (G2). They sum to 1 and are hypotheses until the
 # labelled set in phase 9 replaces them.
@@ -56,6 +59,42 @@ _SENIORITY_YEARS: dict[str, float] = {
 
 _MAX_LISTED = 5
 
+# Recommendation bands. They live here, with the engine that produces the score,
+# so the service, the enricher and the evaluation harness all read one definition
+# instead of three copies that can drift apart.
+APPLY_BAND = 75.0
+CONSIDER_BAND = 55.0
+
+# A vacancy from another profession can score well on everything except the thing
+# that matters — "you will talk to CTOs about Python and AWS" matches every
+# keyword and requires none of them. Neither signal alone is enough to say so;
+# both being low is. Validated against all-MiniLM-L6-v2, where genuine mismatches
+# cluster ~15-30 and legitimate pivots ~40-60, so re-check these if the embedding
+# model changes.
+DOMAIN_MISMATCH_ROLE_CEILING = 35.0
+DOMAIN_MISMATCH_SEMANTIC_CEILING = 35.0
+
+# Embeddings are fooled by exactly the vacancy the plan warns about: a sales
+# posting that lists Python, React and AWS reads as similar to a backend CV
+# because the words are all there. The category is the signal that isn't fooled,
+# so a confidently different profession forces the same verdict the similarity
+# gate would have, and an adjacent one discounts role/domain fit rather than
+# ruling anything out.
+SOFT_CATEGORY_PENALTY = 0.85
+
+
+def recommend(score: float, domain_mismatch: bool = False) -> Recommendation:
+    """The actionable label. A domain mismatch forces SKIP without touching the
+    score: capping the number would also punish legitimate career pivots, which
+    are supposed to score decently."""
+    if domain_mismatch:
+        return Recommendation.SKIP
+    if score >= APPLY_BAND:
+        return Recommendation.APPLY
+    if score >= CONSIDER_BAND:
+        return Recommendation.CONSIDER
+    return Recommendation.SKIP
+
 
 @dataclass(frozen=True)
 class MatchDimensions:
@@ -81,6 +120,9 @@ class HybridResult:
     gaps: list[MatchGap]
     # Things this result could not establish — shown as unknowns, never as gaps.
     risks: list[str]
+    # Both the role and the semantic signal say "different profession". Kept as a
+    # flag rather than folded into the score — see recommend().
+    domain_mismatch: bool = False
     scorer_version: str = SCORER_VERSION
     calibration_version: str = CALIBRATION_VERSION
 
@@ -163,6 +205,11 @@ def _risks(
     risks: list[str] = []
     if not findings:
         risks.append("No requirements could be extracted from this posting — nothing was checked.")
+    elif not any(finding.requirement in _REQUIRED_FRAMINGS for finding in findings):
+        risks.append(
+            "This posting names technologies but asks for none of them — the match rests on "
+            "everything except its requirements."
+        )
 
     unknown = [finding.name for finding in findings if finding.outcome is SkillOutcome.UNKNOWN]
     if unknown:
@@ -237,28 +284,50 @@ class HybridMatchEngine:
         salary_score: float,
         location_score: float,
         rerank_relevance: float | None = None,
+        category: CategoryDecision = CategoryDecision.PASS,
     ) -> HybridResult:
         computed_years = total_years(profile.experience)
         years = computed_years if computed_years is not None else profile.experience_years
+
+        # A posting that names technologies without requiring any of them (the
+        # keyword-trap vacancy: "you'll talk to CTOs about Python and AWS") has
+        # nothing to cover, and crediting full requirement coverage for that reads
+        # as a perfect match. The dimension is dropped instead of faked, and its
+        # weight is shared out — same reasoning as the pre-v3 scorer's
+        # skills_available guard, applied to framing rather than presence.
+        assessed_requirements = any(
+            finding.requirement in _REQUIRED_FRAMINGS for finding in skills.findings
+        )
 
         dimensions = MatchDimensions(
             required_skills=skills.required_coverage * 100,
             relevant_experience=_experience_score(job, years),
             seniority=_seniority_score(job, years),
-            role_domain_fit=_relevance_score(rerank_relevance, semantic_fit),
+            role_domain_fit=_relevance_score(rerank_relevance, semantic_fit)
+            * (SOFT_CATEGORY_PENALTY if category is CategoryDecision.SOFT_MISMATCH else 1.0),
             responsibilities=semantic_fit,
             # One dimension for "does this suit what they asked for": stack
             # preference, pay and place are the same question to a candidate.
             preferences=(skills.preferences_score + salary_score + location_score) / 3,
         )
 
-        score = (
-            dimensions.required_skills * WEIGHT_REQUIRED_SKILLS
-            + dimensions.relevant_experience * WEIGHT_EXPERIENCE
+        weighted = (
+            dimensions.relevant_experience * WEIGHT_EXPERIENCE
             + dimensions.role_domain_fit * WEIGHT_RELEVANCE
             + dimensions.responsibilities * WEIGHT_RESPONSIBILITIES
             + dimensions.seniority * WEIGHT_SENIORITY
             + dimensions.preferences * WEIGHT_PREFERENCES
+        )
+        if assessed_requirements:
+            score = weighted + dimensions.required_skills * WEIGHT_REQUIRED_SKILLS
+        else:
+            # Rescale what is left so the score still spans 0-100 rather than
+            # topping out at 70 for every unassessable posting.
+            score = weighted / (1 - WEIGHT_REQUIRED_SKILLS)
+
+        domain_mismatch = category is CategoryDecision.HARD_MISMATCH or (
+            role_fit < DOMAIN_MISMATCH_ROLE_CEILING
+            and semantic_fit < DOMAIN_MISMATCH_SEMANTIC_CEILING
         )
 
         findings = skills.findings
@@ -271,10 +340,17 @@ class HybridMatchEngine:
         return HybridResult(
             score=round(score, 1),
             confidence=confidence,
-            analysis_level=AnalysisLevel.STANDARD if findings else AnalysisLevel.LIMITED,
+            analysis_level=(
+                AnalysisLevel.STANDARD if assessed_requirements else AnalysisLevel.LIMITED
+            ),
             dimensions=dimensions,
             findings=findings,
             strengths=_strengths(findings),
-            gaps=_gaps(findings),
+            gaps=(
+                [MatchGap(label="role/domain mismatch", critical=True), *_gaps(findings)]
+                if domain_mismatch
+                else _gaps(findings)
+            ),
             risks=_risks(job, findings, computed_years),
+            domain_mismatch=domain_mismatch,
         )

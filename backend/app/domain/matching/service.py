@@ -26,9 +26,10 @@ import asyncio
 from dataclasses import dataclass, replace
 
 from app.domain.candidates.models import CandidateProfile, UserPreference
+from app.domain.categories import candidate_categories, decide
 from app.domain.jobs.models import NormalizedJob
 from app.domain.matching.filters import HardFilterService
-from app.domain.matching.hybrid import HybridMatchEngine, HybridResult
+from app.domain.matching.hybrid import HybridMatchEngine, HybridResult, recommend
 from app.domain.matching.llm_reranker import LlmReranker
 from app.domain.matching.models import (
     JobMatch,
@@ -185,6 +186,13 @@ class MatchingService:
                     role_fit=role,
                     salary_score=salary,
                     location_score=location,
+                    # Keyword-heavy postings from another profession look similar
+                    # to everything; their category doesn't.
+                    category=decide(
+                        job.category,
+                        job.category_confidence,
+                        candidate_categories([*preferences.preferred_roles, *profile.roles]),
+                    ),
                 ),
                 role=role,
                 salary=salary,
@@ -315,8 +323,10 @@ class MatchingService:
                 preferences=result.dimensions.preferences,
             ),
             strengths=result.strengths,
+            # The engine already marked a domain mismatch and prepended its gap —
+            # that rule belongs with the scoring rules, not here.
             gaps=result.gaps,
-            recommendation=self._recommend(result.score),
+            recommendation=recommend(result.score, result.domain_mismatch),
             confidence=result.confidence,
             risks=result.risks,
             provenance=provenance,
