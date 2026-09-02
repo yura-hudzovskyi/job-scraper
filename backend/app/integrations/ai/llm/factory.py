@@ -24,6 +24,7 @@ import redis.asyncio as redis
 from app.config.settings import Settings
 from app.integrations.ai.llm.base import LLMProvider
 from app.integrations.ai.quota.budget import DailyCapabilityBudget
+from app.integrations.ai.quota.ledger import InvocationLog
 from app.integrations.ai.routing import policy
 from app.integrations.ai.routing.router import Capability, LlmRouter, ModelLeg
 from app.integrations.ai.routing.state import ProviderStateStore
@@ -113,4 +114,5 @@ def build_llm_router(capability: Capability, settings: Settings) -> LlmRouter | 
         DailyCapabilityBudget(
             client, capability.value, policy.daily_limit(capability, settings)
         ),
+        InvocationLog(client),
     )

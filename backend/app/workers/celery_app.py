@@ -17,6 +17,7 @@ celery_app = Celery(
         "app.workers.tasks.notify",
         "app.workers.tasks.retention",
         "app.workers.tasks.backfill",
+        "app.workers.tasks.ai_ledger",
     ],
 )
 
@@ -58,5 +59,11 @@ celery_app.conf.beat_schedule = {
     "purge-stale-jobs": {
         "task": "retention.purge_stale_jobs",
         "schedule": 24 * 60 * 60,
+    },
+    # Moves the AI call ledger from its Redis buffer into Postgres. Frequent
+    # enough that the capped buffer never has to drop records under normal load.
+    "flush-ai-invocations": {
+        "task": "ai_ledger.flush",
+        "schedule": 5 * 60,
     },
 }

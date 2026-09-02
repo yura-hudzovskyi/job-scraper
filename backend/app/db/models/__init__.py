@@ -1,6 +1,7 @@
 """Importing this package registers every ORM model on Base.metadata — required
 before Alembic autogenerate or Base.metadata.create_all() will see them."""
 
+from app.db.models.ai import AiInvocationModel
 from app.db.models.application import ApplicationModel
 from app.db.models.candidate import CandidateProfileModel, CvDocumentModel, UserPreferenceModel
 from app.db.models.job import (
@@ -19,6 +20,7 @@ from app.db.models.notification import (
 from app.db.models.user import UserModel
 
 __all__ = [
+    "AiInvocationModel",
     "ApplicationModel",
     "CandidateProfileModel",
     "CanonicalJobModel",
