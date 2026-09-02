@@ -1,8 +1,16 @@
+import logging
 from functools import lru_cache
 from typing import Annotated, Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+# Values LLM_PROVIDER used to accept. A .env that still names one must not take
+# the app down: the option is gone, the deployment is otherwise fine, and a
+# crash-on-boot over a retired setting is the worst possible way to say so.
+_RETIRED_LLM_PROVIDERS = {"ollama"}
 
 
 class Settings(BaseSettings):
@@ -140,6 +148,40 @@ class Settings(BaseSettings):
     def _split_comma_separated(cls, value: object) -> object:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value: object) -> object:
+        """`LLM_PROVIDER=` in a .env file arrives as an empty string, not as
+        absent — without this the documented "leave it blank" form fails
+        validation and the app won't start."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("embedding_provider", mode="before")
+    @classmethod
+    def _blank_is_default(cls, value: object) -> object:
+        """Same problem, different answer: this one has no "unset" state, so a
+        blank line means "whatever the default is" rather than None — which would
+        only produce a more confusing error than the empty string did."""
+        if isinstance(value, str) and not value.strip():
+            return "sentence_transformers"
+        return value
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def _drop_retired_provider(cls, value: object) -> object:
+        """A retired provider name is ignored loudly rather than fatally. Typos
+        still fail: only the names this app used to accept are swallowed."""
+        if isinstance(value, str) and value.strip().lower() in _RETIRED_LLM_PROVIDERS:
+            logger.warning(
+                "LLM_PROVIDER=%s is no longer supported and is being ignored — the "
+                "pipeline runs on Groq/Gemini. Clear it from .env to silence this.",
+                value,
+            )
+            return None
         return value
 
 
