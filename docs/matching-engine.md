@@ -177,6 +177,57 @@ domain-mismatch gate's ceilings (`MatchingThresholds.domain_mismatch_*_ceiling`,
 see Stage 2) were validated against pure bi-encoder scores — re-check them against
 real traffic once the cross-encoder blend has been live for a while.
 
+### Retrieval and embedding lanes
+
+Scoring every job for every user is affordable only while scoring is cheap.
+Reranking, the hybrid engine and LLM enrichment are not, so something has to pick
+which vacancies deserve them — that is retrieval
+(`backend/app/domain/matching/retrieval.py`), built on section vectors stored per
+lane.
+
+**Sections, not blobs.** Both a vacancy and a profile render into the same four
+labelled sections (`backend/app/domain/matching/documents.py`): overview,
+requirements, responsibilities/experience, constraints. One vector per whole
+document averages away the structure that decides fit; sections let requirements
+be compared against skills and responsibilities against experience. Retrieval
+weights them 0.45 / 0.30 / 0.20 / 0.05 — starting values from
+docs/ai-pipeline-v3.md, to be replaced by measured ones in phase 9.
+
+**A lane is one model's vector space.** Vectors from different models are not
+comparable, so every stored vector names its lane
+(`backend/app/integrations/ai/embeddings/lanes.py`) and a query runs inside
+exactly one. Two roles exist: a *quality* lane (Voyage, when configured) and a
+*durable* one that is always available — the local sentence-transformers model
+needs no key and no quota, which is why retrieval never depends on a hosted
+provider being up. A hosted BGE-M3 and a local BGE-M3 would still be separate
+lanes until someone verifies the numbers actually match.
+
+**A lane serves queries only when it covers the corpus** (99%, see
+`EmbeddingIndexingService.refresh_lane_readiness`). A half-built lane doesn't
+return worse results — it returns a smaller world, which is much harder to notice
+than an outage, so retrieval skips it and says which lane it did use. Indexing
+itself is idempotent: each vector stores the hash of the text it came from, so a
+re-scrape that changed nothing costs no provider call.
+
+**The category gate has three outcomes**, not two
+(`backend/app/domain/categories.py`):
+
+| Outcome | When | Effect |
+|---|---|---|
+| `pass` | same category, or either side unclassified | full score |
+| `soft_mismatch` | a different but adjacent category (backend vs QA) | ranked down (×0.85) |
+| `hard_mismatch` | a confidently-classified different profession (backend vs sales) | out of the main list |
+
+Even a hard mismatch keeps a slot in the **exploration slice** — roughly a tenth
+of the result set — because classifiers are wrong and real vacancies are
+cross-functional. Ranking something last is recoverable; making it invisible is
+not.
+
+Retrieval deliberately does not re-run the hard filters: those live in
+`HardFilterService` and need the whole job, and the scoring path already applies
+them. Nor does it use an ANN index — at a few thousand jobs an exact pgvector
+scan is milliseconds, and the index comes when measurement says so.
+
 ### Stage 4 — "Should I apply?" (CONSIDER+APPLY)
 
 A separate, optional LLM call (`LlmReranker`) layered on top of an already-scored

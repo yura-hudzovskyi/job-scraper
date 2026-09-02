@@ -1423,7 +1423,7 @@ at every commit.
 - [x] Phase 1 - versioned contracts and provenance
 - [x] Phase 2 - extraction v3 and skill ontology
 - [x] Phase 3 - capability router and quota manager
-- [ ] Phase 4 - multi-lane embeddings and retrieval
+- [x] Phase 4 - multi-lane embeddings and retrieval
 - [ ] Phase 5 - reranking chain
 - [ ] Phase 6 - hybrid match engine
 - [ ] Phase 7 - LLM enrichment and priority scheduler
@@ -1550,3 +1550,44 @@ Deviations from the plan text:
   be revisited.
 - **No shadow/experiment queue or budget.** `ai_experiments` has nothing to carry until
   phase 9 runs shadow traffic.
+
+### Phase 4 notes
+
+Landed: section documents for both sides (`app/domain/matching/documents.py`), pgvector
+schema for lanes and section vectors with retention cleanup, Voyage and Cloudflare BGE-M3
+adapters plus the always-available local lane
+(`app/integrations/ai/embeddings/lanes.py`), an indexing service that fills each lane
+independently and skips unchanged sections, per-job and backfill indexing tasks behind
+`MULTI_EMBEDDING_LANES`, the confidence-aware category gate
+(`app/domain/categories.py`), retrieval with weighted section similarity and an
+exploration slice (`app/domain/matching/retrieval.py`), and lane coverage on the System
+page. Backend suite 302 passed, `ruff` clean, frontend `tsc -b` clean, migration SQL
+verified offline.
+
+Acceptance checked: a query runs inside exactly one lane and a lane below the readiness
+threshold is never queried (`tests/unit/test_retrieval.py`); a hard-mismatched category
+still reaches the exploration slice; indexing a second time costs no provider call
+(`tests/unit/test_embedding_indexing_service.py`).
+
+Deviations from the plan text:
+
+- **The retrieval SQL has not run against a live database.** There is no Docker in this
+  environment, so pgvector's `<=>` operator, the per-section `VALUES` join and the
+  weighted sum are verified by construction and by offline migration SQL only. First run
+  against a real database should be treated as the actual test.
+- **No Pinecone/Jina/Cohere adapters.** The pluggability the plan asks for is the lane
+  abstraction itself; three more adapters that cannot be exercised without accounts would
+  be speculative code, and adding one later is a file plus a policy entry.
+- **Lane ids carry provider and model, not the dimension.** The dimension is recorded on
+  the lane row from the first vector a model actually produced, which cannot go stale the
+  way a hard-coded table can.
+- **Retrieval does not re-run the hard filters.** They live in `HardFilterService`, need
+  the whole job, and are already applied by the scoring path; a second copy would be two
+  places to keep in sync.
+- **No ANN index.** The vector column is dimensionless because lanes differ, and an exact
+  scan is milliseconds at this corpus size (plan C5 says the same).
+- **Nothing consumes retrieval yet.** Phase 6's hybrid engine and phase 7's scheduler are
+  its callers; today it is exercised by tests only, which is why `MULTI_EMBEDDING_LANES`
+  stays off.
+- **Recall@100 is unmeasured**, like every other quality target: it needs the labelled set
+  from phase 9.
