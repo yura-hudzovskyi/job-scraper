@@ -124,13 +124,20 @@ class EmbeddingRepository:
     ) -> list[Candidate]:
         """The most similar job vectors to this query, best first. Cosine
         distance is `<=>`; 1 minus it is the similarity the rest of the app
-        talks in."""
+        talks in.
+
+        The cast is written `CAST(:query AS vector)`, never `:query::vector`.
+        SQLAlchemy's `text()` only recognises a bind parameter when it *isn't*
+        followed by a colon, so Postgres's `::` cast syntax silently truncates the
+        name: `:query::vector` binds a parameter called `quer` and leaves the rest
+        as literal SQL, which reaches the driver as a syntax error at `:`.
+        """
         sql = text(
             """
-            SELECT document_id, 1 - (vector <=> :query::vector) AS similarity
+            SELECT document_id, 1 - (vector <=> CAST(:query AS vector)) AS similarity
             FROM document_embeddings
             WHERE document_type = :document_type AND model = :model
-            ORDER BY vector <=> :query::vector
+            ORDER BY vector <=> CAST(:query AS vector)
             LIMIT :limit
             """
         )
