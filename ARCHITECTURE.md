@@ -19,15 +19,27 @@ against them before it's merged.
 2. **Deterministic-primary matching, LLM as a bounded qualitative overlay.** Hard
    filters (candidate-configured, non-negotiable constraints — blacklists, salary
    floor, location, blocked stack) always run first and are never left to an LLM to
-   reinterpret. Past that gate, the filters -> weighted-score -> semantic (bi-encoder
-   cosine blended with a local cross-encoder reranker) -> skill pipeline is the sole,
-   authoritative scorer for every eligible job — no LLM involved, and nothing ever
-   overwrites its score. `LlmReranker` ("should I apply?") then layers a qualitative
-   verdict on top for CONSIDER+APPLY matches only, capped by a daily call budget — it
-   adds judgment (seniority fit, day-to-day realities), never re-derives the score.
-   See [docs/matching-engine.md](docs/matching-engine.md).
+   reinterpret. Past that gate, every eligible job is scored without an LLM: the
+   hybrid engine combines requirement coverage from a skill ontology, experience
+   from merged date intervals, semantic similarity and (when it ran) a reranker's
+   calibrated relevance, and reports a confidence alongside the score. An LLM then
+   *reviews* that result for the matches where a second opinion could change the
+   decision — it moves dimensions and names blockers, it never produces the number.
+   With no LLM available at all, nothing is lost but that review.
+   See [docs/matching-engine.md](docs/matching-engine.md) and
+   [docs/ai-pipeline-v3.md](docs/ai-pipeline-v3.md).
 3. **Explainability is not optional.** Every score ships with a component breakdown,
-   strengths, gaps, and critical gaps. A bare number is a bug.
+   strengths, gaps, and critical gaps. A bare number is a bug. Every result also
+   records how it was produced — engine, analysis level, the CV and job revisions
+   it was computed against, every model involved, and why the LLM layer didn't run
+   when it didn't — and that provenance is read back from the stored result, so
+   changing a model never rewrites the history of what produced an old one.
+
+   Three distinctions are load-bearing and must not be collapsed: a **gap** is a
+   stated requirement the candidate demonstrably lacks, an **unknown** is something
+   the pipeline could not establish, and a **score** is not its **confidence**.
+   Reporting an unknown as a gap tells someone they are unqualified when nobody
+   said so.
 4. **Experience ≠ preference.** What the candidate can do (`CandidateProfile`, derived
    from CVs) is a separate model from what the candidate wants (`UserPreferences`,
    edited directly). See [docs/domain-model.md](docs/domain-model.md).

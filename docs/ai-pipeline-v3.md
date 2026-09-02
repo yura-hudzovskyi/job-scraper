@@ -1428,7 +1428,7 @@ at every commit.
 - [x] Phase 6 - hybrid match engine
 - [x] Phase 7 - LLM enrichment and priority scheduler
 - [x] Phase 8 - UI completion and operations
-- [ ] Phase 9 - evaluation, rollout, and cleanup
+- [x] Phase 9 - evaluation harness, rollout plan, and the cleanup that can be done safely
 
 ### Phase 0 notes
 
@@ -1711,3 +1711,56 @@ Deviations from the plan text:
   those log lines is a deployment choice, not more code here.
 - **No admin policy editor.** Provider order is code (phase 3's deviation); the models,
   the budgets and the lanes are already visible and the models editable.
+
+### Phase 9 notes
+
+Landed: the evaluation harness (`app/evaluation/`) — a labelled-pair format, the metrics
+that decide whether a change ships, and a runner over the LLM-free half of the pipeline —
+three example pairs showing the format, `ARCHITECTURE.md` and the roadmap brought in line,
+and the rollout order below. Backend suite 392 passed, `ruff` clean.
+
+**The harness earned its place immediately.** Run against three hand-written pairs it
+found two real defects, both now fixed with regression tests:
+
+1. A posting that names technologies without *requiring* any of them scored 89 — "no
+   requirements" was reading as "every requirement met". The requirement dimension is now
+   dropped and its weight redistributed when nothing was actually required.
+2. The domain-mismatch gate lived in `MatchingService`, so the engine — and anything
+   measuring the engine — didn't have it. It moved into the engine along with the
+   recommendation bands, which also collapsed three drifting copies of the 75/55
+   thresholds into one.
+
+Neither was enough for the keyword-heavy trap the plan warns about (§12): a sales posting
+stuffed with Python, React and AWS reads as genuinely *similar* to a backend CV. The
+category is the signal that isn't fooled, so scoring consults it now — a confidently
+different profession forces a skip, an adjacent one discounts role/domain fit.
+
+**What is honestly not done, and cannot be from here:**
+
+- **There is no validation set.** Three examples demonstrate a format; they measure
+  nothing. Building 200-300 judged pairs across specialties, languages and difficulty is
+  human work on real postings, and every quality number in this plan — Recall@100,
+  NDCG@10, macro F1, calibration error, "explicit skill precision" — waits on it.
+- **No benchmark, no shadow traffic, no staged rollout.** All three need that set and a
+  running deployment with real users; this environment has neither a database nor
+  provider accounts.
+- **Nothing obsolete was deleted.** `LlmReranker`, the pre-v3 weighted scorer and the
+  legacy `should_i_apply` path are the way back if the hybrid engine turns out worse on
+  real data. Removing them before parity is measured would be a one-way door — exactly
+  what the plan says to do only *after* parity.
+
+### Rollout order
+
+The flags exist so this can be turned on in pieces, each one independently reversible:
+
+1. `MULTI_EMBEDDING_LANES=true` first, and let the backfill run. Nothing reads the vectors
+   yet; watch lane coverage on the System page reach ready.
+2. `MATCHING_PIPELINE_V3=true` for scoring. Compare the hybrid score against the old one
+   on the same jobs — the pre-v3 path is one flag away if it looks worse.
+3. `LLM_ENRICHMENT` is the enrichment scheduler's switch when it gets one; today
+   enrichment follows `MATCHING_PIPELINE_V3`, since that is what moves the LLM call off
+   the scoring path.
+
+Watch, in order of what breaks first: parked legs and budget use on the System page, the
+usage table's failure rows, and the share of matches whose analysis level is `limited`
+(that one says extraction is failing, not matching).
