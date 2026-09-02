@@ -24,11 +24,19 @@ GET    /api/jobs/{id}/match       includes `provenance`: engine, analysis level,
                                    the models that ran, fallback reason, pipeline versions
                                    (see docs/matching-engine.md#provenance)
 POST   /api/jobs/{id}/rescore
+POST   /api/jobs/{id}/analyze     asks for an LLM review of this match now, ahead of the
+                                   daily ranking (interactive queue)
 POST   /api/jobs/rescore-all      re-extracts skills + rescores every canonical job for this
                                    user; Groq-first, falls back to Gemini on rate limit
 POST   /api/jobs/{id}/save
 POST   /api/jobs/{id}/apply
 POST   /api/jobs/{id}/reject
+
+GET    /api/ai/models            model config plus live router state: each capability's
+                                   provider chain, why a leg is parked, budget used today,
+                                   and embedding lane coverage
+GET    /api/ai/usage             LLM calls by capability and outcome over a window, from
+                                   the ai_invocations ledger
 
 GET    /api/matches
 

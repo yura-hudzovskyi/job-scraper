@@ -1427,7 +1427,7 @@ at every commit.
 - [x] Phase 5 - reranking chain
 - [x] Phase 6 - hybrid match engine
 - [x] Phase 7 - LLM enrichment and priority scheduler
-- [ ] Phase 8 - UI completion and operations
+- [x] Phase 8 - UI completion and operations
 - [ ] Phase 9 - evaluation, rollout, and cleanup
 
 ### Phase 0 notes
@@ -1685,3 +1685,29 @@ Deviations from the plan text:
   labelled set to compare them *against*, which is phase 9.
 - **Capacity is reserved as call counts, not tokens** — the same deviation phase 3
   recorded, inherited here.
+
+### Phase 8 notes
+
+Most of this phase landed as it went: the Analysis details drawer (phase 1), capability
+and leg status with budgets (phase 3), lane coverage (phase 4), confidence and unknowns
+(phase 6), and the on-demand analyze button (phase 7). What was left and landed here: the
+engine badge on every jobs-list row with analysis level and confidence in its tooltip, the
+posting line behind each matched skill printed rather than hidden in a title attribute,
+`GET /api/ai/usage` over the invocation ledger, and an AI usage table on the System page.
+Backend suite 378 passed, frontend `tsc -b` clean.
+
+Acceptance checked: a user can tell an LLM-reviewed result from a hybrid one without
+opening it; model attribution survives a settings change because it is read from stored
+provenance; the System page shows quota use, why a leg is parked and when it reopens, and
+lane coverage. No secrets or raw CV text appear in any response — provider errors are
+still replaced by a fixed message (phase 1) and prompts are never logged.
+
+Deviations from the plan text:
+
+- **No alerting system or dashboards.** The plan's alert list is real, but a personal-scale
+  deployment has no on-call and no metrics backend; the same signals live in the System
+  page (parked legs, budget use, lane coverage), the ledger table, and the operator-level
+  log lines the router already emits for fatal provider errors. Wiring Sentry alerts on
+  those log lines is a deployment choice, not more code here.
+- **No admin policy editor.** Provider order is code (phase 3's deviation); the models,
+  the budgets and the lanes are already visible and the models editable.
