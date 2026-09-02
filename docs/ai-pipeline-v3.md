@@ -1424,7 +1424,7 @@ at every commit.
 - [x] Phase 2 - extraction v3 and skill ontology
 - [x] Phase 3 - capability router and quota manager
 - [x] Phase 4 - multi-lane embeddings and retrieval
-- [ ] Phase 5 - reranking chain
+- [x] Phase 5 - reranking chain
 - [ ] Phase 6 - hybrid match engine
 - [ ] Phase 7 - LLM enrichment and priority scheduler
 - [ ] Phase 8 - UI completion and operations
@@ -1591,3 +1591,29 @@ Deviations from the plan text:
   stays off.
 - **Recall@100 is unmeasured**, like every other quality target: it needs the labelled set
   from phase 9.
+
+### Phase 5 notes
+
+Landed: the `RerankEngine` contract with Voyage, Cloudflare and local cross-encoder
+adapters (`app/integrations/ai/rerank/`), the one-model-per-run service with a versioned
+query instruction (`app/domain/matching/rerank.py`), and per-model score calibration
+(`app/domain/matching/calibration.py`). Backend suite 314 passed, `ruff` clean.
+
+Acceptance checked: a failed or short response is discarded and the whole set reruns on
+the next engine; the same input ranks identically every time (ties break by id); raw
+scores are calibrated before leaving the service and are never presented as a percentage.
+
+Writing the calibration surfaced a real bug, now covered by a regression test: deciding
+"this score is already bounded" per value rather than per model mapped a raw -1 above a
+raw 0, reversing two results while looking like a harmless special case.
+
+Deviations from the plan text:
+
+- **No Pinecone/Cohere/Jina rerankers.** Same reasoning as the embedding lanes: three
+  adapters that can't be exercised without accounts would be speculative. The contract is
+  one file and a policy entry away for any of them.
+- **Rerank provenance fields land with their writer.** `MatchProvenance` gains
+  `rerank_model` and the instruction/calibration versions in phase 6, where the hybrid
+  engine actually produces a rerank run — adding fields nothing writes would be the same
+  dead-schema problem the earlier phases avoided.
+- **NDCG@10 is unmeasured** — phase 9's labelled set is what that claim needs.

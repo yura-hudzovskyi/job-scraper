@@ -228,6 +228,36 @@ Retrieval deliberately does not re-run the hard filters: those live in
 them. Nor does it use an ANN index — at a few thousand jobs an exact pgvector
 scan is milliseconds, and the index comes when measurement says so.
 
+### Reranking
+
+Retrieval answers "which hundred vacancies are in the neighbourhood"; a reranker
+answers "in what order" (`backend/app/domain/matching/rerank.py`). It reads the
+candidate document and each vacancy document *together* rather than comparing two
+independently-computed vectors, which is sharper and far too expensive to run
+over a whole corpus — so it runs over the retrieved top-K only.
+
+Engines in order (`backend/app/integrations/ai/rerank/`): Voyage `rerank-3`,
+Cloudflare's `@cf/baai/bge-reranker-base`, and the local cross-encoder that needs
+no key. The last one is why reranking degrades in speed rather than vanishing.
+
+Three rules the implementation enforces:
+
+- **One model per run.** Raw relevance is model-specific, so ranks 1-40 from one
+  model and 41-100 from another are not a ranking. A failed *or short* response
+  is discarded and the whole set is rerun on the next engine.
+- **Deterministic order.** Ties break by canonical job id, so the same input
+  ranks the same way and a fallback run is comparable with the run it replaced.
+- **Calibration before anyone looks.** Voyage returns a bounded relevance, a BGE
+  reranker returns an unbounded logit; `backend/app/domain/matching/calibration.py`
+  maps each model's raw score into a comparable 0-1 and records
+  `CALIBRATION_VERSION`. These mappings are shaped, not fitted — there is no
+  labelled data yet — so anything relying on them carries lower confidence, and a
+  raw score is never shown as a match percentage.
+
+The query is not just the CV: a short versioned instruction ("prioritize
+mandatory skills, penalise missing must-haves, don't reward keyword repetition")
+goes in front of it, because that text changes what a reranker returns.
+
 ### Stage 4 — "Should I apply?" (CONSIDER+APPLY)
 
 A separate, optional LLM call (`LlmReranker`) layered on top of an already-scored
