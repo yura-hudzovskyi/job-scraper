@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     cloudflare_account_id: str | None = None
     cloudflare_api_token: str | None = None
     cloudflare_embedding_model: str = "@cf/baai/bge-m3"
+    # Rerank models on the same accounts (app/integrations/ai/rerank/factory.py).
+    # A reranker reads the candidate and a vacancy together, which is sharper than
+    # comparing two vectors and too expensive for the whole corpus — it runs over
+    # the retrieved top-K only.
+    voyage_rerank_model: str = "rerank-3"
+    cloudflare_rerank_model: str = "@cf/baai/bge-reranker-base"
 
     # Second signal blended into SemanticScorer's semantic_fit (see
     # app/domain/matching/scoring.py), on top of the bi-encoder cosine similarity
