@@ -343,6 +343,32 @@ class JobRepository:
             model.category_confidence = category_confidence
         await self._session.flush()
 
+    async def categories_for(
+        self, canonical_job_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, tuple[JobCategory | None, float | None]]:
+        """How each of these vacancies was classified, for the retrieval category
+        gate. Reads the same source record scoring reads; a job with no category
+        simply isn't in the result, which the gate treats as "don't know"."""
+        if not canonical_job_ids:
+            return {}
+        result = await self._session.execute(
+            select(
+                JobSourceRecordModel.canonical_job_id,
+                JobSourceRecordModel.category,
+                JobSourceRecordModel.category_confidence,
+            )
+            .where(
+                JobSourceRecordModel.canonical_job_id.in_(canonical_job_ids),
+                JobSourceRecordModel.category.is_not(None),
+            )
+            .order_by(JobSourceRecordModel.normalized_at.desc())
+        )
+        categories: dict[uuid.UUID, tuple[JobCategory | None, float | None]] = {}
+        for canonical_job_id, category, confidence in result.all():
+            # Most recently normalized wins, same selection every other read uses.
+            categories.setdefault(canonical_job_id, (JobCategory(category), confidence))
+        return categories
+
     async def get_extraction_key(self, canonical_job_id: uuid.UUID) -> str | None:
         """What the last extraction for this job was keyed on (posting hash +
         extraction version), or None if it was never extracted — see
