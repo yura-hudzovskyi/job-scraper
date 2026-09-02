@@ -15,6 +15,7 @@ import type {
   CapabilityStatus,
   LaneStatus,
 } from "../api/types";
+import { PipelineCard } from "../components/PipelineCard";
 import { Button, Card, ErrorBanner, Modal, SectionTitle, inputClass } from "../components/ui";
 
 type ModelFieldKey = keyof AiModelsUpdateRequest;
@@ -241,6 +242,8 @@ export function System() {
 
   return (
     <div className="flex flex-col gap-6">
+      <PipelineCard />
+
       <Card>
         <SectionTitle>AI models</SectionTitle>
         <p className="mb-2 text-sm text-slate-600">
