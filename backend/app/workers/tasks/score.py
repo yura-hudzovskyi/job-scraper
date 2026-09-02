@@ -22,11 +22,9 @@ class ScoringUnavailable(RuntimeError):
     pass
 
 
-async def _run(
-    user_id: str, canonical_job_id: str, llm_model: str | None = None
-) -> dict[str, float | str]:
+async def _run(user_id: str, canonical_job_id: str) -> dict[str, float | str]:
     settings = await get_effective_settings(get_settings())
-    matching_service = build_matching_service(settings, llm_model)
+    matching_service = build_matching_service(settings)
     if matching_service is None:
         raise ScoringUnavailable("no embedding provider configured")
 
@@ -47,17 +45,26 @@ async def _run(
             uuid.UUID(user_id)
         ) or UserPreference(user_id=user_id, desired_salary_usd=None)
 
-        match = await matching_service.evaluate(canonical_job_id, job, profile, preferences)
-        match = await matching_service.should_i_apply(job, profile, match)
+        job_version = await job_repository.refresh_canonical_content_version(
+            uuid.UUID(canonical_job_id)
+        )
+
+        match = await matching_service.evaluate(
+            canonical_job_id, job, profile, preferences, job_version
+        )
+        if not settings.matching_pipeline_v3:
+            # Pre-v3: every CONSIDER+APPLY match asks an LLM here, in scrape
+            # order. Under v3 that call moves to the scheduler
+            # (app/workers/tasks/enrich.py), which spends the same budget on the
+            # matches where an opinion actually changes something.
+            match = await matching_service.should_i_apply(job, profile, match)
         saved = await match_repository.upsert(match)
 
     return {"match_id": saved.id, "practical_fit": saved.practical_fit}
 
 
 @celery_app.task(name="score.score_job_for_user")
-def score_job_for_user(
-    user_id: str, canonical_job_id: str, llm_model: str | None = None
-) -> dict[str, float | str]:
-    result = asyncio.run(_run(user_id, canonical_job_id, llm_model))
+def score_job_for_user(user_id: str, canonical_job_id: str) -> dict[str, float | str]:
+    result = asyncio.run(_run(user_id, canonical_job_id))
     dispatch_match.delay(user_id, canonical_job_id)
     return result

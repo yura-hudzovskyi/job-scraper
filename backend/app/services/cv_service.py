@@ -3,7 +3,9 @@ structured CandidateProfile via an LLMProvider. See docs/matching-engine.md.
 """
 
 import io
+import logging
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -17,16 +19,17 @@ from app.domain.candidates.models import (
     CvDocument,
     ExperienceEntry,
     SkillLevel,
+    SkillOverride,
 )
+from app.domain.candidates.skill_overrides import apply_overrides, normalize
 from app.integrations.ai.llm.base import LLMProvider
 from app.repositories.candidate_repository import CandidateRepository
+from app.services.ai_errors import LlmCallFailed, LlmNotConfigured
+
+logger = logging.getLogger(__name__)
 
 
 class UnsupportedCvFormat(ValueError):
-    pass
-
-
-class LlmNotConfigured(RuntimeError):
     pass
 
 
@@ -108,6 +111,33 @@ class CvService:
     async def get_latest_profile(self, user_id: uuid.UUID) -> CandidateProfile | None:
         return await self._candidate_repository.get_latest_candidate_profile(user_id)
 
+    async def correct_skill(
+        self, user_id: uuid.UUID, override: SkillOverride
+    ) -> CandidateProfile:
+        """Record what the user says about one of their skills and write the
+        profile revision that reflects it.
+
+        The correction is stored separately from the snapshot so re-analyzing the
+        CV re-applies it (see app/domain/candidates/skill_overrides.py), and the
+        profile itself becomes a new immutable revision rather than being edited
+        in place — the CV hasn't changed, but what the user says about it has,
+        and matches scored against the old revision keep saying which one they
+        used. Undoing a removal therefore means re-analyzing the CV: the snapshot
+        chain only moves forward.
+        """
+        await self._candidate_repository.save_skill_override(user_id, override)
+
+        profile = await self._candidate_repository.get_latest_candidate_profile(user_id)
+        if profile is None:
+            raise LookupError(f"user {user_id} has no analyzed CandidateProfile yet")
+
+        corrected = replace(profile, skills=apply_overrides(profile.skills, [override]))
+        return await self._candidate_repository.save_candidate_profile(
+            user_id,
+            uuid.UUID(profile.cv_document_id) if profile.cv_document_id else None,
+            corrected,
+        )
+
     async def analyze_cv(
         self, user_id: uuid.UUID, cv_document_id: uuid.UUID, cv_text: str
     ) -> CandidateProfile:
@@ -116,9 +146,16 @@ class CvService:
                 "no LLM provider configured — set LLM_PROVIDER and its credentials"
             )
 
-        result = await self._llm_provider.structured_completion(
-            _EXTRACTION_PROMPT.format(cv_text=cv_text), _ExtractedProfile
-        )
+        try:
+            result = await self._llm_provider.structured_completion(
+                _EXTRACTION_PROMPT.format(cv_text=cv_text), _ExtractedProfile
+            )
+        except Exception as exc:
+            # The provider's own message can carry account ids, rate-limit headers
+            # and request ids — it goes to the log, never to the HTTP response
+            # (see app/services/ai_errors.py).
+            logger.warning("CV analysis failed for user %s", user_id, exc_info=True)
+            raise LlmCallFailed() from exc
         extracted = result.data
 
         profile = CandidateProfile(
@@ -126,10 +163,13 @@ class CvService:
             user_id=str(user_id),
             experience_years=extracted.experience_years,
             roles=extracted.roles,
-            skills=[
-                CandidateSkill(name=skill.name, level=SkillLevel(skill.level), years=skill.years)
-                for skill in extracted.skills
-            ],
+            skills=apply_overrides(
+                normalize(
+                    CandidateSkill(name=skill.name, level=SkillLevel(skill.level), years=skill.years)
+                    for skill in extracted.skills
+                ),
+                await self._candidate_repository.list_skill_overrides(user_id),
+            ),
             experience=[
                 ExperienceEntry(
                     company=entry.company,

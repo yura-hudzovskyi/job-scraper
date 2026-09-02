@@ -1,6 +1,7 @@
 import { apiClient } from "./client";
 import type {
   AiModelsResponse,
+  AiUsage,
   AiModelsUpdateRequest,
   CandidateProfile,
   ConnectTelegramResponse,
@@ -11,7 +12,6 @@ import type {
   JobSummary,
   MeResponse,
   NotificationThresholds,
-  OllamaModelsResponse,
   Preferences,
   ProfileSummary,
   PurgeCeleryResponse,
@@ -39,6 +39,10 @@ export const listCvs = () => apiClient.get<CvDocument[]>("/api/cv");
 export const deleteCv = (cvId: string) => apiClient.delete<void>(`/api/cv/${cvId}`);
 export const analyzeCv = () => apiClient.post<CandidateProfile>("/api/cv/analyze");
 export const getCandidateProfile = () => apiClient.get<CandidateProfile | null>("/api/cv/profile");
+export const correctSkill = (name: string) =>
+  apiClient.post<CandidateProfile>("/api/cv/profile/skills", { name });
+export const removeSkill = (name: string) =>
+  apiClient.delete<CandidateProfile>(`/api/cv/profile/skills/${encodeURIComponent(name)}`);
 export const getProfile = () => apiClient.get<ProfileSummary>("/api/profile");
 
 export const getPreferences = () => apiClient.get<Preferences | null>("/api/settings");
@@ -70,13 +74,11 @@ export const getJob = (jobId: string) => apiClient.get<JobSummary>(`/api/jobs/${
 export const getJobMatch = (jobId: string) => apiClient.get<JobMatch>(`/api/jobs/${jobId}/match`);
 export const rescoreJob = (jobId: string) =>
   apiClient.post<{ status: string; job_id: string }>(`/api/jobs/${jobId}/rescore`);
-export const rescoreAllJobs = (llmModel?: string) =>
-  apiClient.post<{ status: string }>("/api/jobs/rescore-all", {
-    llm_model: llmModel || null,
-  });
-
-export const listOllamaModels = () =>
-  apiClient.get<OllamaModelsResponse>("/api/integrations/ollama/models");
+/** Ask for an LLM review of this one match now, ahead of the daily ranking. */
+export const analyzeJob = (jobId: string) =>
+  apiClient.post<{ status: string; job_id: string }>(`/api/jobs/${jobId}/analyze`);
+export const rescoreAllJobs = () =>
+  apiClient.post<{ status: string }>("/api/jobs/rescore-all");
 
 export const getNotificationThresholds = () =>
   apiClient.get<NotificationThresholds>("/api/settings/notifications");
@@ -86,6 +88,7 @@ export const updateNotificationThresholds = (thresholds: NotificationThresholds)
 export const getAiModels = () => apiClient.get<AiModelsResponse>("/api/ai/models");
 export const updateAiModels = (payload: AiModelsUpdateRequest) =>
   apiClient.patch<AiModelsResponse>("/api/ai/models", payload);
+export const getAiUsage = (hours = 24) => apiClient.get<AiUsage>(`/api/ai/usage?hours=${hours}`);
 export const testAiModel = (tier: "groq" | "gemini", model: string) =>
   apiClient.post<TestModelResponse>("/api/ai/models/test", { tier, model });
 

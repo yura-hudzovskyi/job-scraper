@@ -7,7 +7,7 @@ Celery's broker/backend — see app/api/routes/system.py for those), one hash so
 single HGETALL reads every override at once.
 
 Reads fail open (empty dict) on a Redis error, same contract as
-circuit_breaker.py and budget.py: an optional UI-config layer must never itself
+the provider state store and budgets: an optional UI-config layer must never itself
 block or crash a call the .env-configured default could still serve. Writes are
 the opposite — an explicit "Save" from the System page that silently didn't
 persist would be exactly the kind of invisible failure this whole cleanup is
@@ -19,10 +19,11 @@ import redis.asyncio as redis
 
 _KEY = "ai:model_overrides"
 
-# Exactly the four "which model" knobs Settings exposes — provider *selection*
-# (LLM_PROVIDER, EMBEDDING_PROVIDER) and API keys stay .env-only/out of Redis on
-# purpose: those are infra/secrets decisions, not something to flip at runtime.
-OVERRIDABLE_FIELDS = ("groq_model", "gemini_model", "llm_model", "ollama_fallback_model")
+# Exactly the two "which model" knobs the pipeline actually runs on — provider
+# *selection* (LLM_PROVIDER, EMBEDDING_PROVIDER) and API keys stay .env-only/out
+# of Redis on purpose: those are infra/secrets decisions, not something to flip
+# at runtime.
+OVERRIDABLE_FIELDS = ("groq_model", "gemini_model")
 
 
 class UnknownAiSettingField(ValueError):

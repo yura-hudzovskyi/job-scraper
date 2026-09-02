@@ -29,11 +29,34 @@ class SkillLevel(StrEnum):
     EXPERT = "expert"
 
 
+class SkillSource(StrEnum):
+    """Who said this skill is on the CV. USER outranks everything automated and
+    survives re-analysis — see app/domain/candidates/skill_overrides.py."""
+
+    LLM = "llm"
+    USER = "user"
+
+
 @dataclass(frozen=True)
 class CandidateSkill:
     name: str
     level: SkillLevel
     years: float | None = None
+    source: SkillSource = SkillSource.LLM
+
+
+@dataclass(frozen=True)
+class SkillOverride:
+    """One correction the user made to their own extracted skills. Kept per user
+    rather than inside a profile snapshot, so re-analyzing the CV re-applies it
+    instead of silently undoing it."""
+
+    skill_key: str  # dedupe_key() from app/domain/skills/normalizer.py
+    name: str
+    level: SkillLevel | None = None
+    years: float | None = None
+    # "The CV mentions it, don't count it" — a correction, not an absence.
+    removed: bool = False
 
 
 @dataclass(frozen=True)
@@ -58,6 +81,14 @@ class CandidateProfile:
     domains: list[str] = field(default_factory=list)
     ai_experience: list[str] = field(default_factory=list)
     generated_by: str | None = None  # which LLM produced this, e.g. "Gemini (gemini-2.0-flash)"
+    # Which uploaded CV this snapshot was extracted from. None once that document
+    # is deleted — the snapshot stays valid without it (see CandidateProfileModel).
+    cv_document_id: str | None = None
+    # Which revision of this user's CV this is — see app/domain/versioning.py. The
+    # defaults describe a profile that hasn't been saved yet; CandidateRepository
+    # fills both in on save.
+    version: int = 1
+    content_hash: str | None = None
 
 
 @dataclass(frozen=True)

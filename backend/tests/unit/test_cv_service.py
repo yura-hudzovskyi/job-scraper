@@ -2,9 +2,16 @@ import uuid
 
 import pytest
 
-from app.domain.candidates.models import CandidateProfile
+from app.domain.candidates.models import (
+    CandidateProfile,
+    CandidateSkill,
+    SkillLevel,
+    SkillOverride,
+    SkillSource,
+)
 from app.integrations.ai.llm.base import LLMResult
-from app.services.cv_service import CvService, LlmNotConfigured
+from app.services.ai_errors import LlmCallFailed, LlmNotConfigured
+from app.services.cv_service import CvService
 
 
 class _FakeLlmProvider:
@@ -17,9 +24,26 @@ class _FakeLlmProvider:
 
 
 class _FakeCandidateRepository:
-    def __init__(self, deletable_cv_ids: set[uuid.UUID] | None = None) -> None:
-        self.saved: tuple[uuid.UUID, uuid.UUID, CandidateProfile] | None = None
+    def __init__(
+        self,
+        deletable_cv_ids: set[uuid.UUID] | None = None,
+        skill_overrides: list[SkillOverride] | None = None,
+        profile: CandidateProfile | None = None,
+    ) -> None:
+        self.saved: tuple[uuid.UUID, uuid.UUID | None, CandidateProfile] | None = None
+        self.saved_override: SkillOverride | None = None
         self._deletable_cv_ids = deletable_cv_ids or set()
+        self._skill_overrides = skill_overrides or []
+        self._profile = profile
+
+    async def list_skill_overrides(self, user_id: uuid.UUID) -> list[SkillOverride]:
+        return self._skill_overrides
+
+    async def save_skill_override(self, user_id: uuid.UUID, override: SkillOverride) -> None:
+        self.saved_override = override
+
+    async def get_latest_candidate_profile(self, user_id: uuid.UUID) -> CandidateProfile | None:
+        return self._profile
 
     async def save_candidate_profile(
         self, user_id: uuid.UUID, cv_document_id: uuid.UUID, profile: CandidateProfile
@@ -100,3 +124,91 @@ async def test_delete_cv_returns_false_for_a_cv_that_does_not_belong_to_this_use
     service = CvService(_FakeCandidateRepository(), llm_provider=None)  # type: ignore[arg-type]
 
     assert await service.delete_cv(uuid.uuid4(), uuid.uuid4()) is False
+
+
+class _FailingLlmProvider:
+    async def structured_completion(self, prompt, schema):
+        raise RuntimeError("groq: 401 invalid api key gsk_secret account acct_42")
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_never_reaches_the_caller_verbatim() -> None:
+    # CV analysis answers straight back over HTTP, so the provider's own message
+    # (account ids, rate-limit headers, keys) must not travel with the error —
+    # see app/services/ai_errors.py.
+    service = CvService(_FakeCandidateRepository(), llm_provider=_FailingLlmProvider())  # type: ignore[arg-type]
+
+    with pytest.raises(LlmCallFailed) as raised:
+        await service.analyze_cv(uuid.uuid4(), uuid.uuid4(), "CV text")
+
+    assert "gsk_secret" not in str(raised.value)
+    assert "acct_42" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_user_corrections_survive_re_analysis() -> None:
+    # The CV still says Django and says Python is "strong"; the user has already
+    # said otherwise. Re-reading the CV must not quietly undo either decision.
+    overrides = [
+        SkillOverride(skill_key="django", name="Django", removed=True),
+        SkillOverride(skill_key="python", name="Python", level=SkillLevel.EXPERT, years=6.0),
+        SkillOverride(skill_key="rust", name="Rust", level=SkillLevel.COMMERCIAL),
+    ]
+    repository = _FakeCandidateRepository(skill_overrides=overrides)
+    service = CvService(repository, llm_provider=_FakeLlmProvider(_EXTRACTED_PAYLOAD))  # type: ignore[arg-type]
+
+    profile = await service.analyze_cv(uuid.uuid4(), uuid.uuid4(), "some CV text")
+
+    by_name = {skill.name: skill for skill in profile.skills}
+    assert "Django" not in by_name
+    assert by_name["Python"].level is SkillLevel.EXPERT
+    assert by_name["Python"].years == 6.0
+    assert by_name["Python"].source is SkillSource.USER
+    assert by_name["Rust"].source is SkillSource.USER
+
+
+def _analyzed_profile() -> CandidateProfile:
+    return CandidateProfile(
+        id="p1",
+        user_id="u1",
+        experience_years=4.0,
+        roles=["backend engineer"],
+        skills=[CandidateSkill(name="Python", level=SkillLevel.AWARE, years=1.0)],
+        cv_document_id="0f2c9b5e-2c6e-4a4e-9c86-6f6b5f2c1a11",
+    )
+
+
+@pytest.mark.asyncio
+async def test_correcting_a_skill_writes_a_new_profile_revision() -> None:
+    # The snapshot chain only moves forward: the correction is recorded for future
+    # analyses *and* a new revision is written so the change counts immediately.
+    repository = _FakeCandidateRepository(profile=_analyzed_profile())
+    service = CvService(repository, llm_provider=None)  # type: ignore[arg-type]
+    override = SkillOverride(skill_key="python", name="Python", level=SkillLevel.EXPERT, years=6.0)
+
+    profile = await service.correct_skill(uuid.uuid4(), override)
+
+    assert profile.skills[0].level is SkillLevel.EXPERT
+    assert profile.skills[0].source is SkillSource.USER
+    assert repository.saved_override == override
+    assert repository.saved is not None
+
+
+@pytest.mark.asyncio
+async def test_removing_a_skill_drops_it_from_the_new_revision() -> None:
+    repository = _FakeCandidateRepository(profile=_analyzed_profile())
+    service = CvService(repository, llm_provider=None)  # type: ignore[arg-type]
+
+    profile = await service.correct_skill(
+        uuid.uuid4(), SkillOverride(skill_key="python", name="Python", removed=True)
+    )
+
+    assert profile.skills == []
+
+
+@pytest.mark.asyncio
+async def test_correcting_a_skill_without_an_analyzed_profile_is_a_clear_error() -> None:
+    service = CvService(_FakeCandidateRepository(), llm_provider=None)  # type: ignore[arg-type]
+
+    with pytest.raises(LookupError):
+        await service.correct_skill(uuid.uuid4(), SkillOverride(skill_key="rust", name="Rust"))

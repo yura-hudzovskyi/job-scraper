@@ -9,6 +9,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from app.domain.categories import JobCategory
+
 
 class EmploymentType(StrEnum):
     FULL_TIME = "full_time"
@@ -47,10 +49,35 @@ class JobLocation:
     cities: list[str] = field(default_factory=list)
 
 
+class RequirementType(StrEnum):
+    """How the posting framed a skill — see docs/ai-pipeline-v3.md (E2). The
+    distinction that matters downstream: a missing REQUIRED_* is a real gap, a
+    missing OPTIONAL_EXPLICIT/CONTEXT is not, and UNKNOWN is not a claim at all,
+    so it must never be reported as a confirmed gap."""
+
+    REQUIRED_EXPLICIT = "required_explicit"
+    REQUIRED_INFERRED = "required_inferred"
+    OPTIONAL_EXPLICIT = "optional_explicit"
+    CONTEXT = "context"
+    UNKNOWN = "unknown"
+
+
+_REQUIRED_TYPES = (RequirementType.REQUIRED_EXPLICIT, RequirementType.REQUIRED_INFERRED)
+
+
 @dataclass(frozen=True)
 class NormalizedJobSkill:
-    name: str
-    required: bool
+    name: str  # the ontology's display name when it knows this skill (app/domain/skills)
+    requirement: RequirementType = RequirementType.UNKNOWN
+    canonical_id: str | None = None
+    evidence: str | None = None  # verbatim quote from the posting backing the framing
+    confidence: float | None = None
+
+    @property
+    def required(self) -> bool:
+        """Scoring only ever asks the yes/no question; everything that explains a
+        result reads `requirement` instead."""
+        return self.requirement in _REQUIRED_TYPES
 
 
 @dataclass(frozen=True)
@@ -68,6 +95,10 @@ class NormalizedJob:
     required_experience_years: float | None
     skills: list[NormalizedJobSkill] = field(default_factory=list)
     skills_extracted_by: str | None = None  # which LLM extracted `skills`, if any
+    # What kind of role this is, from the same extraction call. A ranking signal,
+    # not a filter — see app/domain/categories.py.
+    category: JobCategory | None = None
+    category_confidence: float | None = None
 
 
 @dataclass(frozen=True)

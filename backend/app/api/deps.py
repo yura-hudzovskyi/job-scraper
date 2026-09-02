@@ -16,8 +16,11 @@ from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
 from app.db.session import get_session
 from app.integrations.ai.llm.base import LLMProvider
-from app.integrations.ai.llm.factory import build_quality_llm_provider
+from app.integrations.ai.llm.factory import build_llm_router
+from app.integrations.ai.routing.router import Capability
+from app.repositories.ai_invocation_repository import AiInvocationRepository
 from app.repositories.candidate_repository import CandidateRepository
+from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
 from app.repositories.notification_repository import NotificationRepository
@@ -63,6 +66,18 @@ def get_candidate_repository(session: AsyncSession = Depends(get_session)) -> Ca
     return CandidateRepository(session)
 
 
+def get_ai_invocation_repository(
+    session: AsyncSession = Depends(get_session),
+) -> AiInvocationRepository:
+    return AiInvocationRepository(session)
+
+
+def get_embedding_repository(
+    session: AsyncSession = Depends(get_session),
+) -> EmbeddingRepository:
+    return EmbeddingRepository(session)
+
+
 def get_job_repository(session: AsyncSession = Depends(get_session)) -> JobRepository:
     return JobRepository(session)
 
@@ -78,8 +93,10 @@ def get_notification_repository(
 
 
 async def get_quality_llm_provider() -> LLMProvider | None:
+    """CV analysis and preferences AI-fill both read a CV into structure, so both
+    run on the profile-extraction capability and share its protected budget."""
     settings = await get_effective_settings(get_settings())
-    return build_quality_llm_provider(settings)
+    return build_llm_router(Capability.PROFILE_EXTRACTION, settings)
 
 
 def get_cv_service(

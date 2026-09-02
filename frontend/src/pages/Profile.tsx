@@ -2,16 +2,41 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
 import { ApiError } from "../api/client";
-import { analyzeCv, deleteCv, getCandidateProfile, listCvs, uploadCv } from "../api/endpoints";
-import { Button, Card, ErrorBanner, SectionTitle } from "../components/ui";
+import {
+  analyzeCv,
+  correctSkill,
+  deleteCv,
+  getCandidateProfile,
+  listCvs,
+  removeSkill,
+  uploadCv,
+} from "../api/endpoints";
+import { Button, Card, ErrorBanner, SectionTitle, inputClass } from "../components/ui";
 
 export function Profile() {
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
+  const [newSkill, setNewSkill] = useState("");
+
   const cvsQuery = useQuery({ queryKey: ["cvs"], queryFn: listCvs });
   const profileQuery = useQuery({ queryKey: ["candidate-profile"], queryFn: getCandidateProfile });
+
+  // A correction rewrites the profile and rescores every job in the background,
+  // so the fresh profile comes straight back from the mutation.
+  const correctSkillMutation = useMutation({
+    mutationFn: correctSkill,
+    onSuccess: (profile) => {
+      setNewSkill("");
+      queryClient.setQueryData(["candidate-profile"], profile);
+    },
+  });
+
+  const removeSkillMutation = useMutation({
+    mutationFn: removeSkill,
+    onSuccess: (profile) => queryClient.setQueryData(["candidate-profile"], profile),
+  });
 
   const uploadMutation = useMutation({
     mutationFn: uploadCv,
@@ -148,13 +173,55 @@ export function Profile() {
               {profileQuery.data.skills.map((skill) => (
                 <span
                   key={skill.name}
-                  className="rounded-full bg-slate-100 px-2.5 py-1 text-xs"
-                  title={skill.level}
+                  className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs ${
+                    skill.source === "user" ? "bg-sky-100 text-sky-900" : "bg-slate-100"
+                  }`}
+                  title={skill.source === "user" ? `${skill.level} · your own edit` : skill.level}
                 >
                   {skill.name}
+                  <button
+                    type="button"
+                    aria-label={`Remove ${skill.name}`}
+                    title="Not one of my skills — remove it from matching"
+                    className="text-slate-400 hover:text-red-600"
+                    disabled={removeSkillMutation.isPending}
+                    onClick={() => removeSkillMutation.mutate(skill.name)}
+                  >
+                    ×
+                  </button>
                 </span>
               ))}
             </div>
+            <form
+              className="mt-2 flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (newSkill.trim()) correctSkillMutation.mutate(newSkill.trim());
+              }}
+            >
+              <input
+                className={inputClass}
+                placeholder="Add a skill the CV didn't mention"
+                value={newSkill}
+                onChange={(event) => setNewSkill(event.target.value)}
+              />
+              <Button
+                type="submit"
+                className="bg-slate-600 whitespace-nowrap hover:bg-slate-500"
+                disabled={!newSkill.trim() || correctSkillMutation.isPending}
+              >
+                Add
+              </Button>
+            </form>
+            <p className="mt-1 text-xs text-slate-400">
+              Your edits are remembered and re-applied every time this CV is analyzed again.
+              Bringing a removed skill back means re-analyzing the CV.
+            </p>
+            {(correctSkillMutation.isError || removeSkillMutation.isError) && (
+              <div className="mt-2">
+                <ErrorBanner message="Failed to save that change" />
+              </div>
+            )}
           </div>
           {profileQuery.data.achievements.length > 0 && (
             <div className="mt-3">

@@ -12,9 +12,11 @@ from pydantic import BaseModel
 from app.api.deps import get_current_user_id, get_job_service, get_match_repository
 from app.domain.jobs.models import CanonicalJob
 from app.domain.matching.models import JobMatch, LlmAssessment
+from app.domain.matching.provenance import MatchProvenance
 from app.repositories.match_repository import MatchRepository
 from app.services.job_service import JobService
 from app.workers.tasks.backfill import rescore_all_jobs
+from app.workers.tasks.enrich import enrich_match
 from app.workers.tasks.score import score_job_for_user
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -31,6 +33,13 @@ class JobSummaryResponse(BaseModel):
     source_count: int
     practical_fit: float | None = None
     recommendation: str | None = None
+    # Enough provenance to label a row without opening it: a score produced by a
+    # full LLM review and one produced from a posting with nothing extracted are
+    # not the same claim, and the list is where that difference is easiest to
+    # miss (docs/ai-pipeline-v3.md, 9.1).
+    engine: str | None = None
+    analysis_level: str | None = None
+    confidence: float | None = None
 
 
 class JobListResponse(BaseModel):
@@ -75,6 +84,38 @@ class MatchGapResponse(BaseModel):
     critical: bool
 
 
+class DocumentVersionResponse(BaseModel):
+    version: int
+    content_hash: str
+
+
+class PipelineVersionsResponse(BaseModel):
+    scorer: str
+    match_prompt: str
+    skill_taxonomy: str
+    rerank_instruction: str | None
+    calibration: str | None
+
+
+class MatchProvenanceResponse(BaseModel):
+    """How this result was produced — read back from what was stored with it, so
+    it keeps naming the models that really ran even after the System page points
+    the app at different ones. See docs/ai-pipeline-v3.md (9.2)."""
+
+    engine: str
+    analysis_level: str
+    profile: DocumentVersionResponse | None
+    job: DocumentVersionResponse | None
+    embedding_model: str | None
+    cross_encoder_model: str | None
+    skills_model: str | None
+    rerank_model: str | None
+    match_model: str | None
+    fallback_reason: str | None
+    versions: PipelineVersionsResponse
+    generated_at: datetime | None
+
+
 class JobMatchResponse(BaseModel):
     id: str
     eligible: bool
@@ -84,9 +125,10 @@ class JobMatchResponse(BaseModel):
     strengths: list[MatchReasonResponse]
     gaps: list[MatchGapResponse]
     recommendation: str | None
+    confidence: float | None
+    risks: list[str]
     llm_assessment: LlmAssessmentResponse | None
-    skills_source: str | None
-    scored_by: str | None
+    provenance: MatchProvenanceResponse | None
     scored_at: datetime | None
 
 
@@ -101,6 +143,11 @@ def _to_summary(job: CanonicalJob, match: JobMatch | None) -> JobSummaryResponse
         recommendation=(
             match.recommendation.value if match and match.recommendation else None
         ),
+        engine=match.provenance.engine.value if match and match.provenance else None,
+        analysis_level=(
+            match.provenance.analysis_level.value if match and match.provenance else None
+        ),
+        confidence=match.confidence if match else None,
     )
 
 
@@ -122,6 +169,43 @@ def _to_llm_assessment_response(assessment: LlmAssessment | None) -> LlmAssessme
     )
 
 
+def _to_provenance_response(provenance: MatchProvenance | None) -> MatchProvenanceResponse | None:
+    if provenance is None:
+        return None
+    return MatchProvenanceResponse(
+        engine=provenance.engine.value,
+        analysis_level=provenance.analysis_level.value,
+        profile=(
+            DocumentVersionResponse(
+                version=provenance.profile.version, content_hash=provenance.profile.content_hash
+            )
+            if provenance.profile
+            else None
+        ),
+        job=(
+            DocumentVersionResponse(
+                version=provenance.job.version, content_hash=provenance.job.content_hash
+            )
+            if provenance.job
+            else None
+        ),
+        embedding_model=provenance.embedding_model,
+        cross_encoder_model=provenance.cross_encoder_model,
+        skills_model=provenance.skills_model,
+        rerank_model=provenance.rerank_model,
+        match_model=provenance.match_model,
+        fallback_reason=provenance.fallback_reason.value if provenance.fallback_reason else None,
+        versions=PipelineVersionsResponse(
+            scorer=provenance.versions.scorer,
+            match_prompt=provenance.versions.match_prompt,
+            skill_taxonomy=provenance.versions.skill_taxonomy,
+            rerank_instruction=provenance.versions.rerank_instruction,
+            calibration=provenance.versions.calibration,
+        ),
+        generated_at=provenance.generated_at,
+    )
+
+
 def _to_match_response(match: JobMatch) -> JobMatchResponse:
     return JobMatchResponse(
         id=match.id,
@@ -135,9 +219,10 @@ def _to_match_response(match: JobMatch) -> JobMatchResponse:
         ],
         gaps=[MatchGapResponse(label=gap.label, critical=gap.critical) for gap in match.gaps],
         recommendation=match.recommendation.value if match.recommendation else None,
+        confidence=match.confidence,
+        risks=match.risks,
         llm_assessment=_to_llm_assessment_response(match.llm_assessment),
-        skills_source=match.skills_source,
-        scored_by=match.scored_by,
+        provenance=_to_provenance_response(match.provenance),
         scored_at=match.scored_at,
     )
 
@@ -189,25 +274,25 @@ async def rescore_job(
     return {"status": "queued", "job_id": str(job_id)}
 
 
-class RescoreAllRequest(BaseModel):
-    # Overrides the Ollama fallback model for this run only — the "Rescore all
-    # vacancies" admin action (Jobs page) re-extracts skills and rescores every
-    # job through the Groq-first job-pipeline provider (see
-    # workers/tasks/backfill.py, app/integrations/ai/llm/factory.py::
-    # build_job_llm_provider), same as automatic per-scrape extraction; this only
-    # picks which local Ollama model that provider falls back to once Groq's rate
-    # limit is hit mid-run, without touching server config. None (the default)
-    # means "use whatever the server/System page is already configured with."
-    # See app/api/routes/ai_settings.py for changing Groq's own model
-    # persistently instead of per-run.
-    llm_model: str | None = None
+@router.post("/{job_id}/analyze")
+async def analyze_job(
+    job_id: uuid.UUID, user_id: uuid.UUID = Depends(get_current_user_id)
+) -> dict[str, str]:
+    """Ask for an LLM review of this one match now, ahead of the daily ranking.
+    Someone opening a vacancy and pressing the button is the strongest
+    value-of-information signal there is, so it goes on the interactive queue —
+    see app/workers/tasks/enrich.py."""
+    enrich_match.delay(str(user_id), str(job_id))
+    return {"status": "queued", "job_id": str(job_id)}
 
 
 @router.post("/rescore-all")
-async def rescore_all(
-    payload: RescoreAllRequest, user_id: uuid.UUID = Depends(get_current_user_id)
-) -> dict[str, str]:
-    rescore_all_jobs.delay(str(user_id), payload.llm_model)
+async def rescore_all(user_id: uuid.UUID = Depends(get_current_user_id)) -> dict[str, str]:
+    """Re-extracts skills and rescores every canonical job for this user (see
+    workers/tasks/backfill.py::rescore_all_jobs). Which models that runs on comes
+    from the server config / System page (app/api/routes/ai_settings.py), never
+    from the request."""
+    rescore_all_jobs.delay(str(user_id))
     return {"status": "queued"}
 
 

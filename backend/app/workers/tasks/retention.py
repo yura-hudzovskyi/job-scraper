@@ -7,6 +7,7 @@ import asyncio
 
 from app.config.settings import get_settings
 from app.db.session import session_scope
+from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
 from app.repositories.notification_repository import NotificationRepository
@@ -21,6 +22,7 @@ async def _run() -> int:
             JobRepository(session),
             MatchRepository(session),
             NotificationRepository(session),
+            EmbeddingRepository(session),
         )
         return await service.purge_stale_jobs(settings.job_retention_days)
 

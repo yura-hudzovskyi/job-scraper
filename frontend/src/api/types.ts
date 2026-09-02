@@ -9,6 +9,8 @@ export interface CandidateSkill {
   name: string;
   level: string;
   years: number | null;
+  /** "llm" | "rules" | "user" — a skill the user corrected is marked as theirs. */
+  source: string;
 }
 
 export interface ExperienceEntry {
@@ -73,6 +75,17 @@ export interface SourceHealth {
   raw_jobs_stored: number;
 }
 
+export interface UsageRow {
+  capability: string;
+  outcome: string;
+  calls: number;
+}
+
+export interface AiUsage {
+  since_hours: number;
+  rows: UsageRow[];
+}
+
 export interface JobSummary {
   id: string;
   title: string;
@@ -81,6 +94,10 @@ export interface JobSummary {
   source_count: number;
   practical_fit: number | null;
   recommendation: string | null;
+  /** Enough provenance to label a row without opening it. */
+  engine: string | null;
+  analysis_level: string | null;
+  confidence: number | null;
 }
 
 export interface JobListResponse {
@@ -125,6 +142,36 @@ export interface MatchGap {
   critical: boolean;
 }
 
+export interface DocumentVersion {
+  version: number;
+  content_hash: string;
+}
+
+export interface PipelineVersions {
+  scorer: string;
+  match_prompt: string;
+  skill_taxonomy: string;
+  rerank_instruction: string | null;
+  calibration: string | null;
+}
+
+/** How a match was produced — stored with the result, so it keeps naming the
+ *  models that really ran even after the System page changes them. */
+export interface MatchProvenance {
+  engine: string;
+  analysis_level: string;
+  profile: DocumentVersion | null;
+  job: DocumentVersion | null;
+  embedding_model: string | null;
+  cross_encoder_model: string | null;
+  skills_model: string | null;
+  rerank_model: string | null;
+  match_model: string | null;
+  fallback_reason: string | null;
+  versions: PipelineVersions;
+  generated_at: string | null;
+}
+
 export interface JobMatch {
   id: string;
   eligible: boolean;
@@ -134,9 +181,13 @@ export interface JobMatch {
   strengths: MatchReason[];
   gaps: MatchGap[];
   recommendation: string | null;
+  /** How much evidence stood behind the score, 0-1. Null for matches scored
+   *  before the hybrid engine — shown as "not recorded", never as zero. */
+  confidence: number | null;
+  /** What the result could not establish. Never gaps. */
+  risks: string[];
   llm_assessment: LlmAssessment | null;
-  skills_source: string | null;
-  scored_by: string | null;
+  provenance: MatchProvenance | null;
   scored_at: string | null;
 }
 
@@ -165,10 +216,6 @@ export interface MeResponse {
   email: string;
 }
 
-export interface OllamaModelsResponse {
-  models: string[];
-}
-
 export interface NotificationThresholds {
   immediate_threshold: number;
   conditional_threshold: number;
@@ -184,24 +231,48 @@ export interface AiModelField {
   default: string;
 }
 
+/** One provider/model pair as the router currently sees it. */
+export interface LegStatus {
+  provider: string;
+  model: string;
+  available: boolean;
+  /** Why it isn't: rate_limit, quota_exhausted, transient, fatal. */
+  reason: string | null;
+  retry_after_seconds: number | null;
+}
+
+export interface CapabilityStatus {
+  capability: string;
+  legs: LegStatus[];
+  budget_used: number;
+  budget_limit: number;
+}
+
+/** One embedding lane: its own vector space, and how much of the corpus it has
+ *  indexed. A lane only answers queries once it covers nearly everything. */
+export interface LaneStatus {
+  id: string;
+  provider: string;
+  model: string;
+  dimension: number;
+  role: string;
+  state: string;
+  jobs_covered: number;
+  jobs_total: number;
+}
+
 export interface AiModelsResponse {
-  llm_provider: string;
   groq_configured: boolean;
   groq_model: AiModelField;
-  groq_circuit_open: boolean;
   gemini_configured: boolean;
   gemini_model: AiModelField;
-  gemini_circuit_open: boolean;
-  llm_model: AiModelField;
-  ollama_fallback_model: AiModelField;
-  ollama_base_url: string;
+  capabilities: CapabilityStatus[];
+  lanes: LaneStatus[];
 }
 
 export interface AiModelsUpdateRequest {
   groq_model?: string | null;
   gemini_model?: string | null;
-  llm_model?: string | null;
-  ollama_fallback_model?: string | null;
 }
 
 export interface TestModelResponse {

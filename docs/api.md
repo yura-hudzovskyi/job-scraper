@@ -9,19 +9,34 @@ GET    /api/cv
 DELETE /api/cv/{id}               deletes the CV document only — a CandidateProfile already
                                    extracted from it survives (cv_document_id set to null)
 POST   /api/cv/analyze
+GET    /api/cv/profile            the latest analyzed CandidateProfile (no LLM call)
+POST   /api/cv/profile/skills     add or correct one extracted skill; the correction is
+                                   remembered and re-applied on every later analysis
+DELETE /api/cv/profile/skills/{name}
+                                  "not one of my skills" — same, as a removal
 
 GET    /api/profile
 
 GET    /api/jobs                  paginated (?limit, ?offset), items include practical_fit/recommendation;
                                    excludes Recommendation.SKIP matches by default (?include_skipped=true to see all)
 GET    /api/jobs/{id}
-GET    /api/jobs/{id}/match
+GET    /api/jobs/{id}/match       includes `provenance`: engine, analysis level, CV/job revision,
+                                   the models that ran, fallback reason, pipeline versions
+                                   (see docs/matching-engine.md#provenance)
 POST   /api/jobs/{id}/rescore
+POST   /api/jobs/{id}/analyze     asks for an LLM review of this match now, ahead of the
+                                   daily ranking (interactive queue)
 POST   /api/jobs/rescore-all      re-extracts skills + rescores every canonical job for this
-                                   user; Gemini-first, falls back to Ollama on rate limit
+                                   user; Groq-first, falls back to Gemini on rate limit
 POST   /api/jobs/{id}/save
 POST   /api/jobs/{id}/apply
 POST   /api/jobs/{id}/reject
+
+GET    /api/ai/models            model config plus live router state: each capability's
+                                   provider chain, why a leg is parked, budget used today,
+                                   and embedding lane coverage
+GET    /api/ai/usage             LLM calls by capability and outcome over a window, from
+                                   the ai_invocations ledger
 
 GET    /api/matches
 

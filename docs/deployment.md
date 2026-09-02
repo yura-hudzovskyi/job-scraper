@@ -28,10 +28,9 @@ instead of using a `.duckdns.org` name; everything else is identical.
      allowance across all A1 instances is 4 OCPU / 24 GB, so one VM can use all of
      it). The x86 "Micro" free shapes only have 1 GB RAM each — too little for
      Postgres + sentence-transformers + everything else running together. Ampere is
-     also plain ARM64, which Ollama and every other image here already supports
-     natively — nothing extra to configure. If you're running Ollama too (the
-     default — see Part 3), lean toward the 24 GB end; a 12 GB VM works but limits
-     you to a small model (see "Choosing an Ollama model" below).
+     also plain ARM64, which every image here already supports natively — nothing
+     extra to configure. 12 GB is enough now that no local LLM runs on this box;
+     the extra headroom on the 24 GB end only helps with a bigger scrape backlog.
    - **SSH key**: generate a keypair locally if you don't have one —
      `ssh-keygen -t ed25519 -f ~/.ssh/oracle_vm -C "oracle-vm"` — and paste the
      **public** key (`~/.ssh/oracle_vm.pub`) into the "Add SSH keys" box.
@@ -96,18 +95,20 @@ At minimum set:
 - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — from @BotFather, same as local dev.
   `TELEGRAM_WEBHOOK_SECRET` can stay blank — it's derived from `SECRET_KEY`
   automatically if unset.
-- `LLM_PROVIDER=ollama` (the default) runs CV analysis on a local model in the
-  `ollama` container in `docker-compose.prod.yml` — no API key, no per-token cost.
-  Set `LLM_MODEL` too (see "Choosing an Ollama model" below). If you'd rather use a
-  hosted model instead, set `LLM_PROVIDER=anthropic` or `openai` and the matching
-  `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` — the `ollama` container then just sits idle
-  and you can remove it from the compose file if you want the RAM back.
-- `GEMINI_API_KEY` — optional, and free (get one at
-  [aistudio.google.com/apikey](https://aistudio.google.com/apikey)). When set, CV
-  analysis specifically tries Gemini first, falling back to Ollama automatically on
-  a 429 (quota exceeded) — job skill extraction still always uses Ollama regardless,
-  so the free-tier quota stays available for CV analysis. Leave blank to use
-  `LLM_PROVIDER` for everything, exactly as if this option didn't exist.
+- `GEMINI_API_KEY` and `GROQ_API_KEY` — both free, and both worth setting (from
+  [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and
+  [console.groq.com/keys](https://console.groq.com/keys)). CV analysis and
+  preferences AI-fill try Gemini first and fall back to Groq; the job pipeline
+  (skill extraction, "should I apply?") tries Groq first and falls back to Gemini —
+  see docs/matching-engine.md. With neither set the app still scrapes, stores and
+  scores deterministically; only the LLM layers go quiet.
+- `LLM_PROVIDER`/`LLM_MODEL` — optional paid leg (`openai` or `anthropic`, plus the
+  matching `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`), tried only after both free tiers.
+  Leave blank unless you'd rather not depend on a free tier at all.
+- `LLM_DAILY_LIMIT_*` — one daily call ceiling per capability (CV analysis, job
+  extraction, "should I apply?"). Separate counters are what keep a backlog run
+  from spending what interactive work needs; the System page shows how much of
+  each is used today.
 - `EMBEDDING_PROVIDER=sentence_transformers` (the default — needs no key, runs
   locally in the API/worker containers)
 
@@ -117,89 +118,10 @@ Then run the script again to actually start everything and apply migrations:
 ./bootstrap.sh
 ```
 
-This second run also pulls the Ollama model set in `LLM_MODEL` (only if
-`LLM_PROVIDER=ollama`) — a one-time download, see sizing below.
-
 Check it's up: `docker compose -f docker-compose.prod.yml ps`, and
 `curl https://job-scraper-api.duckdns.org/api/sources` (from your own machine, once
 DNS has propagated — usually under a minute) should return `[]` or your two sources,
 with a valid certificate, rather than an error.
-
-### Choosing an Ollama model
-
-Ollama is a fallback tier now, not the primary workhorse — see
-docs/matching-engine.md's "LLM provider policy". `LLM_MODEL` (this section's
-table) is what CV analysis and preferences AI-fill fall back to if
-`GEMINI_API_KEY` isn't set, or the moment Gemini's quota trips; both are rare,
-manual, user-triggered actions, so a CPU-only response in 10-30s+ on the A1 shape
-is fine. `OLLAMA_FALLBACK_MODEL` (default `llama3.1:8b`, see `.env.example`) is
-the **separate** model the job pipeline (skill extraction, AI matching) uses —
-directly, if `GROQ_API_KEY` isn't set at all; as the fallback once it is set and
-its rate limit trips, otherwise. The two settings are deliberately independent,
-not a "primary vs. fallback" pair sharing one value: pick a small/fast model here
-since this leg needs to actually finish in reasonable time under Celery's
-concurrent load (a 4B-class model is a reasonable choice if even `llama3.1:8b`
-feels slow under load), while `LLM_MODEL` can stay on something bigger for CV
-analysis's much rarer fallback, or the reverse — whichever trade-off fits your
-actual usage.
-
-What matters for whichever model(s) you pull is fitting comfortably in RAM
-alongside Postgres, the API/worker processes, and sentence-transformers, which
-together use roughly 2-3 GB. Resident RAM during inference runs noticeably above
-the download size (weights + KV cache/context buffer, sized by `OLLAMA_NUM_CTX`
-— 16384 by default, see `.env.example`, up from an earlier 8192 that was too
-small for a long job posting or CV) — budget roughly 1.3-1.5x the download size
-at that context length, not the download size itself. A larger `OLLAMA_NUM_CTX`
-(up to the model's native ceiling — 32768 for qwen2.5:14b/qwen3:14b) trades more
-of that headroom for guaranteed no truncation on very long postings/CVs.
-
-| Model | Download size | ~Resident RAM in use (16384 ctx) | Free-tier fit |
-|---|---|---|---|
-| `llama3.2:3b` / `qwen3.5:4b`-class | ~2-3 GB | ~3-4 GB (estimated by extrapolation, not independently measured for every 4B-class tag) | Comfortable even on a 12 GB VM, and the fastest option for `OLLAMA_FALLBACK_MODEL` if `llama3.1:8b` still feels slow under concurrent load — worth confirming actual quality on real matches before committing, smaller models trade off reasoning depth |
-| `qwen2.5:14b` / `qwen3:14b` | ~9 GB | ~13 GB | **Recommended default on the 24 GB (4 OCPU) shape** — meaningfully better structured-output quality than 3b, still leaves ~8 GB of headroom over Postgres/API/worker/beat/sentence-transformers |
-| `llama3.1:8b` / `qwen2.5:7b` | ~4.5-4.7 GB | ~6.5 GB | Fine on 24 GB; tight on 12 GB |
-
-**27B-32B-class models (`gemma3:27b`, `qwen3:32b`, `qwen2.5:32b`, and MoE variants
-like `qwen3:30b-a3b`) do not fit here, even on the 24 GB shape** — 17-20 GB of
-weights alone need ~22-26 GB resident, which is the *entire* VM before Postgres and
-everything else gets a byte, on a box with no swap configured by default. An MoE
-model like `qwen3:30b-a3b` (only ~3B active parameters per token) is faster per
-token on CPU than a same-size dense model, but every expert still has to be resident
-in RAM regardless of how many activate — MoE buys inference speed, not a smaller
-memory footprint, so it doesn't change this math. Stick to the 14B class above; it's
-the realistic ceiling for this VM.
-
-Set `LLM_MODEL` to whichever you pick before the second `./bootstrap.sh` run (or
-change it later and run `docker compose -f docker-compose.prod.yml exec ollama ollama
-pull <model>` by hand, then update `.env` and restart the `api` container). If you're
-on the smaller 12 GB VM.Standard.A1.Flex config, stick to `llama3.2:3b` — a 14B model
-plus Postgres can OOM that smaller box under load.
-
-### Ollama concurrency
-
-The RAM table above is sized for **one** inference at a time. With Groq
-configured (`GROQ_API_KEY`, see docs/matching-engine.md), Ollama is mostly a
-fallback now, not the thing every job/match call hits directly — but it's still
-possible for more than one Ollama call to land at once (Groq's circuit breaker
-open for a stretch while CV analysis's own Gemini fallback also fires, or
-`LLM_PROVIDER=ollama` with no hosted provider configured at all, back to every
-call going through Ollama directly). Celery's worker pool runs several tasks
-concurrently by default (one per CPU core), and by default Ollama will happily
-try to run more than one of their requests' inferences **in parallel** rather
-than queueing them — two concurrent `qwen2.5:14b` inferences need ~26 GB combined
-on a 24 GB box, more than physically fits, so both threads thrash instead of one
-running cleanly.
-
-`docker-compose.prod.yml` sets `OLLAMA_NUM_PARALLEL=1` on the `ollama` service to
-force concurrent requests to queue instead of racing for the same RAM — each one
-still finishes in its normal time once its turn comes up, it just waits behind
-whichever request got there first. `OLLAMA_TIMEOUT_SECONDS` (`.env.example`,
-default 600s) is sized to tolerate that queueing, not just one clean uncontended
-request. If you're running without Groq at all (every job-pipeline call going
-straight to Ollama), a large "rescore all vacancies" run is legitimately slow —
-one job's worth of LLM calls at a time, effectively serialized — that's the
-expected tradeoff of a CPU-only model on a personal-scale box, not a bug to
-chase further.
 
 ### Scraping volume and retention
 
@@ -304,6 +226,12 @@ from the git checkout.
   (Oracle Object Storage's free tier is a reasonable target). Not set up here —
   personal-scale scraped-job data is regenerable by re-running the scrapers, so this
   is a "nice to have," not blocking.
+- **Worker queues**: AI work is split across `ai_interactive`, `ai_extraction`,
+  `ai_matching` and `ai_backfill` (plus `default` for everything else), so a
+  "rescore all vacancies" run can't sit in front of the jobs scraped since. The
+  worker command in both compose files consumes all of them with `-Q`; if you
+  split them across dedicated workers later, every queue still needs a consumer
+  or those tasks silently never run.
 - **Local `docker-compose.yml` is unaffected** — it still runs the dev build (bind
   mounts, `--reload`, `npm run dev`) exactly as before. `docker-compose.prod.yml` is
   a separate, self-contained file for the server, and doesn't include a frontend
@@ -317,10 +245,9 @@ from the git checkout.
   actually keeps this fast — an earlier version used `type=gha` for the cache, which
   shares one 10GB-per-repo quota and kept evicting this image's large dependency
   layer, silently regressing back to a full ~20min rebuild every time regardless of
-  what changed. The Ollama model pull (Part 3) is separate from this and only
-  happens once, not on every deploy.
-- **Ollama cost/latency tradeoff**: CPU inference on the A1 shape is noticeably
-  slower than a hosted API (seconds-to-tens-of-seconds per CV instead of ~1s), but
-  it's the only zero-cost option, and CV analysis is a manual, low-frequency action
-  where that's an acceptable trade. Matching/scoring itself never calls an LLM
-  regardless of provider, so this only affects the "Analyze CV" action.
+  what changed.
+- **LLM latency is the provider's, not this box's**: every LLM call now goes to a
+  hosted free tier (Groq then Gemini, or the reverse — see docs/matching-engine.md),
+  so it answers in a second or two and needs no RAM here. Matching/scoring itself
+  never calls an LLM at all, so a rate-limited provider only degrades the "Analyze
+  CV" and "should I apply?" layers, never the score.

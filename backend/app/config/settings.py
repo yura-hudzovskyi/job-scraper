@@ -18,74 +18,64 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
 
-    llm_provider: Literal["ollama", "openai", "anthropic"] = "ollama"
-    llm_model: str = "llama3.1"
-    ollama_base_url: str = "http://localhost:11434"
-    # Ollama silently truncates the prompt to this many tokens rather than erroring —
-    # see app/integrations/ai/llm/ollama_provider.py. Job descriptions and CV text are
-    # embedded in full (no truncation in the prompt-building code itself), so this has
-    # to comfortably cover the longest real postings/CVs, not just the typical case.
-    # qwen2.5:14b/qwen3:14b (the recommended default, see docs/deployment.md) natively
-    # support up to 32768 — raise toward that ceiling if truncation is still observed
-    # in practice, trading more KV-cache RAM and somewhat slower inference for it.
-    ollama_num_ctx: int = 16384
-    # How long to wait for one Ollama response — see
-    # app/integrations/ai/llm/ollama_provider.py's DEFAULT_TIMEOUT_SECONDS for why
-    # this needs headroom beyond a single isolated request's 60-90s: Celery's
-    # worker pool can have several tasks calling Ollama at once, and those queue
-    # up (or thrash for RAM/CPU) rather than each finishing in the uncontended
-    # case's time. Also set OLLAMA_NUM_PARALLEL=1 on the ollama container itself
-    # (docs/deployment.md) so concurrent requests queue cleanly instead of both
-    # running at once and starving each other of RAM.
-    ollama_timeout_seconds: float = 600.0
-    # The job pipeline's own Ollama model (build_job_llm_provider) — used
-    # directly when GROQ_API_KEY isn't set, or as the fallback once Groq's rate
-    # limit trips when it is. Deliberately independent of llm_model, which is
-    # what CV analysis/preferences AI-fill fall back to instead
-    # (build_quality_llm_provider): the two call sites can run different local
-    # models — e.g. something small/fast here for per-job volume (this needs to
-    # actually finish in reasonable time under Celery's concurrent load, not be
-    # the best quality model available locally) while CV analysis's fallback
-    # stays on something bigger, since that one's rare enough to afford it. See
-    # docs/matching-engine.md.
-    ollama_fallback_model: str = "llama3.1:8b"
+    # Optional paid LLM leg (the PAID entry in
+    # app/integrations/ai/routing/policy.py) — used only when both are set, and only
+    # after the Gemini/Groq free tiers. The pipeline runs on those two alone by
+    # default; this exists for deployments that would rather not depend on a
+    # free tier at all.
+    llm_provider: Literal["openai", "anthropic"] | None = None
+    llm_model: str | None = None
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
 
     # Optional: when set, CV analysis and preferences AI-fill (the "quality
     # matters most, low volume" call sites) use Gemini's free tier first, falling
-    # back to Ollama (llm_model) on rate limit — see
-    # app/integrations/ai/llm/factory.py::build_quality_llm_provider.
+    # back to Groq on rate limit — see app/integrations/ai/routing/policy.py.
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"
 
     # Optional: when set, the job pipeline (skill extraction, AI matching, "should
     # I apply?") uses Groq's free tier first — fast enough to actually churn
-    # through a real backlog, unlike CPU-only Ollama — falling back to a small
-    # local model (ollama_fallback_model) on rate limit. See
-    # app/integrations/ai/llm/factory.py::build_job_llm_provider and
-    # docs/matching-engine.md.
+    # through a real backlog — falling back to Gemini on rate limit. See
+    # app/integrations/ai/routing/policy.py and docs/matching-engine.md.
     groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
-    # Groq enforces both per-minute and per-day limits; a 429 during normal use is
-    # far more likely to be the former, so this is a short, fixed cooldown rather
-    # than GeminiCircuitBreaker's until-midnight one — see circuit_breaker.py.
-    groq_circuit_breaker_cooldown_seconds: int = 60
 
-    # Hard daily ceiling on LlmReranker calls (see app/integrations/ai/llm/budget.py
-    # and app/domain/matching/llm_reranker.py) — independent of whatever the
-    # configured quality/job provider's own rate-limit/billing behavior is.
-    # LlmReranker is the only LLM call site left in the job-scoring pipeline (the
-    # deterministic pipeline now scores every eligible job on its own) and runs on
-    # CONSIDER+APPLY matches, not just APPLY — a wider tier than before, so this
-    # default is higher accordingly. Still just a starting point: tune to your
-    # actual plan and observed CONSIDER+APPLY volume (free-tier daily quotas vary
-    # by provider/model/tier and change over time, so this isn't a number
-    # guaranteed correct for any particular plan).
-    llm_rerank_daily_limit: int = 150
+    # Hard daily ceilings, one per capability — see
+    # app/integrations/ai/quota/budget.py. Separate counters *are* the
+    # interactive reserve: a backlog run burning through job extraction cannot
+    # eat what CV analysis has left, because they never share a budget.
+    #
+    # These are starting points, not measured limits: free-tier daily quotas vary
+    # by provider, model and account and change over time, so tune them to what
+    # the System page reports actually getting used.
+    llm_daily_limit_profile_extraction: int = 50  # user-triggered, rare, protected
+    llm_daily_limit_job_extraction: int = 400  # once per newly scraped job
+    llm_daily_limit_match_enrichment: int = 150  # the "should I apply?" verdict
 
     embedding_provider: Literal["sentence_transformers", "openai"] = "sentence_transformers"
     embedding_model: str = "all-MiniLM-L6-v2"
+
+    # Optional embedding lanes (app/integrations/ai/embeddings/lanes.py). Each one
+    # is a separate vector space with its own stored vectors; retrieval uses the
+    # best *ready* lane and never mixes two. The local model above is always
+    # available as the durable lane, so neither of these is required.
+    #
+    # Voyage: the quality lane candidate — strong multilingual model, currently a
+    # large one-time free token pool rather than a recurring allowance.
+    voyage_api_key: str | None = None
+    voyage_embedding_model: str = "voyage-4-large"
+    # Cloudflare Workers AI: a hosted BGE-M3 on a recurring daily allowance, so it
+    # keeps working after a one-off pool runs out. Both values are needed.
+    cloudflare_account_id: str | None = None
+    cloudflare_api_token: str | None = None
+    cloudflare_embedding_model: str = "@cf/baai/bge-m3"
+    # Rerank models on the same accounts (app/integrations/ai/rerank/factory.py).
+    # A reranker reads the candidate and a vacancy together, which is sharper than
+    # comparing two vectors and too expensive for the whole corpus — it runs over
+    # the retrieved top-K only.
+    voyage_rerank_model: str = "rerank-3"
+    cloudflare_rerank_model: str = "@cf/baai/bge-reranker-base"
 
     # Second signal blended into SemanticScorer's semantic_fit (see
     # app/domain/matching/scoring.py), on top of the bi-encoder cosine similarity
@@ -99,6 +89,20 @@ class Settings(BaseSettings):
     # more accurate opt-in swap (~5-10x slower on CPU).
     cross_encoder_model: str | None = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     cross_encoder_weight: float = 0.5
+
+    # AI pipeline v3 rollout flags — see docs/ai-pipeline-v3.md. Each one stays
+    # off until the phase that implements it lands, so half-built pipeline stages
+    # can ship dark instead of living on a long-running branch.
+    #
+    # Route scoring through the v3 orchestrator (hybrid engine + priority
+    # scheduler) instead of MatchingService.evaluate. Phase 6.
+    matching_pipeline_v3: bool = False
+    # Let that orchestrator upgrade a hybrid match with an LLM judgment when
+    # quota allows. Phase 7; no effect while matching_pipeline_v3 is off.
+    llm_enrichment: bool = False
+    # Build and query the versioned embedding lanes instead of the single
+    # on-demand embedding SemanticScorer computes today. Phase 4.
+    multi_embedding_lanes: bool = False
 
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None

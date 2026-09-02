@@ -26,9 +26,16 @@ class JobMatchModel(UUIDPrimaryKeyMixin, Base):
     strengths: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     gaps: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
     recommendation: Mapped[str | None] = mapped_column(default=None)
-    skills_source: Mapped[str | None] = mapped_column(default=None)
+    # How much evidence stood behind the score (hybrid engine), and what the
+    # result could not establish. Both are shown next to the score rather than
+    # folded into it.
+    confidence: Mapped[float | None] = mapped_column(default=None)
+    risks: Mapped[list[str]] = mapped_column(JSONB, default=list)
     llm_assessment: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
-    scored_by: Mapped[str | None] = mapped_column(default=None)
+    # How this result was produced — see app/domain/matching/provenance.py. Kept
+    # as a snapshot, so it keeps naming the models that really ran even after the
+    # configured ones change.
+    provenance: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
     # The user's own Approve/Reject verdict (see MatchDecision) — set once via the
     # Telegram swipe buttons and deliberately excluded from MatchRepository.upsert's
     # rescore path, so re-scoring a job never silently resets a decision already made.

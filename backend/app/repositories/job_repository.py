@@ -19,6 +19,7 @@ from app.db.models.job import (
     RawJobModel,
     ScrapeRunModel,
 )
+from app.domain.categories import JobCategory
 from app.domain.jobs.models import (
     CanonicalJob,
     EmploymentType,
@@ -26,9 +27,11 @@ from app.domain.jobs.models import (
     NormalizedJob,
     NormalizedJobSkill,
     RawJob,
+    RequirementType,
     SalaryRange,
 )
 from app.domain.jobs.scrape_rotation import pick_next_category
+from app.domain.versioning import DocumentVersion, job_content_hash
 
 
 def _to_raw_job(model: RawJobModel) -> RawJob:
@@ -61,7 +64,28 @@ def _canonical_candidate_view(model: CanonicalJobModel) -> NormalizedJob:
 
 
 def _skills_payload(skills: list[NormalizedJobSkill]) -> list[dict[str, Any]]:
-    return [{"name": skill.name, "required": skill.required} for skill in skills]
+    return [
+        {
+            "name": skill.name,
+            "requirement": skill.requirement.value,
+            "canonical_id": skill.canonical_id,
+            "evidence": skill.evidence,
+            "confidence": skill.confidence,
+        }
+        for skill in skills
+    ]
+
+
+def _requirement_from_payload(payload: dict[str, Any]) -> RequirementType:
+    stored = payload.get("requirement")
+    if stored is not None:
+        return RequirementType(stored)
+    # Rows written before requirement types existed only knew required yes/no.
+    return (
+        RequirementType.REQUIRED_EXPLICIT
+        if payload.get("required")
+        else RequirementType.OPTIONAL_EXPLICIT
+    )
 
 
 def _to_normalized_job(model: JobSourceRecordModel) -> NormalizedJob:
@@ -85,10 +109,18 @@ def _to_normalized_job(model: JobSourceRecordModel) -> NormalizedJob:
         seniority=model.seniority,
         required_experience_years=model.required_experience_years,
         skills=[
-            NormalizedJobSkill(name=skill["name"], required=skill["required"])
+            NormalizedJobSkill(
+                name=skill["name"],
+                requirement=_requirement_from_payload(skill),
+                canonical_id=skill.get("canonical_id"),
+                evidence=skill.get("evidence"),
+                confidence=skill.get("confidence"),
+            )
             for skill in model.skills
         ],
         skills_extracted_by=model.skills_extracted_by,
+        category=JobCategory(model.category) if model.category else None,
+        category_confidence=model.category_confidence,
     )
 
 
@@ -285,10 +317,15 @@ class JobRepository:
         canonical_job_id: uuid.UUID,
         skills: list[NormalizedJobSkill],
         generated_by: str | None,
+        category: JobCategory | None = None,
+        category_confidence: float | None = None,
+        extraction_key: str | None = None,
     ) -> None:
-        """Saves LLM-extracted skills onto whichever source record scoring reads via
+        """Saves extracted requirements onto whichever source record scoring reads via
         get_normalized_job_for_canonical — same "most recently normalized" selection,
-        so extraction writes to exactly the row matching later reads from."""
+        so extraction writes to exactly the row matching later reads from. The
+        category comes from the same extraction call, so it is written here rather
+        than costing a second pass over the posting."""
         result = await self._session.execute(
             select(JobSourceRecordModel)
             .where(JobSourceRecordModel.canonical_job_id == canonical_job_id)
@@ -300,7 +337,74 @@ class JobRepository:
             return
         model.skills = _skills_payload(skills)
         model.skills_extracted_by = generated_by
+        model.skills_extraction_key = extraction_key
+        if category is not None:
+            model.category = category.value
+            model.category_confidence = category_confidence
         await self._session.flush()
+
+    async def categories_for(
+        self, canonical_job_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, tuple[JobCategory | None, float | None]]:
+        """How each of these vacancies was classified, for the retrieval category
+        gate. Reads the same source record scoring reads; a job with no category
+        simply isn't in the result, which the gate treats as "don't know"."""
+        if not canonical_job_ids:
+            return {}
+        result = await self._session.execute(
+            select(
+                JobSourceRecordModel.canonical_job_id,
+                JobSourceRecordModel.category,
+                JobSourceRecordModel.category_confidence,
+            )
+            .where(
+                JobSourceRecordModel.canonical_job_id.in_(canonical_job_ids),
+                JobSourceRecordModel.category.is_not(None),
+            )
+            .order_by(JobSourceRecordModel.normalized_at.desc())
+        )
+        categories: dict[uuid.UUID, tuple[JobCategory | None, float | None]] = {}
+        for canonical_job_id, category, confidence in result.all():
+            # Most recently normalized wins, same selection every other read uses.
+            categories.setdefault(canonical_job_id, (JobCategory(category), confidence))
+        return categories
+
+    async def get_extraction_key(self, canonical_job_id: uuid.UUID) -> str | None:
+        """What the last extraction for this job was keyed on (posting hash +
+        extraction version), or None if it was never extracted — see
+        JobSkillExtractionService."""
+        result = await self._session.execute(
+            select(JobSourceRecordModel.skills_extraction_key)
+            .where(JobSourceRecordModel.canonical_job_id == canonical_job_id)
+            .order_by(JobSourceRecordModel.normalized_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def refresh_canonical_content_version(
+        self, canonical_job_id: uuid.UUID
+    ) -> DocumentVersion | None:
+        """Recompute this vacancy's content identity from the source record scoring
+        actually reads, bumping its version when the analysis-relevant content
+        changed since last time (see app/domain/versioning.py). Called from the
+        scoring path — the one place that needs the identity — so it is always
+        current for the result being produced, and a job stored before hashing
+        existed heals on its next score. Returns None for a canonical job with no
+        source record to read."""
+        normalized = await self.get_normalized_job_for_canonical(canonical_job_id)
+        model = await self._session.get(CanonicalJobModel, canonical_job_id)
+        if normalized is None or model is None:
+            return None
+
+        new_hash = job_content_hash(normalized)
+        if model.content_hash != new_hash:
+            # A first hash isn't a new version — it's the same posting, finally
+            # identified. Only a *changed* hash means the content moved.
+            if model.content_hash is not None:
+                model.content_version += 1
+            model.content_hash = new_hash
+            await self._session.flush()
+        return DocumentVersion(version=model.content_version, content_hash=new_hash)
 
     async def create_canonical_job(self, normalized: NormalizedJob) -> uuid.UUID:
         model = CanonicalJobModel(

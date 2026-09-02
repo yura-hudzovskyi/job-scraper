@@ -1,81 +1,94 @@
+"""Which legs a capability gets, in what order, from a given configuration —
+policy in one place (app/integrations/ai/routing/policy.py), construction in
+another (app/integrations/ai/llm/factory.py). No network, no SDK calls: legs
+build their provider lazily, so these only look at what was selected.
+"""
+
 from app.config.settings import Settings
-from app.integrations.ai.llm.factory import build_configured_llm_provider, build_job_llm_provider
-from app.integrations.ai.llm.fallback_provider import FallbackLLMProvider
-from app.integrations.ai.llm.ollama_provider import OllamaLLMProvider
+from app.integrations.ai.llm.factory import build_llm_router, legs_for
+from app.integrations.ai.routing.router import Capability
 
 
 def _settings(**overrides: object) -> Settings:
-    return Settings(llm_provider="ollama", llm_model="llama3.2:3b", **overrides)  # type: ignore[arg-type]
+    """Every credential explicitly unset, so a real key in the ambient
+    environment can't change what these tests build."""
+    base: dict[str, object] = {
+        "groq_api_key": None,
+        "gemini_api_key": None,
+        "openai_api_key": None,
+        "anthropic_api_key": None,
+        "llm_provider": None,
+        "llm_model": None,
+    }
+    return Settings(**{**base, **overrides})  # type: ignore[arg-type]
 
 
-def test_no_override_uses_the_configured_default_model() -> None:
-    provider = build_configured_llm_provider(_settings())
-
-    assert isinstance(provider, OllamaLLMProvider)
-    assert provider.model == "llama3.2:3b"
+def _keys(capability: Capability, settings: Settings) -> list[str]:
+    return [leg.key for leg in legs_for(capability, settings)]
 
 
-def test_model_override_replaces_the_configured_default_for_this_call() -> None:
-    provider = build_configured_llm_provider(_settings(), model_override="qwen2.5:14b")
+def test_nothing_configured_builds_no_router() -> None:
+    settings = _settings()
 
-    assert isinstance(provider, OllamaLLMProvider)
-    assert provider.model == "qwen2.5:14b"
+    assert legs_for(Capability.JOB_EXTRACTION, settings) == []
+    assert build_llm_router(Capability.JOB_EXTRACTION, settings) is None
 
 
-def test_build_job_llm_provider_uses_its_own_ollama_model_without_groq() -> None:
-    # Deliberately NOT llm_model — that one is what CV analysis/preferences
-    # AI-fill fall back to (build_quality_llm_provider); the job pipeline's local
-    # model is independently choosable, e.g. a small/fast model for volume here
-    # while CV analysis keeps a bigger one, or the reverse.
-    provider = build_job_llm_provider(
-        _settings(groq_api_key=None, ollama_fallback_model="llama3.1:8b")
+def test_the_job_pipeline_leads_with_the_fast_provider() -> None:
+    settings = _settings(groq_api_key="gsk_fake", gemini_api_key="AIza_fake")
+
+    assert _keys(Capability.JOB_EXTRACTION, settings) == [
+        "groq:llama-3.3-70b-versatile",
+        "gemini:gemini-2.0-flash",
+    ]
+
+
+def test_cv_analysis_leads_with_the_quality_provider() -> None:
+    # The reverse order of the job pipeline: profile extraction is rare and its
+    # output is what every later match is built on.
+    settings = _settings(groq_api_key="gsk_fake", gemini_api_key="AIza_fake")
+
+    assert _keys(Capability.PROFILE_EXTRACTION, settings) == [
+        "gemini:gemini-2.0-flash",
+        "groq:llama-3.3-70b-versatile",
+    ]
+
+
+def test_a_provider_without_credentials_is_absent_not_a_failing_leg() -> None:
+    settings = _settings(groq_api_key="gsk_fake")
+
+    assert _keys(Capability.JOB_EXTRACTION, settings) == ["groq:llama-3.3-70b-versatile"]
+
+
+def test_legs_use_the_currently_configured_model_names() -> None:
+    # The System page writes overrides onto Settings before this runs, so a model
+    # changed at runtime takes effect on the very next call.
+    settings = _settings(groq_api_key="gsk_fake", groq_model="llama-3.1-8b-instant")
+
+    assert _keys(Capability.JOB_EXTRACTION, settings) == ["groq:llama-3.1-8b-instant"]
+
+
+def test_the_paid_leg_needs_a_provider_a_model_and_its_key() -> None:
+    assert _keys(Capability.JOB_EXTRACTION, _settings(llm_provider="openai")) == []
+    assert (
+        _keys(Capability.JOB_EXTRACTION, _settings(llm_provider="openai", llm_model="gpt-4o-mini"))
+        == []
     )
 
-    assert isinstance(provider, OllamaLLMProvider)
-    assert provider.model == "llama3.1:8b"
-
-
-def test_build_job_llm_provider_model_override_without_groq_replaces_its_ollama_model() -> None:
-    provider = build_job_llm_provider(
-        _settings(groq_api_key=None, ollama_fallback_model="llama3.1:8b"),
-        model_override="qwen3.5:4b",
+    settings = _settings(
+        llm_provider="openai", llm_model="gpt-4o-mini", openai_api_key="sk-fake"
     )
 
-    assert isinstance(provider, OllamaLLMProvider)
-    assert provider.model == "qwen3.5:4b"
+    assert _keys(Capability.JOB_EXTRACTION, settings) == ["paid:gpt-4o-mini"]
 
 
-def test_build_job_llm_provider_falls_back_to_configured_provider_for_hosted_llm_provider() -> None:
-    # openai/anthropic have no local-vs-hosted "fallback model" distinction to
-    # make, so this case is the one that still goes through
-    # build_configured_llm_provider as-is.
-    provider = build_job_llm_provider(
-        Settings(llm_provider="openai", llm_model="gpt-4o-mini", openai_api_key="sk-fake")  # type: ignore[arg-type]
+def test_the_paid_leg_comes_after_both_free_tiers() -> None:
+    settings = _settings(
+        groq_api_key="gsk_fake",
+        gemini_api_key="AIza_fake",
+        llm_provider="anthropic",
+        llm_model="claude-haiku-4-5-20251001",
+        anthropic_api_key="sk-ant-fake",
     )
 
-    from app.integrations.ai.llm.openai_provider import OpenAILLMProvider
-
-    assert isinstance(provider, OpenAILLMProvider)
-
-
-def test_build_job_llm_provider_wraps_groq_with_the_ollama_fallback_model() -> None:
-    provider = build_job_llm_provider(
-        _settings(groq_api_key="gsk_fake", ollama_fallback_model="llama3.1:8b")
-    )
-
-    assert isinstance(provider, FallbackLLMProvider)
-    fallback = provider._fallback  # type: ignore[attr-defined]
-    assert isinstance(fallback, OllamaLLMProvider)
-    assert fallback.model == "llama3.1:8b"
-
-
-def test_build_job_llm_provider_model_override_replaces_the_ollama_fallback_model() -> None:
-    provider = build_job_llm_provider(
-        _settings(groq_api_key="gsk_fake", ollama_fallback_model="llama3.1:8b"),
-        model_override="qwen2.5:14b",
-    )
-
-    assert isinstance(provider, FallbackLLMProvider)
-    fallback = provider._fallback  # type: ignore[attr-defined]
-    assert isinstance(fallback, OllamaLLMProvider)
-    assert fallback.model == "qwen2.5:14b"
+    assert _keys(Capability.MATCH_ENRICHMENT, settings)[-1] == "paid:claude-haiku-4-5-20251001"

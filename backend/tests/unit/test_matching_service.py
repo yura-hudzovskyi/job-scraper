@@ -6,18 +6,33 @@ from app.domain.candidates.models import (
     SkillLevel,
     UserPreference,
 )
-from app.domain.jobs.models import EmploymentType, JobLocation, NormalizedJob, NormalizedJobSkill
+from app.domain.jobs.models import (
+    EmploymentType,
+    JobLocation,
+    NormalizedJob,
+    NormalizedJobSkill,
+    RequirementType,
+)
 from app.domain.matching.filters import HardFilterService
+from app.domain.matching.hybrid import SCORER_VERSION, HybridMatchEngine
 from app.domain.matching.models import (
     JobMatch,
     LlmAssessment,
     Recommendation,
     ScoreBreakdown,
 )
+from app.domain.matching.provenance import (
+    AnalysisLevel,
+    FallbackReason,
+    MatchEngine,
+    MatchProvenance,
+    PipelineModels,
+)
 from app.domain.matching.role_matching import RoleMatcher
 from app.domain.matching.scoring import DeterministicScorer, SemanticScorer
 from app.domain.matching.service import MatchingService
 from app.domain.matching.skill_matching import SkillMatcher
+from app.integrations.ai.routing.router import Capability, NoCapacity
 
 
 class _FakeEmbeddingProvider:
@@ -85,6 +100,7 @@ def _matching_service(
         SkillMatcher(embedding_provider),  # type: ignore[arg-type]
         RoleMatcher(embedding_provider),  # type: ignore[arg-type]
         llm_reranker=llm_reranker,  # type: ignore[arg-type]
+        models=PipelineModels(embedding="all-MiniLM-L6-v2"),
     )
 
 
@@ -98,16 +114,23 @@ def _match(recommendation: Recommendation) -> JobMatch:
         practical_fit=80.0,
         breakdown=ScoreBreakdown(90, 90, 90, 90, 100, 100, 90, 100),
         recommendation=recommendation,
+        provenance=MatchProvenance(
+            engine=MatchEngine.DETERMINISTIC, analysis_level=AnalysisLevel.STANDARD
+        ),
     )
 
 
 class _FakeLlmReranker:
-    def __init__(self, assessment: LlmAssessment | None):
+    def __init__(self, assessment: LlmAssessment | None = None, error: Exception | None = None):
         self._assessment = assessment
+        self._error = error
         self.call_count = 0
 
-    async def assess(self, job, profile, breakdown, strengths, gaps) -> LlmAssessment | None:
+    async def assess(self, job, profile, breakdown, strengths, gaps) -> LlmAssessment:
         self.call_count += 1
+        if self._error is not None:
+            raise self._error
+        assert self._assessment is not None
         return self._assessment
 
 
@@ -133,8 +156,11 @@ async def test_should_i_apply_is_a_noop_without_a_reranker() -> None:
 
     result = await service.should_i_apply(_job(), _profile(), match)
 
-    assert result is match
     assert result.llm_assessment is None
+    assert result.provenance is not None
+    assert result.provenance.fallback_reason is FallbackReason.NO_LLM_PROVIDER
+    # Only the provenance is amended — the score itself is untouched.
+    assert result.practical_fit == match.practical_fit
 
 
 @pytest.mark.asyncio
@@ -159,8 +185,10 @@ async def test_should_i_apply_is_a_noop_for_skip_recommendation() -> None:
 
     result = await service.should_i_apply(_job(), _profile(), match)
 
-    assert result is match
+    assert result.llm_assessment is None
     assert reranker.call_count == 0
+    assert result.provenance is not None
+    assert result.provenance.fallback_reason is FallbackReason.BELOW_LLM_THRESHOLD
 
 
 @pytest.mark.asyncio
@@ -168,15 +196,16 @@ async def test_should_i_apply_is_a_noop_when_reranker_returns_none() -> None:
     # Budget exhausted (or any other degrade-gracefully reason) -> reranker
     # itself returns None rather than raising; should_i_apply must leave the
     # match untouched, not error.
-    reranker = _FakeLlmReranker(None)
+    reranker = _FakeLlmReranker(error=NoCapacity(Capability.MATCH_ENRICHMENT))
     service = _matching_service(_FakeEmbeddingProvider(), llm_reranker=reranker)
     match = _match(Recommendation.APPLY)
 
     result = await service.should_i_apply(_job(), _profile(), match)
 
-    assert result is match
     assert reranker.call_count == 1
     assert result.llm_assessment is None
+    assert result.provenance is not None
+    assert result.provenance.fallback_reason is FallbackReason.LLM_NO_CAPACITY
 
 
 @pytest.mark.asyncio
@@ -189,6 +218,12 @@ async def test_should_i_apply_populates_llm_assessment_when_apply_and_budget_all
 
     assert result.llm_assessment == _FAKE_ASSESSMENT
     assert reranker.call_count == 1
+    assert result.provenance is not None
+    # An LLM verdict on top is what makes the analysis "full", and the model that
+    # produced it is recorded on the result rather than looked up later.
+    assert result.provenance.analysis_level is AnalysisLevel.FULL
+    assert result.provenance.match_model == _FAKE_ASSESSMENT.model_label
+    assert result.provenance.fallback_reason is None
 
 
 @pytest.fixture
@@ -217,10 +252,10 @@ async def test_strong_match_recommends_apply(matching_service: MatchingService) 
     job = _job(
         description="We use Django and PostgreSQL.",
         skills=[
-            NormalizedJobSkill(name="Django", required=True),
-            NormalizedJobSkill(name="PostgreSQL", required=True),
+            NormalizedJobSkill(name="Django", requirement=RequirementType.REQUIRED_EXPLICIT),
+            NormalizedJobSkill(name="PostgreSQL", requirement=RequirementType.REQUIRED_EXPLICIT),
         ],
-        skills_extracted_by="Ollama (llama3.2:3b)",
+        skills_extracted_by="Groq (llama-3.3-70b-versatile)",
     )
     profile = _profile(skills=["Django", "PostgreSQL"])
 
@@ -229,7 +264,10 @@ async def test_strong_match_recommends_apply(matching_service: MatchingService) 
     assert match.eligible is True
     assert match.recommendation == Recommendation.APPLY
     assert match.practical_fit > 80
-    assert match.skills_source == "Ollama (llama3.2:3b)"
+    assert match.provenance is not None
+    assert match.provenance.skills_model == "Groq (llama-3.3-70b-versatile)"
+    assert match.provenance.embedding_model == "all-MiniLM-L6-v2"
+    assert match.provenance.analysis_level is AnalysisLevel.STANDARD
     assert any(reason.label == "Django" for reason in match.strengths)
 
 
@@ -242,7 +280,7 @@ async def test_practical_fit_exceeds_requirement_match_when_skills_are_only_tran
     job = _job(
         title="Backend Engineer",
         description="We use FastAPI.",
-        skills=[NormalizedJobSkill(name="FastAPI", required=True)],
+        skills=[NormalizedJobSkill(name="FastAPI", requirement=RequirementType.REQUIRED_EXPLICIT)],
     )
     profile = _profile(skills=["Django"])  # no FastAPI, but transfers via Django
 
@@ -312,7 +350,7 @@ async def test_domain_mismatch_gate_forces_skip_despite_superficial_skill_match(
     job = _job(
         title="Account Manager",
         description="Manage client relationships.",
-        skills=[NormalizedJobSkill(name="Excel", required=True)],
+        skills=[NormalizedJobSkill(name="Excel", requirement=RequirementType.REQUIRED_EXPLICIT)],
     )
     profile = CandidateProfile(
         id="p1",
@@ -345,8 +383,8 @@ async def test_weak_match_recommends_skip() -> None:
         title="Backend Engineer",
         description="We use Rust and Kafka.",
         skills=[
-            NormalizedJobSkill(name="Rust", required=True),
-            NormalizedJobSkill(name="Kafka", required=True),
+            NormalizedJobSkill(name="Rust", requirement=RequirementType.REQUIRED_EXPLICIT),
+            NormalizedJobSkill(name="Kafka", requirement=RequirementType.REQUIRED_EXPLICIT),
         ],
     )
     profile = _profile(skills=["Photoshop"])
@@ -355,3 +393,67 @@ async def test_weak_match_recommends_skip() -> None:
 
     assert match.eligible is True
     assert match.recommendation == Recommendation.SKIP
+
+
+def _hybrid_service(embedding_provider: object) -> MatchingService:
+    return MatchingService(
+        HardFilterService(),
+        DeterministicScorer(),
+        SemanticScorer(embedding_provider),  # type: ignore[arg-type]
+        SkillMatcher(embedding_provider),  # type: ignore[arg-type]
+        RoleMatcher(embedding_provider),  # type: ignore[arg-type]
+        models=PipelineModels(embedding="all-MiniLM-L6-v2"),
+        hybrid_engine=HybridMatchEngine(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_hybrid_engine_owns_the_score_when_it_is_enabled() -> None:
+    service = _hybrid_service(_FakeEmbeddingProvider())
+    job = _job(
+        skills=[NormalizedJobSkill(name="Django", requirement=RequirementType.REQUIRED_EXPLICIT)],
+        skills_extracted_by="Groq (llama-3.3-70b-versatile)",
+    )
+
+    match = await service.evaluate("canonical-1", job, _profile(skills=["Django"]), _preferences())
+
+    assert match.provenance is not None
+    assert match.provenance.engine is MatchEngine.HYBRID
+    # The score now says how sure it is, separately from how high it is.
+    assert match.confidence is not None and 0.0 < match.confidence <= 1.0
+    # Pinning the constant rather than a literal: the point is that the scorer
+    # version is recorded, and it moves whenever the rules change.
+    assert match.provenance.versions.scorer == SCORER_VERSION
+    assert match.requirement_match == 100.0
+
+
+@pytest.mark.asyncio
+async def test_the_hybrid_engine_reports_unknowns_as_risks_not_gaps() -> None:
+    # Explicit vectors: this fake makes every unlisted text identical, so an
+    # unrelated skill would otherwise "match" the candidate's at similarity 1.0.
+    service = _hybrid_service(
+        _FakeEmbeddingProvider({"Rust": [0.0, 1.0], "Django": [1.0, 0.0]})
+    )
+    job = _job(
+        skills=[NormalizedJobSkill(name="Rust", requirement=RequirementType.UNKNOWN)],
+        skills_extracted_by="Groq (llama-3.3-70b-versatile)",
+    )
+
+    match = await service.evaluate("canonical-1", job, _profile(skills=["Django"]), _preferences())
+
+    assert match.gaps == []
+    assert any("without saying whether they are required" in risk for risk in match.risks)
+
+
+@pytest.mark.asyncio
+async def test_without_the_flag_nothing_about_the_old_path_changes() -> None:
+    # The pre-v3 pipeline stays the default until the flag is switched on.
+    service = _matching_service(_FakeEmbeddingProvider())
+    job = _job(skills=[NormalizedJobSkill(name="Django", requirement=RequirementType.REQUIRED_EXPLICIT)])
+
+    match = await service.evaluate("canonical-1", job, _profile(skills=["Django"]), _preferences())
+
+    assert match.provenance is not None
+    assert match.provenance.engine is MatchEngine.DETERMINISTIC
+    assert match.confidence is None
+    assert match.risks == []

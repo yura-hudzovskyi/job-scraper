@@ -21,7 +21,6 @@ from app.domain.matching.models import (
     ScoreBreakdown,
 )
 from app.integrations.ai.llm.base import LLMProvider
-from app.integrations.ai.llm.budget import DailyCallBudget
 
 
 class _LlmVerdict(BaseModel):
@@ -84,9 +83,8 @@ def _candidate_summary_text(profile: CandidateProfile) -> tuple[str, str, str, s
 
 
 class LlmReranker:
-    def __init__(self, llm_provider: LLMProvider, budget: DailyCallBudget):
+    def __init__(self, llm_provider: LLMProvider):
         self._llm_provider = llm_provider
-        self._budget = budget
 
     async def assess(
         self,
@@ -95,13 +93,11 @@ class LlmReranker:
         breakdown: ScoreBreakdown,
         strengths: list[MatchReason],
         gaps: list[MatchGap],
-    ) -> LlmAssessment | None:
-        """Returns None (not an error) when the daily call budget is exhausted —
-        callers degrade to deterministic-only, same as every other optional AI
-        layer in this app."""
-        if not await self._budget.try_consume():
-            return None
-
+    ) -> LlmAssessment:
+        """Raises NoCapacity (app/integrations/ai/routing/router.py) when this
+        capability's daily budget is spent or every provider leg is cooling down.
+        MatchingService turns that into a recorded fallback reason rather than a
+        failed match, so the caller still gets its deterministic score."""
         roles, skills, experience, achievements = _candidate_summary_text(profile)
         prompt = _PROMPT.format(
             job_title=job.title,

@@ -58,9 +58,9 @@ async def test_set_override_with_none_clears_it() -> None:
 @pytest.mark.asyncio
 async def test_set_override_with_empty_string_clears_it() -> None:
     repository = AiSettingsRepository(_FakeRedis())  # type: ignore[arg-type]
-    await repository.set_override("llm_model", "qwen2.5:14b")
+    await repository.set_override("groq_model", "llama-3.1-8b-instant")
 
-    await repository.set_override("llm_model", "")
+    await repository.set_override("groq_model", "")
 
     assert await repository.get_overrides() == {}
 

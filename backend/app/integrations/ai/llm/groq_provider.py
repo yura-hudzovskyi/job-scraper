@@ -1,6 +1,6 @@
 """Job-pipeline LLM provider — Groq's free tier runs open models (Llama 3.x, etc.)
-on dedicated inference hardware, so a response comes back in a second or two
-instead of the minutes a 14B+ model needs on CPU-only Ollama under load. See
+on dedicated inference hardware, so a response comes back in a second or two —
+fast enough to churn through a real backlog of scraped jobs. See
 docs/matching-engine.md's "LLM provider policy" for where this fits.
 
 Uses the `openai` SDK pointed at Groq's OpenAI-compatible endpoint — Groq's own
@@ -11,11 +11,9 @@ not the SDK's `.parse()` schema-enforcement helper OpenAILLMProvider uses: that
 helper assumes OpenAI's specific structured-outputs wire contract
 (`response_format: {"type": "json_schema", ...}`), and whether every model in
 Groq's catalog implements that exact contract wasn't verified against a live
-account in this environment — same "verify before relying on it" caveat as
-ollama_provider.py. JSON mode (guaranteed-valid-JSON, not guaranteed-matching-
-schema) is the one thing documented across Groq's whole catalog, so the schema is
-spelled out in the prompt instead and validated here, the same approach
-OllamaLLMProvider uses.
+account in this environment. JSON mode (guaranteed-valid-JSON, not
+guaranteed-matching-schema) is the one thing documented across Groq's whole
+catalog, so the schema is spelled out in the prompt instead and validated here.
 
 max_retries=0: the `openai` SDK retries 429s internally by default (with its own
 backoff) before ever raising back to caller code — which fights FallbackLLMProvider

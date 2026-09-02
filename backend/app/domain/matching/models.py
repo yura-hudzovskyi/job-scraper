@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
+from app.domain.matching.provenance import MatchProvenance
+
 
 class Recommendation(StrEnum):
     APPLY = "apply"
@@ -87,12 +89,16 @@ class JobMatch:
     gaps: list[MatchGap] = field(default_factory=list)
 
     recommendation: Recommendation | None = None
+    # How much evidence stood behind the score, 0-1 — see hybrid.py. Deliberately
+    # separate from the score: an 84 backed by two extracted requirements and an
+    # 84 backed by twelve are not the same claim.
+    confidence: float | None = None
+    # What the result could not establish. Never gaps — see HybridMatchEngine.
+    risks: list[str] = field(default_factory=list)
     llm_assessment: LlmAssessment | None = None
-    skills_source: str | None = None  # which LLM extracted this job's skills, if any
-    # "deterministic" for every match scored by the current pipeline. Historical
-    # rows from before the deterministic-primary rewrite may still read
-    # "AI (<model>)" — that's the retired AiMatcher path, kept as-is; not produced
-    # by new matches.
-    scored_by: str | None = None
+    # How this result was produced — engine, analysis level, the CV/job revisions
+    # it was scored against, the models involved. See provenance.py; None only for
+    # a match built outside the pipeline (tests, or a row stored before v3).
+    provenance: MatchProvenance | None = None
     scored_at: datetime | None = None  # bumped on every rescore — lets the UI detect "rescore finished"
     decision: MatchDecision = MatchDecision.PENDING

@@ -10,7 +10,8 @@ from app.api.deps import get_current_user_id, get_notification_repository, get_p
 from app.domain.candidates.models import UserPreference
 from app.domain.notifications.policy import NotificationPolicyConfig
 from app.repositories.notification_repository import NotificationRepository
-from app.services.profile_service import LlmNotConfigured, ProfileService
+from app.services.ai_errors import LlmCallFailed, LlmNotConfigured
+from app.services.profile_service import ProfileService
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -79,6 +80,8 @@ async def ai_fill_preferences(
         suggestion = await profile_service.suggest_preferences(user_id)
     except LlmNotConfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LlmCallFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

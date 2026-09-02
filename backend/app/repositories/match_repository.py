@@ -20,6 +20,7 @@ from app.domain.matching.models import (
     Recommendation,
     ScoreBreakdown,
 )
+from app.domain.matching.provenance import provenance_from_payload, provenance_payload
 
 
 def _to_llm_assessment(payload: dict[str, Any] | None) -> LlmAssessment | None:
@@ -44,9 +45,10 @@ def _to_job_match(model: JobMatchModel) -> JobMatch:
         strengths=[MatchReason(**reason) for reason in model.strengths],
         gaps=[MatchGap(**gap) for gap in model.gaps],
         recommendation=Recommendation(model.recommendation) if model.recommendation else None,
+        confidence=model.confidence,
+        risks=list(model.risks or []),
         llm_assessment=_to_llm_assessment(model.llm_assessment),
-        skills_source=model.skills_source,
-        scored_by=model.scored_by,
+        provenance=provenance_from_payload(model.provenance),
         scored_at=model.scored_at,
         decision=MatchDecision(model.decision),
     )
@@ -65,13 +67,14 @@ class MatchRepository:
             "strengths": [asdict(reason) for reason in match.strengths],
             "gaps": [asdict(gap) for gap in match.gaps],
             "recommendation": match.recommendation.value if match.recommendation else None,
+            "confidence": match.confidence,
+            "risks": list(match.risks),
             "llm_assessment": (
                 {**asdict(match.llm_assessment), "recommendation": match.llm_assessment.recommendation.value}
                 if match.llm_assessment
                 else None
             ),
-            "skills_source": match.skills_source,
-            "scored_by": match.scored_by,
+            "provenance": provenance_payload(match.provenance) if match.provenance else None,
             # Explicit, not the column's server_default — server_default only fires
             # on INSERT, so without this a rescore's on_conflict_do_update left the
             # original scored_at untouched forever, making it useless as a

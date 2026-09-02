@@ -1,15 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { ApiError } from "../api/client";
-import { getJob, getJobMatch, rescoreJob } from "../api/endpoints";
+import { analyzeJob, getJob, getJobMatch, rescoreJob } from "../api/endpoints";
+import type { MatchProvenance } from "../api/types";
 import { Button, Card, ErrorBanner, SectionTitle } from "../components/ui";
 
-// Rescoring runs a background LLM call that can take anywhere from a couple of
-// seconds (Gemini) to 60-90s (a 14B-class Ollama fallback on CPU, see
-// docs/deployment.md) — polling briefly and giving up beats both "assume it's
-// done after a fixed 3s" (wrong: showed stale data) and polling forever.
+// Rescoring runs a background LLM call whose latency depends on the provider and
+// on how deep the Celery queue is — polling briefly and giving up beats both
+// "assume it's done after a fixed 3s" (wrong: showed stale data) and polling
+// forever.
 const RESCORE_POLL_INTERVAL_MS = 4000;
 const RESCORE_POLL_TIMEOUT_MS = 120_000;
 
@@ -29,8 +30,80 @@ const BREAKDOWN_LABELS: Record<string, string> = {
 // a fabricated 100 — see docs/matching-engine.md's "No extracted skills is not a
 // perfect match"). Showing that as a literal "100%" reads as a confident, fully-
 // assessed match when nothing was actually checked, which is worse than showing
-// nothing at all.
+// nothing at all. The backend says so directly now: analysis_level "limited".
 const SKILL_DEPENDENT_KEYS = new Set(["skills", "transferable_skills", "preferences"]);
+
+const ENGINE_LABELS: Record<string, string> = {
+  deterministic: "Deterministic pipeline",
+  hybrid: "Hybrid analysis",
+  llm_enriched: "Full AI analysis",
+};
+
+const ANALYSIS_LEVEL_LABELS: Record<string, string> = {
+  full: "Full — an LLM verdict on top of the score",
+  standard: "Standard — scored against the extracted requirements",
+  limited: "Limited — no requirements were extracted to check against",
+};
+
+const FALLBACK_LABELS: Record<string, string> = {
+  no_llm_provider: "No LLM provider configured",
+  llm_budget_exhausted: "Daily LLM budget exhausted",
+  below_llm_threshold: "Below the threshold for an LLM second opinion",
+};
+
+function documentLabel(document: { version: number; content_hash: string } | null) {
+  return document ? `v${document.version} · ${document.content_hash}` : null;
+}
+
+/** Everything recorded about how this result was produced. Read from the match
+ *  itself, never from current settings — an old result must keep naming the
+ *  models that actually ran. See docs/ai-pipeline-v3.md (9.2). */
+function AnalysisDetails({ provenance }: { provenance: MatchProvenance }) {
+  const rows: [string, string | null][] = [
+    ["Engine", ENGINE_LABELS[provenance.engine] ?? provenance.engine],
+    [
+      "Analysis level",
+      ANALYSIS_LEVEL_LABELS[provenance.analysis_level] ?? provenance.analysis_level,
+    ],
+    ["Match model", provenance.match_model],
+    ["Reranker", provenance.rerank_model],
+    ["Skill extraction", provenance.skills_model],
+    ["Embedding", provenance.embedding_model],
+    ["Cross-encoder", provenance.cross_encoder_model],
+    ["CV version", documentLabel(provenance.profile)],
+    ["Job version", documentLabel(provenance.job)],
+    [
+      "Scorer / prompt",
+      `score-v${provenance.versions.scorer} · match-v${provenance.versions.match_prompt}`,
+    ],
+    [
+      "Fallback",
+      provenance.fallback_reason
+        ? (FALLBACK_LABELS[provenance.fallback_reason] ?? provenance.fallback_reason)
+        : null,
+    ],
+    [
+      "Generated",
+      provenance.generated_at ? new Date(provenance.generated_at).toLocaleString() : null,
+    ],
+  ];
+
+  return (
+    <details className="rounded border border-slate-200 p-3">
+      <summary className="cursor-pointer text-xs text-slate-500">Analysis details</summary>
+      <dl className="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-xs">
+        {rows
+          .filter(([, value]) => value)
+          .map(([label, value]) => (
+            <Fragment key={label}>
+              <dt className="text-slate-400">{label}</dt>
+              <dd className="text-slate-600">{value}</dd>
+            </Fragment>
+          ))}
+      </dl>
+    </details>
+  );
+}
 
 export function JobDetails() {
   const { jobId } = useParams<{ jobId: string }>();
@@ -39,10 +112,9 @@ export function JobDetails() {
 
   // Rescoring is a background Celery task, not a synchronous call — the button
   // used to just wait a fixed 3s and invalidate once, which silently showed
-  // stale data whenever scoring took longer than that (routine now that scoring
-  // can fall back to a slow local Ollama call). Instead: poll until the match's
-  // scored_at timestamp actually moves past what it was before this rescore, or
-  // give up after RESCORE_POLL_TIMEOUT_MS.
+  // stale data whenever scoring took longer than that. Instead: poll until the
+  // match's scored_at timestamp actually moves past what it was before this
+  // rescore, or give up after RESCORE_POLL_TIMEOUT_MS.
   const [pollDeadline, setPollDeadline] = useState<number | null>(null);
   const scoredAtBeforeRescore = useRef<string | null>(null);
 
@@ -67,6 +139,17 @@ export function JobDetails() {
 
   const rescoreMutation = useMutation({
     mutationFn: () => rescoreJob(jobId),
+    onSuccess: () => {
+      scoredAtBeforeRescore.current = matchQuery.data?.scored_at ?? null;
+      setPollDeadline(Date.now() + RESCORE_POLL_TIMEOUT_MS);
+      queryClient.invalidateQueries({ queryKey: ["job-match", jobId] });
+    },
+  });
+
+  // Enrichment upserts the match, so the same scored_at poll that watches a
+  // rescore watches this too.
+  const analyzeMutation = useMutation({
+    mutationFn: () => analyzeJob(jobId),
     onSuccess: () => {
       scoredAtBeforeRescore.current = matchQuery.data?.scored_at ?? null;
       setPollDeadline(Date.now() + RESCORE_POLL_TIMEOUT_MS);
@@ -144,6 +227,19 @@ export function JobDetails() {
                 </p>
                 <p className="text-sm text-slate-500">Requirement match</p>
               </div>
+              {matchQuery.data.confidence !== null && (
+                <div>
+                  <p className="text-xl font-semibold text-slate-600">
+                    {(matchQuery.data.confidence * 100).toFixed(0)}%
+                  </p>
+                  <p
+                    className="text-sm text-slate-500"
+                    title="How much evidence stood behind this score — kept separate from the score itself"
+                  >
+                    Confidence
+                  </p>
+                </div>
+              )}
               {matchQuery.data.recommendation && (
                 <span className="rounded-full bg-slate-900 px-3 py-1 text-sm text-white uppercase">
                   {matchQuery.data.recommendation}
@@ -154,8 +250,7 @@ export function JobDetails() {
             <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
               {Object.entries(matchQuery.data.breakdown).map(([key, value]) => {
                 const notActuallyAssessed =
-                  !matchQuery.data!.skills_source &&
-                  !matchQuery.data!.scored_by?.startsWith("AI (") &&
+                  matchQuery.data!.provenance?.analysis_level === "limited" &&
                   SKILL_DEPENDENT_KEYS.has(key);
                 return (
                   <div key={key} className="flex items-center justify-between">
@@ -173,7 +268,12 @@ export function JobDetails() {
 
             {matchQuery.data.strengths.length > 0 && (
               <div>
-                <p className="mb-1 text-sm text-slate-500">Matched skills</p>
+                <p className="mb-1 text-sm text-slate-500">
+                  Matched skills{" "}
+                  <span className="text-xs text-slate-400">
+                    — each one quotes the line in the posting it came from
+                  </span>
+                </p>
                 <div className="flex flex-wrap gap-1.5">
                   {matchQuery.data.strengths.map((strength) => (
                     <span
@@ -186,6 +286,14 @@ export function JobDetails() {
                   ))}
                 </div>
               </div>
+            )}
+
+            {matchQuery.data.strengths.some((strength) => strength.detail) && (
+              <ul className="-mt-1 flex flex-col gap-0.5 text-xs text-slate-500">
+                {matchQuery.data.strengths.map((strength) => (
+                  <li key={`why-${strength.label}`}>{strength.detail}</li>
+                ))}
+              </ul>
             )}
 
             {matchQuery.data.gaps.length > 0 && (
@@ -209,34 +317,56 @@ export function JobDetails() {
               </div>
             )}
 
-            {matchQuery.data.scored_by && (
-              <p className="text-xs text-slate-400">
-                {matchQuery.data.scored_by.startsWith("AI (")
-                  ? `Scored using ${matchQuery.data.scored_by}`
-                  : "Scored using the deterministic pipeline (no AI match available for this job)"}
-              </p>
-            )}
-
-            {matchQuery.data.skills_source ? (
-              <p className="text-xs text-slate-400">
-                Skills identified using {matchQuery.data.skills_source}
-              </p>
-            ) : (
-              !matchQuery.data.scored_by?.startsWith("AI (") && (
-                <p className="text-xs text-amber-600">
-                  ⚠️ No skills could be extracted for this job — this match is less reliable
-                  than usual (see the N/A fields above).
+            {matchQuery.data.risks.length > 0 && (
+              <div>
+                <p className="mb-1 text-sm text-slate-500">
+                  Unknowns{" "}
+                  <span className="text-xs text-slate-400">
+                    — things this result could not establish, not gaps
+                  </span>
                 </p>
-              )
+                <ul className="list-inside list-disc text-sm text-slate-600">
+                  {matchQuery.data.risks.map((risk) => (
+                    <li key={risk}>{risk}</li>
+                  ))}
+                </ul>
+              </div>
             )}
 
-            <Button
-              onClick={() => rescoreMutation.mutate()}
-              disabled={rescoreMutation.isPending || isRescoring}
-              className="w-fit bg-slate-600 hover:bg-slate-500"
-            >
-              {rescoreMutation.isPending || isRescoring ? "Rescoring…" : "Rescore"}
-            </Button>
+            {matchQuery.data.eligible &&
+              matchQuery.data.provenance?.analysis_level === "limited" && (
+                <p className="text-xs text-amber-600">
+                  ⚠️ No requirements could be extracted for this job — this match is less
+                  reliable than usual (see the N/A fields above).
+                </p>
+              )}
+
+            {matchQuery.data.provenance && (
+              <AnalysisDetails provenance={matchQuery.data.provenance} />
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => rescoreMutation.mutate()}
+                disabled={rescoreMutation.isPending || isRescoring}
+                className="w-fit bg-slate-600 hover:bg-slate-500"
+              >
+                {rescoreMutation.isPending || isRescoring ? "Rescoring…" : "Rescore"}
+              </Button>
+              {!matchQuery.data.llm_assessment && (
+                <Button
+                  onClick={() => analyzeMutation.mutate()}
+                  disabled={analyzeMutation.isPending || isRescoring}
+                  className="w-fit"
+                  title="Have an LLM review this analysis now, instead of waiting for it to come up in the daily ranking"
+                >
+                  {analyzeMutation.isPending ? "Queuing…" : "Analyze with AI"}
+                </Button>
+              )}
+            </div>
+            {analyzeMutation.isError && (
+              <ErrorBanner message="Failed to queue the analysis" />
+            )}
             {isRescoring && (
               <p className="text-sm text-slate-500">
                 Waiting for the new score to come back — this can take up to a couple of minutes.

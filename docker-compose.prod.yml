@@ -15,32 +15,6 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
 
-  # Local LLM — no per-token API cost. Needs a model pulled in once
-  # (docs/deployment.md) and enough RAM for whichever model you choose. `api` calls
-  # it for CV analysis when GEMINI_API_KEY isn't set or Gemini's free tier is
-  # rate-limited; `worker` calls it unconditionally for job skill extraction
-  # (see docs/matching-engine.md's "LLM provider policy"). `beat` never calls it —
-  # it only schedules, it doesn't run task bodies itself.
-  ollama:
-    image: ollama/ollama:latest
-    restart: unless-stopped
-    environment:
-      # Celery's worker pool runs several tasks concurrently (one per CPU core by
-      # default) — without this, Ollama will happily try to run more than one of
-      # those requests' inferences *in parallel* rather than queueing them. Two
-      # concurrent qwen2.5:14b inferences need ~26GB RAM combined on a 23GB box —
-      # they don't just run a bit slower, they thrash for RAM and can both blow
-      # past OLLAMA_TIMEOUT_SECONDS. Forcing this to 1 makes concurrent requests
-      # queue cleanly instead, each still finishing in its normal ~60-90s once its
-      # turn comes up. See docs/deployment.md.
-      OLLAMA_NUM_PARALLEL: 1
-      # Verbose server-side logging (prompt that reached the model, context/token
-      # counts, per-stage timings) — see docs/deployment.md. `docker compose logs -f
-      # ollama` to read it.
-      OLLAMA_DEBUG: "1"
-    volumes:
-      - ollama_data:/root/.ollama
-
   api:
     image: ghcr.io/yura-hudzovskyi/job-scraper-backend:latest
     restart: unless-stopped
@@ -49,12 +23,11 @@ services:
     depends_on:
       - postgres
       - redis
-      - ollama
 
   worker:
     image: ghcr.io/yura-hudzovskyi/job-scraper-backend:latest
     restart: unless-stopped
-    command: celery -A app.workers.celery_app worker --loglevel=info
+    command: celery -A app.workers.celery_app worker --loglevel=info -Q default,ai_interactive,ai_extraction,ai_matching,ai_backfill
     env_file: .env
     volumes:
       # sentence-transformers' embedding model cache — without this it re-downloads
@@ -63,7 +36,6 @@ services:
     depends_on:
       - postgres
       - redis
-      - ollama
 
   beat:
     image: ghcr.io/yura-hudzovskyi/job-scraper-backend:latest
@@ -92,5 +64,4 @@ services:
 volumes:
   pgdata:
   caddy_data:
-  ollama_data:
   hf_cache:

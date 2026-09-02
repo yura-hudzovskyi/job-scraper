@@ -1,7 +1,7 @@
 """Primary hosted LLM provider for the "quality matters" call site (CV analysis) —
 Google's free tier makes this the default paid-model-quality option that costs
 nothing, unlike OpenAI/Anthropic which need a funded account. See factory.py for the
-fallback-to-Ollama wiring on rate limit.
+fallback-to-the-next-leg wiring on rate limit.
 
 Uses the official `google-genai` SDK (the current unified SDK — the older
 `google-generativeai` package is deprecated, don't use it). Structured output via
