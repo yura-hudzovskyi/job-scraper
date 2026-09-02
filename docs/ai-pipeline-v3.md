@@ -1425,7 +1425,7 @@ at every commit.
 - [x] Phase 3 - capability router and quota manager
 - [x] Phase 4 - multi-lane embeddings and retrieval
 - [x] Phase 5 - reranking chain
-- [ ] Phase 6 - hybrid match engine
+- [x] Phase 6 - hybrid match engine
 - [ ] Phase 7 - LLM enrichment and priority scheduler
 - [ ] Phase 8 - UI completion and operations
 - [ ] Phase 9 - evaluation, rollout, and cleanup
@@ -1617,3 +1617,42 @@ Deviations from the plan text:
   engine actually produces a rerank run — adding fields nothing writes would be the same
   dead-schema problem the earlier phases avoided.
 - **NDCG@10 is unmeasured** — phase 9's labelled set is what that claim needs.
+
+### Phase 6 notes
+
+Landed: typed skill findings with ontology-first matching
+(`app/domain/matching/skill_matching.py`), experience from merged date intervals
+(`app/domain/candidates/experience.py`), the hybrid engine with dimensions, score,
+confidence, risks and evidence-templated explanations (`app/domain/matching/hybrid.py`),
+`MATCHING_PIPELINE_V3` routing scoring through it, `confidence`/`risks` carried through
+persistence and the API, rerank slots in provenance, and both shown on the job page.
+Backend suite 357 passed, `ruff` clean, frontend `tsc -b` clean, migration SQL verified
+offline.
+
+Acceptance checked: a batch completes with no LLM anywhere — rules extraction feeds the
+hybrid engine, which produces matched skills, gaps, strengths, risks, a score and a
+confidence (`tests/unit/test_hybrid_engine.py`); an unknown is never reported as a gap,
+at both the findings and the engine level; every result names its scorer, calibration,
+taxonomy and model versions through provenance.
+
+Two test-fixture bugs surfaced while writing these and are worth remembering: a fake
+embedding provider that returns one shared vector makes *every* skill match at similarity
+1.0, which silently turns "does this match" tests into "everything matches". The new
+fixture gives each text its own orthogonal vector; the older shared one in
+`test_matching_service.py` still has the sharp edge, so tests there pass vectors
+explicitly.
+
+Deviations from the plan text:
+
+- **The pre-v3 scorer is not deleted.** It is the default until the flag flips, and
+  removing the only way back before the hybrid engine has scored real data would be a
+  one-way door. Phase 9's rollout is where it goes.
+- **The plan's `MatchResult` type is expressed through `JobMatch` + `MatchProvenance`.**
+  A parallel result type would mean two shapes for the same thing across persistence, the
+  API, notifications and the Telegram cards, with no consumer for the second one.
+- **Rerank relevance isn't supplied per job.** The engine accepts it and falls back to
+  semantic similarity; a batch rerank needs a candidate set, which is phase 7's scheduler.
+  Per-job hosted reranking would be one API call per (job, user).
+- **Retrieval still doesn't drive scoring.** Every eligible job is still scored for every
+  user; wiring retrieval into the fan-out is phase 7's job, where the priority order it
+  produces is actually used.

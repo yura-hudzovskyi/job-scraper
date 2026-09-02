@@ -228,6 +228,46 @@ Retrieval deliberately does not re-run the hard filters: those live in
 them. Nor does it use an ANN index — at a few thousand jobs an exact pgvector
 scan is milliseconds, and the index comes when measurement says so.
 
+### The hybrid engine
+
+`backend/app/domain/matching/hybrid.py` is what the pipeline produces when no LLM
+is available, and it is a real answer rather than a degraded one. It runs behind
+`MATCHING_PIPELINE_V3`; with the flag off, the pre-v3 weighted scorer is
+untouched.
+
+| Dimension | Where it comes from | Weight |
+|---|---|---|
+| Required skills | share of *required* findings the candidate satisfies (ontology first, embeddings second) | 30% |
+| Relevant experience | merged date intervals vs what the posting asks for | 20% |
+| Role/domain fit | the reranker's calibrated relevance; semantic similarity stands in when it didn't run | 20% |
+| Responsibilities | section similarity | 15% |
+| Seniority | the posting's own label vs years actually worked | 10% |
+| Preferences | stack preference, pay and place | 5% |
+
+Three properties matter more than the weights, which are hypotheses until phase 9
+measures them:
+
+- **A gap is not an unknown.** Only a stated requirement the candidate
+  demonstrably lacks is a gap. A skill the posting mentions without framing, or a
+  CV whose dates can't be parsed, becomes a *risk* — shown, never counted as
+  missing.
+- **The score and its certainty are separate numbers.** `confidence` is built
+  from what was actually established: how many requirements had a definite
+  framing, how many carried an evidence quote, whether a reranker ran, whether
+  the CV's dates parsed, whether a model or the rules extractor read the posting.
+  A vacancy with nothing extracted still scores — it simply can't claim to have
+  checked anything, and says so at 0.25 rather than pretending.
+- **Explanations are templated from evidence.** A strength quotes the posting
+  line that created the requirement; nothing is generated, so nothing can be
+  invented.
+
+Experience is computed rather than trusted
+(`backend/app/domain/candidates/experience.py`): extraction models routinely add
+up overlapping roles, so intervals are merged, an ongoing role runs to today, and
+a skill can't have more years than the roles it appears in. Unreadable dates stay
+unknown — they lower confidence and appear as a risk instead of being scored as
+missing experience.
+
 ### Reranking
 
 Retrieval answers "which hundred vacancies are in the neighbourhood"; a reranker
