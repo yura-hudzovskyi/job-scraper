@@ -81,8 +81,9 @@ rendered no-op. Daily-digest delivery is still not built.
 `job_skill_extraction_service.py`). LLM reranking / "should I apply?" is now real
 too: `MatchingService.should_i_apply` calls an LLM for matches the deterministic
 pipeline already recommends CONSIDER or APPLY, gated by a configurable daily call
-budget (`LLM_RERANK_DAILY_LIMIT`) independent of the provider's own rate limits —
-see `app/domain/matching/llm_reranker.py` and `app/integrations/ai/llm/budget.py`.
+budget (`LLM_DAILY_LIMIT_MATCH_ENRICHMENT`) independent of the provider's own rate
+limits — see `app/domain/matching/llm_reranker.py` and
+`app/integrations/ai/quota/budget.py`.
 The deterministic pipeline itself (now blended with a local cross-encoder reranker
 on top of bi-encoder semantic similarity) is the sole scorer for every eligible
 job — no LLM in that path at all — see `docs/matching-engine.md` for the full

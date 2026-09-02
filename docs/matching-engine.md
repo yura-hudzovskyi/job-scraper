@@ -207,52 +207,66 @@ extraction (`backend/app/services/job_skill_extraction_service.py`, once per
 newly-scraped job *and* on every "rescore all vacancies" re-extraction), and the
 "should I apply?" reranker (`llm_reranker.py`, once per CONSIDER+APPLY (job, user)
 match — the highest-volume of all of them, now that scoring itself is fully
-deterministic). They split into two tiers by volume, each ordering the same two
-free tiers differently, with a circuit breaker on its primary, wired in
-`backend/app/integrations/ai/llm/factory.py`:
+deterministic). Each is a **capability**: call sites ask for "extract a profile", "read a job
+posting" or "enrich a match", and a router picks which provider serves it
+(`backend/app/integrations/ai/routing/`, wired from
+`backend/app/integrations/ai/llm/factory.py`). No call site names a vendor.
 
-- **`build_quality_llm_provider`** — CV analysis and preferences AI-fill. Both
-  are rare, user-triggered, and quality matters most (CV analysis is the one
-  artifact every match a user sees depends on), so this tries Gemini first and
-  falls back to Groq the instant Gemini returns 429 (quota exceeded) — never for
-  other errors, so a misconfigured key fails loudly instead of silently
-  degrading. A `GeminiCircuitBreaker` (see below) rides along.
-- **`build_job_llm_provider`** — job skill extraction (both the automatic
-  per-scrape run and "rescore all vacancies") and the "should I apply?" reranker
-  — the two call sites that run at real volume (once per job, once per
-  CONSIDER+APPLY (job, user) match). The same two providers in the opposite
-  order: Groq first, since it runs open models on dedicated inference hardware
-  and answers in a second or two, which is what makes processing a real backlog
-  (hundreds of jobs) practical — falling back to Gemini the instant Groq returns
-  429, with a `FixedCooldownCircuitBreaker` riding along.
-- Both fall back to **`build_configured_llm_provider`** — the optional paid
-  OpenAI/Anthropic leg (`LLM_PROVIDER` + `LLM_MODEL`) — when only one free tier
-  is configured, or neither.
+The order per capability is policy (`routing/policy.py`), and the same two free
+tiers appear in different orders:
 
-The two tiers order the same providers differently rather than isolating quotas
-outright: the job pipeline normally stays on Groq and only spills onto Gemini once
-Groq's limit trips, so CV analysis usually still finds Gemini's much smaller quota
-intact — but a long backlog run can eat into it. `LLM_RERANK_DAILY_LIMIT` and the
-circuit breakers keep that bounded; per-capability budget reserves are Phase 3 of
-docs/ai-pipeline-v3.md.
+- **`PROFILE_EXTRACTION`** — CV analysis and preferences AI-fill. Rare,
+  user-triggered, and the one artifact every match a user sees is built on, so it
+  leads with the quality model: Gemini, then Groq.
+- **`JOB_EXTRACTION`** — reading a posting, once per newly scraped job and again
+  on an explicit "rescore all vacancies". It leads with the fast one: Groq runs
+  open models on dedicated inference hardware and answers in a second or two,
+  which is what makes a real backlog practical.
+- **`MATCH_ENRICHMENT`** — the "should I apply?" verdict, currently once per
+  CONSIDER+APPLY match. It follows the job pipeline's order rather than leading
+  with the quality model, because putting background volume on Gemini first would
+  spend the small daily allowance that interactive work depends on.
 
-**Circuit breakers** (`backend/app/integrations/ai/llm/circuit_breaker.py`):
-retrying an exhausted provider on every subsequent call pays for — and waits
-on — a network round trip that's guaranteed to fail again, so once a 429 is
-actually observed, `FallbackLLMProvider` skips straight to the fallback for a
-cooldown period instead:
+The optional paid OpenAI/Anthropic leg (`LLM_PROVIDER` + `LLM_MODEL`) comes last
+in every chain, and a provider with no credentials is simply absent rather than a
+leg that always fails.
 
-- `GeminiCircuitBreaker` — Gemini's free tier is a *daily* cap, so the cooldown
-  runs until the next UTC midnight.
-- `FixedCooldownCircuitBreaker` — Groq enforces both per-minute and per-day
-  limits, and a 429 during normal use is far more likely to be the former (a
-  burst during "rescore all vacancies", not the whole day's quota), so this uses
-  a short, fixed cooldown (`GROQ_CIRCUIT_BREAKER_COOLDOWN_SECONDS`) instead of
-  parking every later call on the Gemini fallback until midnight over what was
-  probably transient.
+**Budgets are per capability** (`app/integrations/ai/quota/budget.py`,
+`LLM_DAILY_LIMIT_*`), and separate counters *are* the interactive reserve: a
+backlog run burning through job extraction cannot touch what CV analysis has left,
+because they never share a budget. The router checks the budget before choosing a
+leg, so an exhausted one costs no network round trip.
 
-Both are purely reactive to what the provider itself already said no to — no
-proactive budget/quota-counting needed on top.
+**Failures are classified, not lumped together**
+(`app/integrations/ai/routing/errors.py`). One predicate ("was that a 429?") made
+a broken API key look like a rate limit, so it degraded silently forever, and made
+a daily quota look like a blip, so it was re-tried every minute until midnight.
+Now:
+
+| Kind | What happens |
+|---|---|
+| `rate_limit` | the leg is parked for exactly what the reset header says (the longer of Groq's two windows), then reopens on its own |
+| `quota_exhausted` | parked until the quota really resets — a daily cap's own tiny `retryDelay` hint is not believed |
+| `transient` | timeouts and 5xx get a short cooldown |
+| `schema` | the provider is healthy and its answer wasn't: one repair attempt on the same leg, then the next leg. Nothing is parked |
+| `fatal` | 400/401/403/404 — logged for an operator and parked for half an hour, because retrying a bad key or a retired model id can't help |
+
+Cooldowns live in one Redis store with the reason attached
+(`routing/state.py`), which is what lets the System page say *why* a leg is
+unavailable and when it comes back.
+
+**When nothing can serve a call**, the router raises `NoCapacity` carrying the
+soonest reset instead of returning a silent `None`. Callers differ in what that
+should mean: job extraction falls back to the rules extractor and asks its Celery
+task to retry when the provider reopens (`app/workers/pacing.py` — countdown from
+the provider's own reset, capped and jittered, so the worker slot goes back to the
+pool instead of waiting), and matching records `llm_no_capacity` as the match's
+fallback reason and keeps its deterministic score.
+
+**Every call is logged** (`app/integrations/ai/quota/ledger.py`): capability,
+provider, model, outcome, latency and prompt size go into a capped Redis buffer
+that a scheduled task drains into `ai_invocations`. That history is what the
+`LLM_DAILY_LIMIT_*` numbers should be tuned against — they start as guesses.
 
 ### Changing models at runtime
 
@@ -265,7 +279,7 @@ changes — it still just takes a plain `Settings`. Precedence: the persisted UI
 override > the `.env` default.
 
 `POST /api/ai/models/test` fires one real, minimal completion straight at the raw
-Groq/Gemini provider (bypassing `FallbackLLMProvider` on purpose) and returns
+Groq/Gemini provider (bypassing the router on purpose) and returns
 either the real model label or the provider's own error text — use it before
 committing to a model change, since a model that's wrong, deprecated, or just
 rate-limited too tightly for this app's volume degrades *silently* otherwise
@@ -362,9 +376,10 @@ highest-leverage user-facing feature of the matching engine — implemented as
 It's deliberately narrow-cast: only called for matches already recommended
 `Recommendation.CONSIDER` or `Recommendation.APPLY` (never `SKIP` — see above) —
 that's both where the question is actually worth asking and a volume control on
-top of `LlmReranker`'s own daily call budget (`app/integrations/ai/llm/budget.py`,
-`LLM_RERANK_DAILY_LIMIT`), which caps usage independent of whatever the configured
-provider's own rate-limit/billing behavior is. Batch reranking over an explicit
+top of the `MATCH_ENRICHMENT` capability's own daily budget
+(`app/integrations/ai/quota/budget.py`, `LLM_DAILY_LIMIT_MATCH_ENRICHMENT`), which
+caps usage independent of whatever the configured provider's own
+rate-limit/billing behavior is. Batch reranking over an explicit
 shortlist (`rerank_shortlist`) is still deferred — see docs/roadmap.md.
 
 ## What the LLM must never own

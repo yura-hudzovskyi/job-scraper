@@ -1422,7 +1422,7 @@ at every commit.
 - [x] Phase 0 - stabilize the baseline (Ollama removal, feature flags)
 - [x] Phase 1 - versioned contracts and provenance
 - [x] Phase 2 - extraction v3 and skill ontology
-- [ ] Phase 3 - capability router and quota manager
+- [x] Phase 3 - capability router and quota manager
 - [ ] Phase 4 - multi-lane embeddings and retrieval
 - [ ] Phase 5 - reranking chain
 - [ ] Phase 6 - hybrid match engine
@@ -1508,3 +1508,45 @@ Deviations from the plan text:
 - **Categories are extracted but not yet used.** The confidence-aware gate (B2) is phase
   4 work; storing the category now is what makes that gate possible without re-reading
   every posting.
+
+### Phase 3 notes
+
+Landed: failure classification with reset-header parsing
+(`app/integrations/ai/routing/errors.py`), the capability router and its Redis-backed
+per-leg state (`routing/router.py`, `routing/state.py`), provider order and per-capability
+daily budgets as policy (`routing/policy.py`, `quota/budget.py`), every call site switched
+from vendor chains to capabilities, `NoCapacity` as a first-class outcome with Celery
+countdown rescheduling (`app/workers/pacing.py`), separate queues for interactive /
+extraction / matching / backfill work, the `ai_invocations` ledger with its Redis buffer
+and flush task, and a System page that shows each capability's chain, why a leg is parked
+and how much budget is left. `FallbackLLMProvider`, both circuit breakers and the
+reranker's private budget are gone. Backend suite 269 passed, `ruff` clean, frontend
+`tsc -b` clean, migration SQL verified offline.
+
+Acceptance checked: a forced 429 records the provider's own reset (the longer of Groq's
+two windows) and the leg is skipped without a round trip until it expires
+(`tests/unit/test_provider_errors.py`, `tests/unit/test_llm_router.py`); an auth error is
+classified fatal, logged for an operator and parked rather than retried; background work
+can't consume the interactive reserve because capabilities never share a counter; and a
+task that can't get capacity reschedules itself with a countdown instead of holding a
+worker slot.
+
+Deviations from the plan text:
+
+- **No `ai_model_policies` table.** Provider order lives in `routing/policy.py` and model
+  names are already runtime-overridable from the System page. A table would add an admin
+  surface for editing something that changes with the code (which vendors exist), not with
+  the deployment.
+- **Token accounting is a prompt-size proxy.** The ledger records `prompt_chars`, not
+  tokens: the four adapters report usage in four different shapes, and recording a field
+  guessed at from SDK internals that silently stays empty is worse than recording
+  something honest. Real token counts land when a provider adapter is next touched.
+- **Budgets are call counts, not token budgets or reservations.** The plan's atomic
+  reserve-then-reconcile flow buys accuracy that only matters once budgets are measured in
+  tokens; counting calls is what the current limits are expressed in.
+- **`MATCH_ENRICHMENT` leads with Groq, not Gemini.** It currently runs on every
+  CONSIDER+APPLY match, so quality-first would spend the small interactive allowance on
+  background volume. Phase 7 makes enrichment selective, which is when that order should
+  be revisited.
+- **No shadow/experiment queue or budget.** `ai_experiments` has nothing to carry until
+  phase 9 runs shadow traffic.

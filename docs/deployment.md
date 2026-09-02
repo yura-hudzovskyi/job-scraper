@@ -105,6 +105,10 @@ At minimum set:
 - `LLM_PROVIDER`/`LLM_MODEL` — optional paid leg (`openai` or `anthropic`, plus the
   matching `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`), tried only after both free tiers.
   Leave blank unless you'd rather not depend on a free tier at all.
+- `LLM_DAILY_LIMIT_*` — one daily call ceiling per capability (CV analysis, job
+  extraction, "should I apply?"). Separate counters are what keep a backlog run
+  from spending what interactive work needs; the System page shows how much of
+  each is used today.
 - `EMBEDDING_PROVIDER=sentence_transformers` (the default — needs no key, runs
   locally in the API/worker containers)
 
@@ -222,6 +226,12 @@ from the git checkout.
   (Oracle Object Storage's free tier is a reasonable target). Not set up here —
   personal-scale scraped-job data is regenerable by re-running the scrapers, so this
   is a "nice to have," not blocking.
+- **Worker queues**: AI work is split across `ai_interactive`, `ai_extraction`,
+  `ai_matching` and `ai_backfill` (plus `default` for everything else), so a
+  "rescore all vacancies" run can't sit in front of the jobs scraped since. The
+  worker command in both compose files consumes all of them with `-Q`; if you
+  split them across dedicated workers later, every queue still needs a consumer
+  or those tasks silently never run.
 - **Local `docker-compose.yml` is unaffected** — it still runs the dev build (bind
   mounts, `--reload`, `npm run dev`) exactly as before. `docker-compose.prod.yml` is
   a separate, self-contained file for the server, and doesn't include a frontend
