@@ -1,6 +1,8 @@
-"""Applies NotificationPolicy to a scored JobMatch and dispatches through
-NotificationService. Must be safe to retry — delivery is upserted per
-(notification_id, channel), see docs/notifications.md.
+"""Applies NotificationPolicy to a scored JobMatch and dispatches it.
+
+Safe to retry: delivery is upserted per (notification, channel), so a repeated
+run of the same match is a no-op rather than a second message. See
+docs/notifications.md.
 """
 
 import asyncio
@@ -29,11 +31,11 @@ async def _run(user_id: str, canonical_job_id: str) -> dict[str, bool | str]:
             uuid.UUID(user_id), uuid.UUID(canonical_job_id)
         )
         if match is None:
-            raise LookupError(f"job {canonical_job_id} has no JobMatch for user {user_id} yet")
+            return {"sent": False, "reason": "not matched yet"}
 
         job = await job_repository.get_normalized_job_for_canonical(uuid.UUID(canonical_job_id))
         if job is None:
-            raise LookupError(f"canonical job {canonical_job_id} has no normalized source record")
+            return {"sent": False, "reason": "no normalized record for this vacancy"}
 
         provider = await build_telegram_provider(
             uuid.UUID(user_id), notification_repository, get_settings()
@@ -45,27 +47,28 @@ async def _run(user_id: str, canonical_job_id: str) -> dict[str, bool | str]:
             uuid.UUID(canonical_job_id)
         )
         decision_counts = await match_repository.count_decisions(uuid.UUID(user_id))
-
         policy_config = await notification_repository.get_notification_policy_config(
             uuid.UUID(user_id)
         )
+
         service = NotificationService(
             NotificationPolicy(policy_config), provider, notification_repository
         )
-        notification = JobMatchNotification(
-            match=match,
-            job_title=job.title,
-            company=job.company,
-            source_links=source_links or [(job.source, job.url)],
-            salary=job.salary,
-            seniority=job.seniority,
-            required_experience_years=job.required_experience_years,
-            remote=job.location.remote,
-            pending_count=decision_counts.get(MatchDecision.PENDING, 0),
-            approved_count=decision_counts.get(MatchDecision.APPROVED, 0),
-            rejected_count=decision_counts.get(MatchDecision.REJECTED, 0),
+        sent = await service.notify_if_relevant(
+            uuid.UUID(user_id),
+            JobMatchNotification(
+                match=match,
+                job_title=job.title,
+                company=job.company,
+                source_links=source_links or [(job.source, job.url)],
+                salary=job.salary,
+                seniority=job.seniority,
+                remote=job.location.remote,
+                pending_count=decision_counts.get(MatchDecision.PENDING, 0),
+                approved_count=decision_counts.get(MatchDecision.APPROVED, 0),
+                rejected_count=decision_counts.get(MatchDecision.REJECTED, 0),
+            ),
         )
-        sent = await service.notify_if_relevant(uuid.UUID(user_id), notification)
 
     return {"sent": sent}
 

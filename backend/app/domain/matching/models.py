@@ -1,12 +1,14 @@
-"""Match result shapes. A score without a breakdown is a bug — see
-docs/matching-engine.md ("Explainability is mandatory").
+"""Match result shapes.
+
+A score here is never a verdict handed down: `score` is always reproducible from
+`similarity`, `relevance` and the weight, all three of which are stored and shown.
+If a job was never reranked, `relevance` is None and the UI says "not reranked"
+rather than implying a reranker agreed.
 """
 
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-
-from app.domain.matching.provenance import MatchProvenance
 
 
 class Recommendation(StrEnum):
@@ -16,11 +18,9 @@ class Recommendation(StrEnum):
 
 
 class MatchDecision(StrEnum):
-    """The user's own swipe-style verdict on a match — independent of and never
-    overwritten by `Recommendation` (the pipeline's own opinion). Set via the
-    Telegram Approve/Reject buttons (see telegram_provider.py and the webhook
-    route in api/routes/telegram.py); stays PENDING for matches never delivered
-    or not yet acted on."""
+    """The user's own verdict, set from the Telegram Approve/Reject buttons.
+    Independent of `Recommendation` (the pipeline's opinion) and never overwritten
+    by a re-match."""
 
     PENDING = "pending"
     APPROVED = "approved"
@@ -28,82 +28,26 @@ class MatchDecision(StrEnum):
 
 
 @dataclass(frozen=True)
-class ScoreBreakdown:
-    skills: float
-    role: float
-    experience: float
-    semantic_fit: float
-    salary: float
-    location: float
-    transferable_skills: float
-    preferences: float
-
-
-@dataclass(frozen=True)
-class MatchReason:
-    label: str
-    detail: str
-
-
-@dataclass(frozen=True)
-class MatchGap:
-    label: str
-    critical: bool
-
-
-@dataclass(frozen=True)
-class LlmAssessment:
-    """The LLM's qualitative "should I apply?" verdict over an already-scored
-    match — see LlmReranker (app/domain/matching/llm_reranker.py) and
-    docs/matching-engine.md's Phase 4 section. Only ever populated for
-    Recommendation.APPLY matches (see MatchingService.should_i_apply) — a
-    "second opinion" layered on top of the deterministic score, never a
-    replacement for it.
-    """
-
-    overall_fit: float
-    recommendation: Recommendation
-    confidence: float
-    strengths: list[str]
-    gaps: list[str]
-    critical_gaps: list[str]
-    transferable_experience: list[str]
-    interview_risk: str
-    summary: str
-    recommended_cv: str | None
-    model_label: str
-
-
-@dataclass(frozen=True)
 class JobMatch:
-    id: str
     user_id: str
     canonical_job_id: str
 
+    # Ineligible means a hard filter the user configured rejected it; the reasons
+    # name which one. An ineligible job is still stored, so "why isn't this in my
+    # list" always has an answer.
     eligible: bool
-    requirement_match: float
-    practical_fit: float
-    breakdown: ScoreBreakdown
+    filter_reasons: list[str] = field(default_factory=list)
 
-    strengths: list[MatchReason] = field(default_factory=list)
-    gaps: list[MatchGap] = field(default_factory=list)
-
-    recommendation: Recommendation | None = None
-    # How much evidence stood behind the score, 0-1 — see hybrid.py. Deliberately
-    # separate from the score: an 84 backed by two extracted requirements and an
-    # 84 backed by twelve are not the same claim.
-    confidence: float | None = None
-    # What the result could not establish. Never gaps — see HybridMatchEngine.
-    risks: list[str] = field(default_factory=list)
-    # Calibrated 0-1 relevance from the retrieval/rerank pass, and which model
-    # produced it. Written by that pass and read by the next scoring run — see
-    # app/workers/tasks/retrieve.py. None until it has run.
+    score: float = 0.0
+    similarity: float = 0.0
     relevance: float | None = None
-    relevance_model: str | None = None
-    llm_assessment: LlmAssessment | None = None
-    # How this result was produced — engine, analysis level, the CV/job revisions
-    # it was scored against, the models involved. See provenance.py; None only for
-    # a match built outside the pipeline (tests, or a row stored before v3).
-    provenance: MatchProvenance | None = None
-    scored_at: datetime | None = None  # bumped on every rescore — lets the UI detect "rescore finished"
+    rerank_position: int | None = None
+
+    recommendation: Recommendation = Recommendation.SKIP
+    embedding_model: str | None = None
+    rerank_model: str | None = None
+    rerank_weight: float | None = None
+
+    id: str = ""
+    scored_at: datetime | None = None
     decision: MatchDecision = MatchDecision.PENDING

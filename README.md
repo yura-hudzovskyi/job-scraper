@@ -1,108 +1,105 @@
 # Job Intelligence Platform
 
-A personal job-search engine: it aggregates vacancies from multiple sources, normalizes
-them into a source-independent domain model, scores them against a structured candidate
-profile, explains every score, and delivers relevant matches through configurable
-notification channels (Telegram first).
+A personal job-search engine: it scrapes vacancies from DOU and Djinni, normalizes
+and deduplicates them, ranks them against your CV with embedding search and
+reranking, and pushes the good ones to Telegram.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and
-[docs/roadmap.md](docs/roadmap.md) for what's implemented vs. still ahead — in short,
-Phases 1-3 (scraping, matching, and Telegram delivery) are real; LLM reranking/
-"should I apply?" (Phase 4) and the application tracker (Phase 5) are still
-interfaces/stubs waiting on their phase.
+The whole of its AI is **two Voyage API calls** — one turns text into vectors, the
+other reads your CV and a vacancy together and scores the fit. There is no LLM
+anywhere in it: no extracted skill lists, no generated verdicts, no summaries.
+Every score is two numbers and the weight between them, and the UI shows the
+arithmetic instead of asking you to trust it.
+
+## How it works
+
+```text
+scrape  ->  embed  ->  match  ->  notify
+```
+
+One background task, run on a timer and by a button on the System page. See
+[docs/pipeline.md](docs/pipeline.md) for each step, the scoring formula, and every
+setting.
+
+Everything tunable — models, batch sizes, the rerank weight, score thresholds,
+retention — lives in the database and is edited from the System page, with its own
+explanation rendered next to it. Only deployment secrets stay in `.env`.
 
 ## Repository layout
 
 ```text
-backend/     FastAPI app, domain logic, source/AI/notification adapters, Celery workers
+backend/     FastAPI app, domain logic, source/Voyage/Telegram adapters, Celery worker
 frontend/    React + TypeScript web app
-docs/        Deep-dive design docs (domain model, matching engine, adapters, API, roadmap)
+docs/        Design docs (pipeline, domain model, adapters, API, deployment)
 ```
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — system overview, principles, tech stack, module map
-- [docs/domain-model.md](docs/domain-model.md) — entities and their relationships
-- [docs/source-adapters.md](docs/source-adapters.md) — job source adapter contract (DOU, Djinni, ...)
-- [docs/matching-engine.md](docs/matching-engine.md) — hybrid scoring pipeline
-- [docs/notifications.md](docs/notifications.md) — notification channels and delivery policy
+- [ARCHITECTURE.md](ARCHITECTURE.md) — principles, tech stack, module map
+- [docs/pipeline.md](docs/pipeline.md) — the four steps, scoring, configuration, resets
+- [docs/domain-model.md](docs/domain-model.md) — entities and where the boundaries sit
+- [docs/source-adapters.md](docs/source-adapters.md) — the job-source adapter contract
+- [docs/notifications.md](docs/notifications.md) — delivery policy and the Telegram card
 - [docs/api.md](docs/api.md) — REST API surface
-- [docs/roadmap.md](docs/roadmap.md) — build phases and definition of done
-- [docs/deployment.md](docs/deployment.md) — deploying to an Oracle Cloud free VM with auto-deploy on push
+- [docs/deployment.md](docs/deployment.md) — Oracle Cloud free VM, auto-deploy on push
+
+## Getting started
+
+You need a [Voyage API key](https://dashboard.voyageai.com/). Without one the app
+still scrapes and stores vacancies, but there is no search and no ranking — and
+the System page says exactly that rather than showing an empty list.
+
+```bash
+cp .env.example .env          # set VOYAGE_API_KEY, and TELEGRAM_BOT_TOKEN if you want alerts
+docker compose up -d          # API, worker, beat, Postgres+pgvector, Redis, web
+docker compose exec api alembic upgrade head
+```
+
+Then, in the UI:
+
+1. Register, and upload a CV on **Profile**.
+2. Set what you're looking for on **Settings** — the first three fields go into
+   the query the models see; everything under "Rules" filters vacancies out.
+3. Press **Run the whole pipeline** on **System**. It scrapes, embeds, matches and
+   notifies, and reports what each step did.
 
 ## Local development
 
-The backend runs fine outside Docker for iterating on it directly:
+The backend runs outside Docker for iterating on it:
 
 ```bash
 cd backend
 python -m venv .venv
-.venv/Scripts/activate        # .venv/bin/activate on macOS/Linux
+.venv/Scripts/activate         # .venv/bin/activate on macOS/Linux
 pip install -e ".[dev]"
-pytest                        # unit tests — no DB needed
+pytest                         # unit tests — no DB, no network
+ruff check app tests
+mypy app                       # strict
 ```
 
-Running the API/workers for real needs Postgres + Redis:
+Running it for real needs Postgres + Redis:
 
 ```bash
-cp .env.example .env
 docker compose up -d postgres redis
-alembic upgrade head           # from backend/, with .venv active
-uvicorn app.main:app --reload  # from backend/
+alembic upgrade head            # from backend/, with .venv active
+uvicorn app.main:app --reload
+celery -A app.workers.celery_app worker --loglevel=info
 ```
 
-`docker compose up` brings up the full stack (API, worker, beat, web) once you also
-have the frontend dependencies installed (`cd frontend && npm install`).
+Frontend:
+
+```bash
+cd frontend && npm install && npm run dev
+```
 
 ## Status
 
-**Phase 1** — the DOU and Djinni adapters really scrape (verified against both
-fixtures and the live sites), jobs are normalized/deduplicated and stored in Postgres,
-CV upload / preferences are real DB-backed endpoints.
+**Working end to end:** DOU and Djinni scraping (verified against fixtures and the
+live sites), normalization and cross-source deduplication, Voyage embedding +
+pgvector search, Voyage reranking, hard filters, score bands, Telegram swipe cards
+with Approve/Reject via webhook, idempotent delivery, daily retention cleanup, and
+a System page that configures and runs all of it.
 
-**Phase 2** — CV analysis extracts a structured CandidateProfile via the configured
-LLM provider (Gemini/Groq/Anthropic/OpenAI, all implemented against their real
-APIs); a
-~65-skill ontology backs deterministic scoring (skills, transferable skills, role,
-experience, salary, location, stack preferences) plus real semantic similarity via
-local sentence-transformers embeddings; hard filters run first; every match is
-explainable (component breakdown, strengths, gaps). Live end-to-end verified without
-a database. Persisted embeddings (pgvector) are deferred — on-demand computation is
-correct and fine at this scale.
-
-**Phase 3** — NotificationPolicy (score thresholds, quiet hours) gates delivery
-through a real Telegram Bot API provider (verified live), with idempotent delivery
-tracking so nothing sends twice. `score → notify` is a real Celery chain. Each match
-is a swipe-style card with real Approve/Reject buttons — tapping one records a
-`MatchDecision` via a Telegram webhook (`api/routes/telegram.py`), not just a
-rendered no-op. Daily-digest delivery is still not built.
-
-**Phase 4** — job requirement extraction has run since Phase 2 (moved earlier, see
-`job_skill_extraction_service.py`). LLM reranking / "should I apply?" is now real
-too: `MatchingService.should_i_apply` calls an LLM for matches the deterministic
-pipeline already recommends CONSIDER or APPLY, gated by a configurable daily call
-budget (`LLM_DAILY_LIMIT_MATCH_ENRICHMENT`) independent of the provider's own rate
-limits — see `app/domain/matching/llm_reranker.py` and
-`app/integrations/ai/quota/budget.py`.
-The deterministic pipeline itself (now blended with a local cross-encoder reranker
-on top of bi-encoder semantic similarity) is the sole scorer for every eligible
-job — no LLM in that path at all — see `docs/matching-engine.md` for the full
-cross-encoder + Gemini/Groq provider policy. Batch reranking over a
-shortlist (`rerank_shortlist`) is still deferred — no shortlist view or digest
-batching exists to feed it yet.
-
-**Phase 5** (application tracker) is still interfaces/domain models without
-business logic — see [docs/roadmap.md](docs/roadmap.md).
-
-Docker was broken for most of this build (missing `services.iso`, unrelated to this
-repo) — every migration was verified offline instead (DDL compiled from the ORM
-models diffed against `alembic upgrade --sql` output), and every external API call
-was verified live against the real DOU/Djinni/Anthropic/OpenAI/Telegram endpoints
-where credentials allow. Once Docker was fixed, running the real stack against a live
-Postgres immediately surfaced three real bugs no amount of offline checking would
-have caught: `Settings.api_cors_origins` crashing startup when set from a plain
-comma-separated env var, native Windows uvicorn being unable to open an async
-Postgres connection at all (psycopg's async mode vs. uvicorn's forced
-`ProactorEventLoop`), and asyncpg rejecting timezone-naive timestamp columns against
-the app's timezone-aware datetimes. All three are fixed — see the git history for
-specifics ("fix: three real bugs found by actually running docker compose up").
+**Deliberately not built:** an application tracker, a daily digest, and anything
+that would need an LLM to be honest — per-requirement gap analysis, "should I
+apply" write-ups, cover letters. Adding those means adding a provider back; the
+pipeline is shaped so that would be a new step rather than a rewrite.

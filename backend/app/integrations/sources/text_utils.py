@@ -1,6 +1,7 @@
-"""Parsing helpers shared by all source adapters: salary text, seniority guess, and
-HTML-to-text conversion. Kept deterministic and dependency-light — real requirement/
-skill extraction is an LLM concern deferred to Phase 4 (see docs/roadmap.md).
+"""Parsing helpers shared by all source adapters: salary text, seniority guess and
+HTML-to-text conversion. Deterministic and dependency-light — nothing here infers
+anything. What a posting *asks for* is never extracted at all: it is read at match
+time, from the description text, by the embedding and rerank models.
 """
 
 import re
@@ -73,7 +74,7 @@ _SENIORITY_KEYWORDS: list[tuple[str, list[str]]] = [
 
 
 def guess_seniority(title: str) -> str | None:
-    """Best-effort seniority guess from a job title only (no LLM)."""
+    """Best-effort seniority guess from a job title alone."""
     lowered = title.lower()
     for level, keywords in _SENIORITY_KEYWORDS:
         if any(keyword in lowered for keyword in keywords):

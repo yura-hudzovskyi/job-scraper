@@ -5,13 +5,7 @@ Telegram's real (and free) auth-rejection path, not actual message delivery.
 import pytest
 
 from app.domain.jobs.models import SalaryRange
-from app.domain.matching.models import (
-    JobMatch,
-    MatchGap,
-    MatchReason,
-    Recommendation,
-    ScoreBreakdown,
-)
+from app.domain.matching.models import JobMatch, Recommendation
 from app.domain.notifications.models import JobMatchNotification
 from app.integrations.notifications.telegram_provider import (
     TelegramApiError,
@@ -27,11 +21,9 @@ def _match() -> JobMatch:
         user_id="u1",
         canonical_job_id="c1",
         eligible=True,
-        requirement_match=70.0,
-        practical_fit=84.0,
-        breakdown=ScoreBreakdown(86, 91, 75, 88, 100, 100, 70, 100),
-        strengths=[MatchReason(label="react", detail="react appears in the job and profile")],
-        gaps=[MatchGap(label="aws", critical=True)],
+        score=84.0,
+        similarity=0.71,
+        relevance=0.93,
         recommendation=Recommendation.APPLY,
     )
 
@@ -44,7 +36,6 @@ def _notification(**overrides: object) -> JobMatchNotification:
         "source_links": [("dou", "https://dou.ua/jobs/1"), ("djinni", "https://djinni.co/jobs/1")],
         "salary": SalaryRange(min=4000, max=5500, currency="USD"),
         "seniority": "Senior",
-        "required_experience_years": 3.0,
         "remote": True,
         "pending_count": 12,
         "approved_count": 5,
@@ -60,18 +51,28 @@ def test_format_message_includes_key_fields() -> None:
     assert "APPLY" in text
     assert "Senior Full Stack Engineer" in text
     assert "Acme" in text
-    assert "react" in text
-    assert "aws (required)" in text
     assert "4000" in text and "5500" in text and "USD" in text
     assert "Senior" in text
     assert "Remote" in text
 
 
-def test_format_message_is_short_and_shows_running_decision_counts() -> None:
-    # This is a swipe card, not a report — no separate "requirement match" line,
-    # and the running Approve/Reject totals must be visible on every card.
+def test_format_message_shows_the_signals_behind_the_score() -> None:
+    # A card that shows only a percentage asks to be trusted; this one shows
+    # where the number came from.
     text = _format_message(_notification())
-    assert "Requirement match" not in text
+    assert "similarity 71%" in text
+    assert "rerank 93%" in text
+
+
+def test_format_message_says_so_when_a_match_was_not_reranked() -> None:
+    match = _match()
+    text = _format_message(_notification(match=JobMatch(**{**vars(match), "relevance": None})))
+    assert "not reranked" in text
+    assert "rerank " not in text
+
+
+def test_format_message_is_short_and_shows_running_decision_counts() -> None:
+    text = _format_message(_notification())
     assert "12 pending" in text
     assert "5 approved" in text
     assert "3 rejected" in text

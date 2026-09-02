@@ -3,12 +3,7 @@ from typing import Any
 
 import pytest
 
-from app.domain.matching.models import (
-    JobMatch,
-    MatchDecision,
-    Recommendation,
-    ScoreBreakdown,
-)
+from app.domain.matching.models import JobMatch, MatchDecision, Recommendation
 from app.services.telegram_callback_service import TelegramCallbackService
 
 _USER_ID = uuid.uuid4()
@@ -21,9 +16,9 @@ def _match(decision: MatchDecision) -> JobMatch:
         user_id=str(_USER_ID),
         canonical_job_id=str(_CANONICAL_JOB_ID),
         eligible=True,
-        requirement_match=80.0,
-        practical_fit=80.0,
-        breakdown=ScoreBreakdown(80, 80, 80, 80, 80, 80, 80, 80),
+        score=80.0,
+        similarity=0.7,
+        relevance=0.85,
         recommendation=Recommendation.APPLY,
         decision=decision,
     )

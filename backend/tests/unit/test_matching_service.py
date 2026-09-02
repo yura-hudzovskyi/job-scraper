@@ -1,459 +1,285 @@
+import uuid
+from dataclasses import replace
+
 import pytest
 
-from app.domain.candidates.models import (
-    CandidateProfile,
-    CandidateSkill,
-    SkillLevel,
-    UserPreference,
-)
-from app.domain.jobs.models import (
-    EmploymentType,
-    JobLocation,
-    NormalizedJob,
-    NormalizedJobSkill,
-    RequirementType,
-)
-from app.domain.matching.filters import HardFilterService
-from app.domain.matching.hybrid import SCORER_VERSION, HybridMatchEngine
-from app.domain.matching.models import (
-    JobMatch,
-    LlmAssessment,
-    Recommendation,
-    ScoreBreakdown,
-)
-from app.domain.matching.provenance import (
-    AnalysisLevel,
-    FallbackReason,
-    MatchEngine,
-    MatchProvenance,
-    PipelineModels,
-)
-from app.domain.matching.role_matching import RoleMatcher
-from app.domain.matching.scoring import DeterministicScorer, SemanticScorer
-from app.domain.matching.service import MatchingService
-from app.domain.matching.skill_matching import SkillMatcher
-from app.integrations.ai.routing.router import Capability, NoCapacity
+from app.domain.candidates.models import CvDocument, UserPreference
+from app.domain.jobs.models import EmploymentType, JobLocation, NormalizedJob
+from app.domain.matching.models import Recommendation
+from app.domain.pipeline_config import DEFAULTS
+from app.repositories.embedding_repository import Candidate
+from app.services.matching_service import MatchingService
+
+_USER_ID = uuid.uuid4()
 
 
-class _FakeEmbeddingProvider:
-    """Any text not explicitly overridden gets the same default vector, so unrelated
-    calls (semantic_fit's profile/job text, skills not under test) trivially agree
-    with each other (cosine 1.0) unless a test deliberately overrides them to differ.
-    """
+def _job(title: str = "Backend Engineer", company: str = "Acme", **overrides) -> NormalizedJob:
+    defaults = {
+        "source": "dou",
+        "external_id": title,
+        "url": "https://dou.ua/jobs/1",
+        "title": title,
+        "company": company,
+        "description": "Build APIs.",
+        "employment_type": EmploymentType.FULL_TIME,
+        "location": JobLocation(remote=True),
+    }
+    defaults.update(overrides)
+    return NormalizedJob(**defaults)
 
-    def __init__(self, overrides: dict[str, list[float]] | None = None):
-        self._overrides = overrides or {}
-        self._default = [1.0, 0.0]
+
+class _FakeVoyage:
+    def __init__(self, relevance: dict[str, float] | None = None, rerank_fails: bool = False):
+        self.embedding_model = "voyage-test"
+        self.rerank_model = "rerank-test"
+        self._relevance = relevance or {}
+        self._rerank_fails = rerank_fails
+        self.rerank_calls: list[list[str]] = []
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        return [self._overrides.get(text, self._default) for text in texts]
+        return [[1.0, 0.0] for _ in texts]
+
+    async def rerank(self, query: str, documents: list[str]) -> list[float]:
+        self.rerank_calls.append(documents)
+        if self._rerank_fails:
+            raise RuntimeError("voyage down")
+        return [self._relevance.get(_title_of(document), 0.5) for document in documents]
 
 
-def _job(
-    title: str = "Senior Backend Engineer",
-    description: str = "We use Django and PostgreSQL.",
-    company: str = "Acme",
-    skills: list[NormalizedJobSkill] | None = None,
-    skills_extracted_by: str | None = None,
-) -> NormalizedJob:
-    return NormalizedJob(
-        source="dou",
-        external_id="1",
-        url="https://example.com/1",
-        title=title,
-        company=company,
-        description=description,
-        employment_type=EmploymentType.FULL_TIME,
-        location=JobLocation(remote=True),
-        salary=None,
-        seniority=None,
-        required_experience_years=None,
-        skills=skills or [],
-        skills_extracted_by=skills_extracted_by,
+def _title_of(document: str) -> str:
+    return document.splitlines()[0].removeprefix("TITLE: ")
+
+
+class _FakeCandidates:
+    def __init__(self, cv_text: str | None, preferences: UserPreference | None = None):
+        self._cv_text = cv_text
+        self._preferences = preferences
+
+    async def get_active_cv(self, user_id):
+        if self._cv_text is None:
+            return None
+        return CvDocument(
+            id="cv1",
+            user_id=str(user_id),
+            filename="cv.txt",
+            raw_text=self._cv_text,
+            uploaded_at=None,
+        )
+
+    async def get_preferences(self, user_id):
+        return self._preferences
+
+
+class _FakeEmbeddings:
+    def __init__(self, candidates: list[Candidate]):
+        self._candidates = candidates
+        self.saved: list[tuple] = []
+        self._hashes: dict = {}
+
+    async def stored_hashes(self, document_type, model, document_ids):
+        return self._hashes
+
+    async def save_vector(self, document_type, document_id, model, content_hash, vector):
+        self.saved.append((document_type, document_id, model))
+        self._hashes[document_id] = content_hash
+
+    async def get_vector(self, document_type, document_id, model):
+        return [1.0, 0.0]
+
+    async def search(self, model, query_vector, limit):
+        return self._candidates[:limit]
+
+
+class _FakeJobs:
+    def __init__(self, jobs: dict[uuid.UUID, NormalizedJob]):
+        self._jobs = jobs
+
+    async def list_all_canonical_job_ids(self):
+        return list(self._jobs)
+
+    async def list_normalized_jobs_for_canonical(self, canonical_job_ids):
+        return {job_id: self._jobs[job_id] for job_id in canonical_job_ids if job_id in self._jobs}
+
+
+class _FakeMatches:
+    def __init__(self) -> None:
+        self.written: list = []
+
+    async def upsert_many(self, matches):
+        self.written = matches
+        return len(matches)
+
+
+def _service(
+    jobs: dict[uuid.UUID, NormalizedJob],
+    candidates: list[Candidate],
+    voyage: _FakeVoyage,
+    cv_text: str | None = "15 years of Python.",
+    preferences: UserPreference | None = None,
+    config=DEFAULTS,
+) -> tuple[MatchingService, _FakeMatches]:
+    matches = _FakeMatches()
+    service = MatchingService(
+        config,
+        voyage,  # type: ignore[arg-type]
+        _FakeCandidates(cv_text, preferences),  # type: ignore[arg-type]
+        _FakeJobs(jobs),  # type: ignore[arg-type]
+        _FakeEmbeddings(candidates),  # type: ignore[arg-type]
+        matches,  # type: ignore[arg-type]
+    )
+    return service, matches
+
+
+@pytest.mark.asyncio
+async def test_a_user_without_a_cv_is_skipped_with_a_reason() -> None:
+    """Producing zero matches and producing zero matches *because there is
+    nothing to match against* are different outcomes, and the System page shows
+    the difference."""
+    service, matches = _service({}, [], _FakeVoyage(), cv_text=None)
+
+    result = await service.run_for_user(_USER_ID)
+
+    assert result.ran is False
+    assert result.skipped_reason == "no CV uploaded"
+    assert matches.written == []
+
+
+@pytest.mark.asyncio
+async def test_an_empty_cv_is_skipped_rather_than_embedded() -> None:
+    service, _ = _service({}, [], _FakeVoyage(), cv_text="   \n  ")
+
+    result = await service.run_for_user(_USER_ID)
+
+    assert "no readable text" in (result.skipped_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_an_unembedded_corpus_says_so_instead_of_returning_nothing() -> None:
+    service, _ = _service({}, [], _FakeVoyage())
+
+    result = await service.run_for_user(_USER_ID)
+
+    assert "no vacancies are embedded" in (result.skipped_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_score_blends_similarity_and_rerank_relevance() -> None:
+    job_id = uuid.uuid4()
+    voyage = _FakeVoyage(relevance={"Backend Engineer": 0.9})
+    service, matches = _service(
+        {job_id: _job()}, [Candidate(document_id=job_id, similarity=0.5)], voyage
     )
 
+    result = await service.run_for_user(_USER_ID)
 
-def _profile(skills: list[str] | None = None) -> CandidateProfile:
-    return CandidateProfile(
-        id="p1",
-        user_id="u1",
-        experience_years=5.0,
-        roles=[],
-        skills=[CandidateSkill(name=name, level=SkillLevel.COMMERCIAL) for name in (skills or [])],
+    match = matches.written[0]
+    assert match.similarity == 0.5
+    assert match.relevance == 0.9
+    # 0.5*0.3 + 0.9*0.7 = 0.78
+    assert match.score == 78.0
+    assert match.recommendation is Recommendation.APPLY
+    assert match.embedding_model == "voyage-test"
+    assert match.rerank_model == "rerank-test"
+    assert result.reranked == 1
+
+
+@pytest.mark.asyncio
+async def test_filtered_out_jobs_are_stored_with_the_rule_they_broke() -> None:
+    """A vacancy missing from the list because of the user's own rule has to be
+    explainable — otherwise "where did that job go" has no answer anywhere."""
+    job_id = uuid.uuid4()
+    service, matches = _service(
+        {job_id: _job(company="Acme")},
+        [Candidate(document_id=job_id, similarity=0.9)],
+        _FakeVoyage(),
+        preferences=UserPreference(user_id=str(_USER_ID), companies_blacklist=["Acme"]),
     )
 
+    result = await service.run_for_user(_USER_ID)
 
-def _preferences(**overrides) -> UserPreference:
-    defaults = {"user_id": "u1", "desired_salary_usd": None}
-    defaults.update(overrides)
-    return UserPreference(**defaults)
-
-
-def _matching_service(
-    embedding_provider: object,
-    llm_reranker: object | None = None,
-) -> MatchingService:
-    return MatchingService(
-        HardFilterService(),
-        DeterministicScorer(),
-        SemanticScorer(embedding_provider),  # type: ignore[arg-type]
-        SkillMatcher(embedding_provider),  # type: ignore[arg-type]
-        RoleMatcher(embedding_provider),  # type: ignore[arg-type]
-        llm_reranker=llm_reranker,  # type: ignore[arg-type]
-        models=PipelineModels(embedding="all-MiniLM-L6-v2"),
-    )
-
-
-def _match(recommendation: Recommendation) -> JobMatch:
-    return JobMatch(
-        id="m1",
-        user_id="u1",
-        canonical_job_id="c1",
-        eligible=True,
-        requirement_match=80.0,
-        practical_fit=80.0,
-        breakdown=ScoreBreakdown(90, 90, 90, 90, 100, 100, 90, 100),
-        recommendation=recommendation,
-        provenance=MatchProvenance(
-            engine=MatchEngine.DETERMINISTIC, analysis_level=AnalysisLevel.STANDARD
-        ),
-    )
-
-
-class _FakeLlmReranker:
-    def __init__(self, assessment: LlmAssessment | None = None, error: Exception | None = None):
-        self._assessment = assessment
-        self._error = error
-        self.call_count = 0
-
-    async def assess(self, job, profile, breakdown, strengths, gaps) -> LlmAssessment:
-        self.call_count += 1
-        if self._error is not None:
-            raise self._error
-        assert self._assessment is not None
-        return self._assessment
-
-
-_FAKE_ASSESSMENT = LlmAssessment(
-    overall_fit=85.0,
-    recommendation=Recommendation.APPLY,
-    confidence=0.8,
-    strengths=["Django"],
-    gaps=[],
-    critical_gaps=[],
-    transferable_experience=[],
-    interview_risk="low",
-    summary="Good fit.",
-    recommended_cv=None,
-    model_label="fake-model",
-)
-
-
-@pytest.mark.asyncio
-async def test_should_i_apply_is_a_noop_without_a_reranker() -> None:
-    service = _matching_service(_FakeEmbeddingProvider(), llm_reranker=None)
-    match = _match(Recommendation.APPLY)
-
-    result = await service.should_i_apply(_job(), _profile(), match)
-
-    assert result.llm_assessment is None
-    assert result.provenance is not None
-    assert result.provenance.fallback_reason is FallbackReason.NO_LLM_PROVIDER
-    # Only the provenance is amended — the score itself is untouched.
-    assert result.practical_fit == match.practical_fit
-
-
-@pytest.mark.asyncio
-async def test_should_i_apply_runs_for_consider_recommendation_too() -> None:
-    # Widened gate: the LLM overlay isn't APPLY-only anymore — CONSIDER-tier matches
-    # (a decent match per the deterministic pipeline) are worth a closer look too.
-    reranker = _FakeLlmReranker(_FAKE_ASSESSMENT)
-    service = _matching_service(_FakeEmbeddingProvider(), llm_reranker=reranker)
-    match = _match(Recommendation.CONSIDER)
-
-    result = await service.should_i_apply(_job(), _profile(), match)
-
-    assert result.llm_assessment == _FAKE_ASSESSMENT
-    assert reranker.call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_should_i_apply_is_a_noop_for_skip_recommendation() -> None:
-    reranker = _FakeLlmReranker(_FAKE_ASSESSMENT)
-    service = _matching_service(_FakeEmbeddingProvider(), llm_reranker=reranker)
-    match = _match(Recommendation.SKIP)
-
-    result = await service.should_i_apply(_job(), _profile(), match)
-
-    assert result.llm_assessment is None
-    assert reranker.call_count == 0
-    assert result.provenance is not None
-    assert result.provenance.fallback_reason is FallbackReason.BELOW_LLM_THRESHOLD
-
-
-@pytest.mark.asyncio
-async def test_should_i_apply_is_a_noop_when_reranker_returns_none() -> None:
-    # Budget exhausted (or any other degrade-gracefully reason) -> reranker
-    # itself returns None rather than raising; should_i_apply must leave the
-    # match untouched, not error.
-    reranker = _FakeLlmReranker(error=NoCapacity(Capability.MATCH_ENRICHMENT))
-    service = _matching_service(_FakeEmbeddingProvider(), llm_reranker=reranker)
-    match = _match(Recommendation.APPLY)
-
-    result = await service.should_i_apply(_job(), _profile(), match)
-
-    assert reranker.call_count == 1
-    assert result.llm_assessment is None
-    assert result.provenance is not None
-    assert result.provenance.fallback_reason is FallbackReason.LLM_NO_CAPACITY
-
-
-@pytest.mark.asyncio
-async def test_should_i_apply_populates_llm_assessment_when_apply_and_budget_allows() -> None:
-    reranker = _FakeLlmReranker(_FAKE_ASSESSMENT)
-    service = _matching_service(_FakeEmbeddingProvider(), llm_reranker=reranker)
-    match = _match(Recommendation.APPLY)
-
-    result = await service.should_i_apply(_job(), _profile(), match)
-
-    assert result.llm_assessment == _FAKE_ASSESSMENT
-    assert reranker.call_count == 1
-    assert result.provenance is not None
-    # An LLM verdict on top is what makes the analysis "full", and the model that
-    # produced it is recorded on the result rather than looked up later.
-    assert result.provenance.analysis_level is AnalysisLevel.FULL
-    assert result.provenance.match_model == _FAKE_ASSESSMENT.model_label
-    assert result.provenance.fallback_reason is None
-
-
-@pytest.fixture
-def matching_service() -> MatchingService:
-    return _matching_service(_FakeEmbeddingProvider())
-
-
-@pytest.mark.asyncio
-async def test_ineligible_job_short_circuits_before_scoring(
-    matching_service: MatchingService,
-) -> None:
-    job = _job(company="Blacklisted Corp")
-    preferences = _preferences(companies_blacklist=["Blacklisted Corp"])
-
-    match = await matching_service.evaluate("canonical-1", job, _profile(), preferences)
-
+    match = matches.written[0]
     assert match.eligible is False
-    assert match.requirement_match == 0.0
-    assert match.practical_fit == 0.0
-    assert match.recommendation == Recommendation.SKIP
-    assert match.gaps and match.gaps[0].critical is True
+    assert match.recommendation is Recommendation.SKIP
+    assert 'company "Acme" is blacklisted' in match.filter_reasons
+    assert result.eligible == 0
+    assert result.filtered_out == 1
 
 
 @pytest.mark.asyncio
-async def test_strong_match_recommends_apply(matching_service: MatchingService) -> None:
-    job = _job(
-        description="We use Django and PostgreSQL.",
-        skills=[
-            NormalizedJobSkill(name="Django", requirement=RequirementType.REQUIRED_EXPLICIT),
-            NormalizedJobSkill(name="PostgreSQL", requirement=RequirementType.REQUIRED_EXPLICIT),
+async def test_filtered_out_jobs_never_reach_the_reranker() -> None:
+    """Reranking is the one part of a run that costs per document, so nothing the
+    user already ruled out should ever be paid for."""
+    kept, blocked = uuid.uuid4(), uuid.uuid4()
+    voyage = _FakeVoyage()
+    service, _ = _service(
+        {kept: _job(title="Backend Engineer"), blocked: _job(title="PHP Developer", company="Bad")},
+        [
+            Candidate(document_id=blocked, similarity=0.95),
+            Candidate(document_id=kept, similarity=0.9),
         ],
-        skills_extracted_by="Groq (llama-3.3-70b-versatile)",
+        voyage,
+        preferences=UserPreference(user_id=str(_USER_ID), companies_blacklist=["Bad"]),
     )
-    profile = _profile(skills=["Django", "PostgreSQL"])
 
-    match = await matching_service.evaluate("canonical-1", job, profile, _preferences())
+    await service.run_for_user(_USER_ID)
 
-    assert match.eligible is True
-    assert match.recommendation == Recommendation.APPLY
-    assert match.practical_fit > 80
-    assert match.provenance is not None
-    assert match.provenance.skills_model == "Groq (llama-3.3-70b-versatile)"
-    assert match.provenance.embedding_model == "all-MiniLM-L6-v2"
-    assert match.provenance.analysis_level is AnalysisLevel.STANDARD
-    assert any(reason.label == "Django" for reason in match.strengths)
+    assert [_title_of(document) for document in voyage.rerank_calls[0]] == ["Backend Engineer"]
 
 
 @pytest.mark.asyncio
-async def test_practical_fit_exceeds_requirement_match_when_skills_are_only_transferable() -> None:
-    # cos(Django, FastAPI's default vector) = 0.5 — related enough for partial
-    # transfer credit, below the match threshold so it's still a gap.
-    provider = _FakeEmbeddingProvider({"Django": [0.5, 0.8660254]})
-    service = _matching_service(provider)
-    job = _job(
-        title="Backend Engineer",
-        description="We use FastAPI.",
-        skills=[NormalizedJobSkill(name="FastAPI", requirement=RequirementType.REQUIRED_EXPLICIT)],
+async def test_only_the_top_k_are_reranked_and_the_rest_keep_similarity_only() -> None:
+    job_ids = [uuid.uuid4() for _ in range(3)]
+    jobs = {job_id: _job(title=f"Job {index}") for index, job_id in enumerate(job_ids)}
+    candidates = [
+        Candidate(document_id=job_id, similarity=0.9 - index * 0.1)
+        for index, job_id in enumerate(job_ids)
+    ]
+    service, matches = _service(
+        jobs, candidates, _FakeVoyage(), config=replace(DEFAULTS, rerank_top_k=1)
     )
-    profile = _profile(skills=["Django"])  # no FastAPI, but transfers via Django
 
-    match = await service.evaluate("canonical-1", job, profile, _preferences())
+    result = await service.run_for_user(_USER_ID)
 
-    assert match.practical_fit > match.requirement_match
-    assert any(gap.label == "FastAPI" for gap in match.gaps)
+    reranked = [match for match in matches.written if match.relevance is not None]
+    plain = [match for match in matches.written if match.relevance is None]
+    assert len(reranked) == 1
+    assert len(plain) == 2
+    assert result.reranked == 1
+    # Not reranked means scored on similarity alone, and labelled as such.
+    assert plain[0].rerank_model is None
 
 
 @pytest.mark.asyncio
-async def test_unrelated_job_with_no_extracted_skills_is_not_a_false_positive() -> None:
-    # Regression test: an "Account Manager" posting has no technical skills to
-    # extract at all, so job.skills stays empty. That must not fall back to a
-    # fabricated "perfect" skills/transferable/preferences score against a developer
-    # profile — role and semantic mismatch should drag the overall score down to SKIP.
-    provider = _FakeEmbeddingProvider(
-        {
-            "Backend Developer\nPython": [1.0, 0.0],
-            "Account Manager\nManage client relationships and sales pipeline.": [0.0, 1.0],
-            # RoleMatcher embeds the job title and CV-derived roles standalone
-            # (separately from SemanticScorer's full-text embed above) — without
-            # these, both would fall back to the same default vector and role
-            # would wrongly read as a perfect 100 instead of a mismatch.
-            "Account Manager": [0.0, 1.0],
-            "Backend Developer": [1.0, 0.0],
-        }
-    )
-    service = _matching_service(provider)
-    job = _job(
-        title="Account Manager",
-        description="Manage client relationships and sales pipeline.",
-        skills=[],
-    )
-    profile = CandidateProfile(
-        id="p1",
-        user_id="u1",
-        experience_years=5.0,
-        roles=["Backend Developer"],
-        skills=[CandidateSkill(name="Python", level=SkillLevel.COMMERCIAL)],
+async def test_a_rerank_failure_degrades_to_similarity_and_says_so() -> None:
+    job_id = uuid.uuid4()
+    service, matches = _service(
+        {job_id: _job()},
+        [Candidate(document_id=job_id, similarity=0.5)],
+        _FakeVoyage(rerank_fails=True),
     )
 
-    match = await service.evaluate("canonical-1", job, profile, _preferences())
+    result = await service.run_for_user(_USER_ID)
 
-    assert match.eligible is True
-    assert match.practical_fit < 55.0
-    assert match.recommendation == Recommendation.SKIP
+    assert result.rerank_failed is True
+    assert matches.written[0].relevance is None
+    assert matches.written[0].score == 50.0
 
 
 @pytest.mark.asyncio
-async def test_domain_mismatch_gate_forces_skip_despite_superficial_skill_match() -> None:
-    # A job that skill-matches superficially (skills_available=True — Excel is a
-    # real, matched skill) but is a different profession entirely — role and
-    # semantic both say so — floors at ~70 (CONSIDER band) on the score alone,
-    # since skills/transferable/experience/salary/location all read as neutral or
-    # perfect. The domain-mismatch gate overrides the recommendation to SKIP
-    # without altering the score itself.
-    provider = _FakeEmbeddingProvider(
-        {
-            "Excel": [1.0, 0.0],
-            "Account Manager": [0.0, 1.0],
-            "Backend Developer": [1.0, 0.0],
-            "Backend Developer\nExcel": [1.0, 0.0],
-            "Account Manager\nManage client relationships.": [0.0, 1.0],
-        }
-    )
-    service = _matching_service(provider)
-    job = _job(
-        title="Account Manager",
-        description="Manage client relationships.",
-        skills=[NormalizedJobSkill(name="Excel", requirement=RequirementType.REQUIRED_EXPLICIT)],
-    )
-    profile = CandidateProfile(
-        id="p1",
-        user_id="u1",
-        experience_years=5.0,
-        roles=["Backend Developer"],
-        skills=[CandidateSkill(name="Excel", level=SkillLevel.COMMERCIAL)],
-    )
-
-    match = await service.evaluate("canonical-1", job, profile, _preferences())
-
-    assert match.eligible is True
-    assert match.practical_fit == pytest.approx(70.0)
-    assert match.recommendation == Recommendation.SKIP
-    assert any(gap.label == "role/domain mismatch" for gap in match.gaps)
-
-
-@pytest.mark.asyncio
-async def test_weak_match_recommends_skip() -> None:
-    provider = _FakeEmbeddingProvider(
-        {
-            "Rust": [0.0, 1.0],
-            "Kafka": [0.0, 1.0],
-            "Photoshop": [1.0, 0.0],
-            "Backend Engineer\nWe use Rust and Kafka.": [0.0, 1.0],
-        }
-    )
-    service = _matching_service(provider)
-    job = _job(
-        title="Backend Engineer",
-        description="We use Rust and Kafka.",
-        skills=[
-            NormalizedJobSkill(name="Rust", requirement=RequirementType.REQUIRED_EXPLICIT),
-            NormalizedJobSkill(name="Kafka", requirement=RequirementType.REQUIRED_EXPLICIT),
+async def test_rerank_position_records_where_the_reranker_put_each_job() -> None:
+    first, second = uuid.uuid4(), uuid.uuid4()
+    voyage = _FakeVoyage(relevance={"Low similarity": 0.99, "High similarity": 0.1})
+    service, matches = _service(
+        {first: _job(title="High similarity"), second: _job(title="Low similarity")},
+        [
+            Candidate(document_id=first, similarity=0.9),
+            Candidate(document_id=second, similarity=0.2),
         ],
-    )
-    profile = _profile(skills=["Photoshop"])
-
-    match = await service.evaluate("canonical-1", job, profile, _preferences())
-
-    assert match.eligible is True
-    assert match.recommendation == Recommendation.SKIP
-
-
-def _hybrid_service(embedding_provider: object) -> MatchingService:
-    return MatchingService(
-        HardFilterService(),
-        DeterministicScorer(),
-        SemanticScorer(embedding_provider),  # type: ignore[arg-type]
-        SkillMatcher(embedding_provider),  # type: ignore[arg-type]
-        RoleMatcher(embedding_provider),  # type: ignore[arg-type]
-        models=PipelineModels(embedding="all-MiniLM-L6-v2"),
-        hybrid_engine=HybridMatchEngine(),
+        voyage,
     )
 
+    await service.run_for_user(_USER_ID)
 
-@pytest.mark.asyncio
-async def test_the_hybrid_engine_owns_the_score_when_it_is_enabled() -> None:
-    service = _hybrid_service(_FakeEmbeddingProvider())
-    job = _job(
-        skills=[NormalizedJobSkill(name="Django", requirement=RequirementType.REQUIRED_EXPLICIT)],
-        skills_extracted_by="Groq (llama-3.3-70b-versatile)",
-    )
-
-    match = await service.evaluate("canonical-1", job, _profile(skills=["Django"]), _preferences())
-
-    assert match.provenance is not None
-    assert match.provenance.engine is MatchEngine.HYBRID
-    # The score now says how sure it is, separately from how high it is.
-    assert match.confidence is not None and 0.0 < match.confidence <= 1.0
-    # Pinning the constant rather than a literal: the point is that the scorer
-    # version is recorded, and it moves whenever the rules change.
-    assert match.provenance.versions.scorer == SCORER_VERSION
-    assert match.requirement_match == 100.0
-
-
-@pytest.mark.asyncio
-async def test_the_hybrid_engine_reports_unknowns_as_risks_not_gaps() -> None:
-    # Explicit vectors: this fake makes every unlisted text identical, so an
-    # unrelated skill would otherwise "match" the candidate's at similarity 1.0.
-    service = _hybrid_service(
-        _FakeEmbeddingProvider({"Rust": [0.0, 1.0], "Django": [1.0, 0.0]})
-    )
-    job = _job(
-        skills=[NormalizedJobSkill(name="Rust", requirement=RequirementType.UNKNOWN)],
-        skills_extracted_by="Groq (llama-3.3-70b-versatile)",
-    )
-
-    match = await service.evaluate("canonical-1", job, _profile(skills=["Django"]), _preferences())
-
-    assert match.gaps == []
-    assert any("without saying whether they are required" in risk for risk in match.risks)
-
-
-@pytest.mark.asyncio
-async def test_without_the_flag_nothing_about_the_old_path_changes() -> None:
-    # The pre-v3 pipeline stays the default until the flag is switched on.
-    service = _matching_service(_FakeEmbeddingProvider())
-    job = _job(skills=[NormalizedJobSkill(name="Django", requirement=RequirementType.REQUIRED_EXPLICIT)])
-
-    match = await service.evaluate("canonical-1", job, _profile(skills=["Django"]), _preferences())
-
-    assert match.provenance is not None
-    assert match.provenance.engine is MatchEngine.DETERMINISTIC
-    assert match.confidence is None
-    assert match.risks == []
+    by_id = {match.canonical_job_id: match for match in matches.written}
+    assert by_id[str(second)].rerank_position == 1
+    assert by_id[str(first)].rerank_position == 2

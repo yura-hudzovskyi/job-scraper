@@ -1,85 +1,78 @@
 # API surface
 
-REST, served by FastAPI under `backend/app/api/`. Routers are thin — they validate input
-and delegate to `services/`; no business logic lives in a route handler.
+REST, served by FastAPI under `backend/app/api/`. Routers are thin — they validate
+input and delegate to `services/`; no business logic lives in a route handler.
 
 ```text
-POST   /api/cv
+POST   /api/auth/register
+POST   /api/auth/login
+GET    /api/auth/me
+
+POST   /api/cv                    upload; the newest CV is the active one, and uploading
+                                   one re-matches every vacancy in the background
 GET    /api/cv
-DELETE /api/cv/{id}               deletes the CV document only — a CandidateProfile already
-                                   extracted from it survives (cv_document_id set to null)
-POST   /api/cv/analyze
-GET    /api/cv/profile            the latest analyzed CandidateProfile (no LLM call)
-POST   /api/cv/profile/skills     add or correct one extracted skill; the correction is
-                                   remembered and re-applied on every later analysis
-DELETE /api/cv/profile/skills/{name}
-                                  "not one of my skills" — same, as a removal
+GET    /api/cv/active             the active CV plus the exact document the models are given
+DELETE /api/cv/{id}
 
-GET    /api/profile
+GET    /api/profile               read-only onboarding summary (CVs on file, preferences set)
 
-GET    /api/jobs                  paginated (?limit, ?offset), items include practical_fit/recommendation;
-                                   excludes Recommendation.SKIP matches by default (?include_skipped=true to see all)
-GET    /api/jobs/{id}
-GET    /api/jobs/{id}/match       includes `provenance`: engine, analysis level, CV/job revision,
-                                   the models that ran, fallback reason, pipeline versions
-                                   (see docs/matching-engine.md#provenance)
-POST   /api/jobs/{id}/rescore
-POST   /api/jobs/{id}/analyze     asks for an LLM review of this match now, ahead of the
-                                   daily ranking (interactive queue)
-POST   /api/jobs/rescore-all      re-extracts skills + rescores every canonical job for this
-                                   user; Groq-first, falls back to Gemini on rate limit
-POST   /api/jobs/{id}/save
-POST   /api/jobs/{id}/apply
-POST   /api/jobs/{id}/reject
+GET    /api/jobs                  paginated (?limit, ?offset); each item carries its match —
+                                   score, similarity, relevance, the models that produced them.
+                                   Hides skipped and filtered-out vacancies unless
+                                   ?include_skipped=true
+GET    /api/jobs/{id}             the vacancy plus `model_document`: the exact text the
+                                   embedding and rerank models were given for it
+POST   /api/jobs/rematch          re-run search + rerank for this user against what is
+                                   already stored (no scraping)
 
-GET    /api/ai/models            model config plus live router state: each capability's
-                                   provider chain, why a leg is parked, budget used today,
-                                   and embedding lane coverage
-GET    /api/ai/pipeline          pipeline state: vacancies, matches, lane coverage, whether
-                                   the CV is indexed, and which stages are running now
-POST   /api/ai/pipeline/scoring/run        re-extract requirements + rescore every vacancy
-POST   /api/ai/pipeline/embeddings/rebuild delete every vector, then re-index everything
-POST   /api/ai/pipeline/retrieval/run      rank the corpus by embeddings, rerank the shortlist,
-                                   and store the relevance the next scoring pass folds in
-GET    /api/ai/usage             LLM calls by capability and outcome over a window, from
-                                   the ai_invocations ledger
+GET    /api/sources               per-source raw counts and the categories it rotates through
+GET    /api/sources/runs          recent scrape runs: seen, new, errors
 
-GET    /api/matches
+GET    /api/settings              user preferences
+PATCH  /api/settings              saving re-matches in the background — preferences change
+                                   both the filters and the query the models see
+GET    /api/settings/notifications
+PATCH  /api/settings/notifications
 
-GET    /api/sources
-POST   /api/sources/{id}/sync
+GET    /api/system/status         everything at once: readiness and blockers, counts,
+                                   embedding coverage, the full pipeline config with each
+                                   setting's description and bounds, the active run and history
+GET    /api/system/config
+PATCH  /api/system/config         partial update; unknown names and out-of-range values are
+                                   rejected rather than ignored
+POST   /api/system/config/reset   back to the built-in defaults
+POST   /api/system/config/test    one real call against each configured Voyage model
 
-GET    /api/search-profiles
-POST   /api/search-profiles
-PATCH  /api/search-profiles/{id}
+POST   /api/system/run?steps=     full | match | scrape. 409 if a run is already in progress
+GET    /api/system/runs           run history with per-step counts
 
-GET    /api/applications
+POST   /api/system/reset/notifications
+POST   /api/system/reset/matches
+POST   /api/system/reset/embeddings
+POST   /api/system/reset/jobs
+POST   /api/system/reset/all      pipeline data + run history + queued tasks; keeps the account
+POST   /api/system/queue/purge    drops tasks no worker has started
+POST   /api/system/redis/flush
 
-GET    /api/settings
-PATCH  /api/settings
-POST   /api/settings/preferences/ai-fill      suggests preferences from the analyzed CV
-                                               profile via LLM; returned for review, not saved
-
-GET    /api/integrations/telegram/bot-info    the one shared bot's @username, before connecting
-POST   /api/integrations/telegram/connect     chat_id only — the bot token is server-side (TELEGRAM_BOT_TOKEN)
+GET    /api/integrations/telegram/status
+GET    /api/integrations/telegram/bot-info    the one shared bot's @username
+POST   /api/integrations/telegram/connect     chat_id only — the bot token is server-side
 POST   /api/integrations/telegram/test
-POST   /api/integrations/telegram/webhook     Telegram calls this, not the frontend — see docs/notifications.md.
-                                               No JWT; authenticated via X-Telegram-Bot-Api-Secret-Token instead.
+POST   /api/integrations/telegram/webhook     Telegram calls this, not the frontend. No JWT;
+                                               authenticated via X-Telegram-Bot-Api-Secret-Token
 ```
 
-`/api/profile` is a read-only summary (CVs on file, whether preferences are set) — it's
-derived, not edited. What the candidate *wants* (`UserPreference`) is edited entirely
-through `/api/settings`; see docs/domain-model.md.
+Every reset endpoint returns what it actually deleted, per table — never a bare
+`{"status": "ok"}`. A destructive action should say what it destroyed.
 
 ## Frontend pages consuming this API
 
 ```text
-Dashboard          today's new/recommended jobs, market snapshot, application funnel
-Jobs               all / recommended / saved / hidden, with filters
-Job Details        score breakdown, strengths/gaps, "should I apply?", original posting
-Applications       application tracker (discovered → applied → ... → offer/rejected)
-Profile            CV upload/management, candidate profile, preferences
-Market Insights    skill-demand analytics, missing-skill opportunities
-Sources            per-source health (ScrapeRun history, degraded/healthy)
-Settings           matching weights, Telegram connection, search profiles
+Dashboard      setup checklist with blockers, corpus/match counts
+Jobs           ranked list; every row shows the score and the two signals behind it
+Job Details    the score spelled out as the sum it is, plus the exact text the models read
+Profile        CV upload, which one is active, and the document built from it
+Settings       preferences (what you want vs. rules that filter), notifications, Telegram
+Sources        per-source health, category rotation, recent scrapes
+System         the pipeline diagram, live status, every setting, run history, reset actions
 ```

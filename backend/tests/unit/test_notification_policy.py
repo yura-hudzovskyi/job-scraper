@@ -1,73 +1,49 @@
-from app.domain.matching.models import JobMatch, Recommendation, ScoreBreakdown
-from app.domain.notifications.policy import NotificationPolicy
+from app.domain.matching.models import JobMatch, Recommendation
+from app.domain.notifications.policy import NotificationPolicy, NotificationPolicyConfig
 
 
-def _match(practical_fit: float, salary: float = 100.0, location: float = 100.0) -> JobMatch:
+def _match(score: float, eligible: bool = True) -> JobMatch:
     return JobMatch(
         id="m1",
         user_id="u1",
         canonical_job_id="c1",
-        eligible=True,
-        requirement_match=practical_fit,
-        practical_fit=practical_fit,
-        breakdown=ScoreBreakdown(
-            skills=practical_fit,
-            role=100,
-            experience=100,
-            semantic_fit=100,
-            salary=salary,
-            location=location,
-            transferable_skills=100,
-            preferences=100,
-        ),
+        eligible=eligible,
+        score=score,
+        similarity=score / 100,
+        relevance=score / 100,
         recommendation=Recommendation.APPLY,
     )
 
 
-def test_score_at_or_above_85_notifies_immediately() -> None:
+def test_notifies_at_or_above_the_threshold() -> None:
+    policy = NotificationPolicy()  # default min_score 75
+    assert policy.should_notify(_match(75.0), hour=14) is True
+    assert policy.should_notify(_match(92.0), hour=14) is True
+
+
+def test_does_not_notify_below_the_threshold() -> None:
     policy = NotificationPolicy()
-    assert policy.should_notify_immediately(_match(85.0)) is True
-    assert policy.should_notify_immediately(_match(92.0)) is True
-
-
-def test_score_75_to_84_notifies_immediately_only_if_salary_and_location_also_match() -> None:
-    policy = NotificationPolicy()
-    assert policy.should_notify_immediately(_match(80.0, salary=100, location=100)) is True
-    assert policy.should_notify_immediately(_match(80.0, salary=50, location=100)) is False
-    assert policy.should_notify_immediately(_match(80.0, salary=100, location=50)) is False
-
-
-def test_score_65_to_74_does_not_notify_immediately_but_joins_digest() -> None:
-    policy = NotificationPolicy()
-    match = _match(70.0)
-    assert policy.should_notify_immediately(match) is False
-    assert policy.should_include_in_digest(match) is True
-
-
-def test_score_below_65_neither_notifies_nor_joins_digest() -> None:
-    policy = NotificationPolicy()
-    match = _match(50.0)
-    assert policy.should_notify_immediately(match) is False
-    assert policy.should_include_in_digest(match) is False
+    assert policy.should_notify(_match(74.9), hour=14) is False
 
 
 def test_ineligible_match_is_never_notified() -> None:
     policy = NotificationPolicy()
-    match = JobMatch(
-        id="m1",
-        user_id="u1",
-        canonical_job_id="c1",
-        eligible=False,
-        requirement_match=0.0,
-        practical_fit=0.0,
-        breakdown=ScoreBreakdown(0, 0, 0, 0, 0, 0, 0, 0),
-    )
-    assert policy.should_notify_immediately(match) is False
-    assert policy.should_include_in_digest(match) is False
+    assert policy.should_notify(_match(99.0, eligible=False), hour=14) is False
+
+
+def test_disabled_notifications_stop_everything() -> None:
+    policy = NotificationPolicy(NotificationPolicyConfig(enabled=False))
+    assert policy.should_notify(_match(99.0), hour=14) is False
+
+
+def test_quiet_hours_block_an_otherwise_qualifying_match() -> None:
+    policy = NotificationPolicy()  # default 22:00-08:00
+    assert policy.should_notify(_match(99.0), hour=23) is False
+    assert policy.should_notify(_match(99.0), hour=9) is True
 
 
 def test_quiet_hours_wraps_around_midnight() -> None:
-    policy = NotificationPolicy()  # default 22:00-08:00
+    policy = NotificationPolicy()
     assert policy.is_quiet_hours(23) is True
     assert policy.is_quiet_hours(3) is True
     assert policy.is_quiet_hours(8) is False
@@ -75,8 +51,14 @@ def test_quiet_hours_wraps_around_midnight() -> None:
 
 
 def test_quiet_hours_same_day_range() -> None:
-    from app.domain.notifications.policy import NotificationPolicyConfig
-
     policy = NotificationPolicy(NotificationPolicyConfig(quiet_hours_start=1, quiet_hours_end=5))
     assert policy.is_quiet_hours(3) is True
     assert policy.is_quiet_hours(6) is False
+
+
+def test_equal_start_and_end_means_no_quiet_hours() -> None:
+    """A start equal to the end has to mean "never quiet", not "always quiet" —
+    the latter would silently disable notifications for anyone who set both to
+    the same value expecting no window at all."""
+    policy = NotificationPolicy(NotificationPolicyConfig(quiet_hours_start=0, quiet_hours_end=0))
+    assert all(policy.is_quiet_hours(hour) is False for hour in range(24))

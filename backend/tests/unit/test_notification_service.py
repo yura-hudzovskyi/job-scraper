@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.domain.matching.models import JobMatch, Recommendation, ScoreBreakdown
+from app.domain.matching.models import JobMatch, Recommendation
 from app.domain.notifications.models import JobMatchNotification
 from app.domain.notifications.policy import NotificationPolicy
 from app.services.notification_service import NotificationService
@@ -41,15 +41,15 @@ class _FakeRepository:
             self._delivered.add((notification_id, channel))
 
 
-def _notification(practical_fit: float = 90.0) -> JobMatchNotification:
+def _notification(score: float = 90.0) -> JobMatchNotification:
     match = JobMatch(
         id=str(uuid.uuid4()),
         user_id="u1",
         canonical_job_id="c1",
         eligible=True,
-        requirement_match=practical_fit,
-        practical_fit=practical_fit,
-        breakdown=ScoreBreakdown(90, 90, 90, 90, 90, 90, 90, 90),
+        score=score,
+        similarity=0.7,
+        relevance=score / 100,
         recommendation=Recommendation.APPLY,
     )
     return JobMatchNotification(
@@ -61,7 +61,7 @@ def _notification(practical_fit: float = 90.0) -> JobMatchNotification:
 
 
 @pytest.mark.asyncio
-async def test_sends_when_policy_says_notify_immediately() -> None:
+async def test_sends_when_the_policy_allows_it() -> None:
     provider = _FakeProvider()
     service = NotificationService(NotificationPolicy(), provider, _FakeRepository())  # type: ignore[arg-type]
 

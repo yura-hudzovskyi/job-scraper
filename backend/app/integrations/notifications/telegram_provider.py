@@ -25,7 +25,6 @@ _API_BASE = "https://api.telegram.org"
 
 _SOURCE_LABELS = {"dou": "DOU", "djinni": "Djinni"}
 
-_MAX_LISTED = 3
 
 
 class TelegramApiError(RuntimeError):
@@ -146,32 +145,41 @@ def _salary_text(notification: JobMatchNotification) -> str | None:
 
 
 def _facts_line(notification: JobMatchNotification) -> str | None:
-    """One compact line of quick-read facts — salary, remote, seniority — instead
-    of the old multi-line breakdown. A swipe decision needs a glance, not a report."""
+    """One compact line of quick-read facts — salary, remote, seniority. A swipe
+    decision needs a glance, not a report."""
     facts = [
         _salary_text(notification),
         "📍 Remote" if notification.remote else None,
         f"🎓 {html.escape(notification.seniority)}" if notification.seniority else None,
     ]
-    present_facts = [fact for fact in facts if fact is not None]
-    return " · ".join(present_facts) if present_facts else None
+    present = [fact for fact in facts if fact is not None]
+    return " · ".join(present) if present else None
+
+
+def _signals_line(notification: JobMatchNotification) -> str:
+    """The two numbers behind the score, spelled out. A card that only shows a
+    percentage is asking to be trusted; this one shows its working."""
+    match = notification.match
+    similarity = f"similarity {match.similarity * 100:.0f}%"
+    if match.relevance is None:
+        return f"🧮 {similarity} · not reranked"
+    return f"🧮 {similarity} · rerank {match.relevance * 100:.0f}%"
 
 
 def _stats_line(notification: JobMatchNotification) -> str:
     return (
-        f"📊 {notification.pending_count} pending · {notification.approved_count} approved · "
+        f"📊 {notification.pending_count} pending · "
+        f"{notification.approved_count} approved · "
         f"{notification.rejected_count} rejected"
     )
 
 
 def _format_message(notification: JobMatchNotification) -> str:
-    """A short swipe card, not a report: score, title, one fact line, a couple of
-    matched skills/gaps, source links, and where the user stands overall — enough
-    to decide, nothing to read through. See the module docstring."""
+    """A short swipe card, not a report: score, title, one fact line, the signals
+    the score came from, source links, and where the user stands overall."""
     match = notification.match
     lines = [
-        f"<b>{match.practical_fit:.0f}% MATCH</b>"
-        + (f" · {match.recommendation.value.upper()}" if match.recommendation else ""),
+        f"<b>{match.score:.0f}% MATCH</b> · {match.recommendation.value.upper()}",
         "",
         f"<b>{html.escape(notification.job_title)}</b> — {html.escape(notification.company)}",
     ]
@@ -179,17 +187,6 @@ def _format_message(notification: JobMatchNotification) -> str:
     facts_line = _facts_line(notification)
     if facts_line:
         lines.append(facts_line)
-    lines.append("")
-
-    if match.strengths:
-        labels = ", ".join(html.escape(reason.label) for reason in match.strengths[:_MAX_LISTED])
-        lines.append(f"✅ {labels}")
-    if match.gaps:
-        labels = ", ".join(
-            html.escape(gap.label) + (" (required)" if gap.critical else "")
-            for gap in match.gaps[:_MAX_LISTED]
-        )
-        lines.append(f"⚠️ {labels}")
-
+    lines += ["", _signals_line(notification)]
     lines += ["", _source_links_line(notification.source_links), "", _stats_line(notification)]
     return "\n".join(lines)

@@ -1,4 +1,4 @@
-"""ORM tables for Telegram integration credentials and Notification/NotificationDelivery.
+"""ORM tables for Telegram credentials and notification delivery records.
 
 unique(notification_id, channel) keeps delivery idempotent — see docs/notifications.md.
 """
@@ -41,19 +41,14 @@ class NotificationDeliveryModel(UUIDPrimaryKeyMixin, Base):
 
 
 class NotificationSettingsModel(UUIDPrimaryKeyMixin, Base):
-    """Per-user override of NotificationPolicyConfig's defaults (see
-    app/domain/notifications/policy.py) — one row per user, created on first save
-    from the Settings page. Absence of a row means "use NotificationPolicyConfig()'s
-    hardcoded defaults," not "notifications disabled" — see
-    NotificationRepository.get_notification_policy_config.
-    """
+    """Per-user override of NotificationPolicyConfig's defaults — one row, created
+    on first save from the Settings page. No row means "use the defaults", not
+    "notifications off"; `enabled` is how you turn them off."""
 
     __tablename__ = "notification_settings"
 
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), unique=True)
-    immediate_threshold: Mapped[float] = mapped_column(default=85.0)
-    conditional_threshold: Mapped[float] = mapped_column(default=75.0)
-    digest_threshold: Mapped[float] = mapped_column(default=65.0)
-    strong_component_threshold: Mapped[float] = mapped_column(default=90.0)
+    enabled: Mapped[bool] = mapped_column(default=True, server_default="true")
+    min_score: Mapped[float] = mapped_column(default=75.0)
     quiet_hours_start: Mapped[int] = mapped_column(default=22)
     quiet_hours_end: Mapped[int] = mapped_column(default=8)

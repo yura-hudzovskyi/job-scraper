@@ -1,20 +1,21 @@
-"""Candidate profile and preferences.
+"""What the candidate is, and what the candidate wants.
 
-`CandidateProfile` is what the candidate has actually done (derived from CVs).
-`UserPreference` is what the candidate wants (edited directly). Never merge the two —
-see docs/domain-model.md.
+`CvDocument` is the CV as uploaded, with its text extracted — that text is the
+whole candidate side of matching: it gets embedded and handed to the reranker
+verbatim, with nothing derived from it in between.
+
+`UserPreference` is what the candidate wants, edited directly in the UI. It never
+feeds the models; it drives the hard filters (app/domain/matching/filters.py) and
+one short "what I'm looking for" line in the document. Never merge the two — see
+docs/domain-model.md.
 """
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
 
 
 @dataclass(frozen=True)
 class CvDocument:
-    """A CV as uploaded, with its text extracted. Phase 1 stops here — turning this
-    into a CandidateProfile (skills, experience, roles) needs an LLM and is Phase 2."""
-
     id: str
     user_id: str
     filename: str
@@ -22,85 +23,14 @@ class CvDocument:
     uploaded_at: datetime
 
 
-class SkillLevel(StrEnum):
-    AWARE = "aware"
-    COMMERCIAL = "commercial"
-    STRONG = "strong"
-    EXPERT = "expert"
-
-
-class SkillSource(StrEnum):
-    """Who said this skill is on the CV. USER outranks everything automated and
-    survives re-analysis — see app/domain/candidates/skill_overrides.py."""
-
-    LLM = "llm"
-    USER = "user"
-
-
-@dataclass(frozen=True)
-class CandidateSkill:
-    name: str
-    level: SkillLevel
-    years: float | None = None
-    source: SkillSource = SkillSource.LLM
-
-
-@dataclass(frozen=True)
-class SkillOverride:
-    """One correction the user made to their own extracted skills. Kept per user
-    rather than inside a profile snapshot, so re-analyzing the CV re-applies it
-    instead of silently undoing it."""
-
-    skill_key: str  # dedupe_key() from app/domain/skills/normalizer.py
-    name: str
-    level: SkillLevel | None = None
-    years: float | None = None
-    # "The CV mentions it, don't count it" — a correction, not an absence.
-    removed: bool = False
-
-
-@dataclass(frozen=True)
-class ExperienceEntry:
-    company: str
-    title: str
-    start_date: str
-    end_date: str | None
-    description: str
-    skills: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class CandidateProfile:
-    id: str
-    user_id: str
-    experience_years: float
-    roles: list[str]
-    skills: list[CandidateSkill]
-    experience: list[ExperienceEntry] = field(default_factory=list)
-    achievements: list[str] = field(default_factory=list)
-    domains: list[str] = field(default_factory=list)
-    ai_experience: list[str] = field(default_factory=list)
-    generated_by: str | None = None  # which LLM produced this, e.g. "Gemini (gemini-2.0-flash)"
-    # Which uploaded CV this snapshot was extracted from. None once that document
-    # is deleted — the snapshot stays valid without it (see CandidateProfileModel).
-    cv_document_id: str | None = None
-    # Which revision of this user's CV this is — see app/domain/versioning.py. The
-    # defaults describe a profile that hasn't been saved yet; CandidateRepository
-    # fills both in on save.
-    version: int = 1
-    content_hash: str | None = None
-
-
 @dataclass(frozen=True)
 class UserPreference:
     user_id: str
-    desired_salary_usd: int | None
+    desired_salary_usd: int | None = None
     preferred_roles: list[str] = field(default_factory=list)
     preferred_stack: list[str] = field(default_factory=list)
-    acceptable_stack: list[str] = field(default_factory=list)
     blocked_stack: list[str] = field(default_factory=list)
     work_formats: list[str] = field(default_factory=list)
     locations: list[str] = field(default_factory=list)
     max_required_experience: float | None = None
-    industries_blacklist: list[str] = field(default_factory=list)
     companies_blacklist: list[str] = field(default_factory=list)

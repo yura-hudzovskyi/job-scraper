@@ -1,8 +1,6 @@
-"""Stateless bearer tokens for auth — no server-side session/revocation list, see
-docs/plans (this session) for why that's an intentional trade-off for a small
-friends-scale app. `secret_key` is passed in rather than read from settings here, so
-this stays unit-testable without settings/env plumbing — same reasoning as
-get_llm_provider() calling get_settings() at its call site instead of hiding it.
+"""Stateless bearer tokens for auth — no server-side session or revocation list,
+an intentional trade-off at this app's scale. `secret_key` is passed in rather than
+read from settings here, so this stays unit-testable without settings/env plumbing.
 """
 
 import uuid

@@ -1,34 +1,35 @@
 import { apiClient } from "./client";
 import type {
-  AiModelsResponse,
-  AiUsage,
-  AiModelsUpdateRequest,
-  CandidateProfile,
+  ActiveCv,
   ConnectTelegramResponse,
   CvDocument,
-  FlushRedisResponse,
+  JobDetail,
   JobListResponse,
-  JobMatch,
-  JobSummary,
   MeResponse,
-  NotificationThresholds,
-  PipelineStatus,
+  NotificationSettings,
+  PipelineConfig,
+  PipelineRun,
   Preferences,
   ProfileSummary,
-  PurgeCeleryResponse,
+  ResetResponse,
+  ScrapeRun,
   SourceHealth,
-  SuggestedPreferences,
+  SystemStatus,
   TelegramBotInfo,
   TelegramStatus,
-  TestModelResponse,
+  TestVoyageResponse,
   TokenResponse,
 } from "./types";
+
+// --- auth -------------------------------------------------------------------
 
 export const register = (email: string, password: string) =>
   apiClient.post<TokenResponse>("/api/auth/register", { email, password });
 export const login = (email: string, password: string) =>
   apiClient.post<TokenResponse>("/api/auth/login", { email, password });
 export const getMe = () => apiClient.get<MeResponse>("/api/auth/me");
+
+// --- CV ---------------------------------------------------------------------
 
 export function uploadCv(file: File): Promise<CvDocument> {
   const form = new FormData();
@@ -37,20 +38,22 @@ export function uploadCv(file: File): Promise<CvDocument> {
 }
 
 export const listCvs = () => apiClient.get<CvDocument[]>("/api/cv");
+export const getActiveCv = () => apiClient.get<ActiveCv>("/api/cv/active");
 export const deleteCv = (cvId: string) => apiClient.delete<void>(`/api/cv/${cvId}`);
-export const analyzeCv = () => apiClient.post<CandidateProfile>("/api/cv/analyze");
-export const getCandidateProfile = () => apiClient.get<CandidateProfile | null>("/api/cv/profile");
-export const correctSkill = (name: string) =>
-  apiClient.post<CandidateProfile>("/api/cv/profile/skills", { name });
-export const removeSkill = (name: string) =>
-  apiClient.delete<CandidateProfile>(`/api/cv/profile/skills/${encodeURIComponent(name)}`);
 export const getProfile = () => apiClient.get<ProfileSummary>("/api/profile");
+
+// --- preferences & notifications --------------------------------------------
 
 export const getPreferences = () => apiClient.get<Preferences | null>("/api/settings");
 export const updatePreferences = (preferences: Preferences) =>
   apiClient.patch<Preferences>("/api/settings", preferences);
-export const aiFillPreferences = () =>
-  apiClient.post<SuggestedPreferences>("/api/settings/preferences/ai-fill");
+
+export const getNotificationSettings = () =>
+  apiClient.get<NotificationSettings>("/api/settings/notifications");
+export const updateNotificationSettings = (settings: NotificationSettings) =>
+  apiClient.patch<NotificationSettings>("/api/settings/notifications", settings);
+
+// --- telegram ---------------------------------------------------------------
 
 export const getTelegramStatus = () =>
   apiClient.get<TelegramStatus>("/api/integrations/telegram/status");
@@ -63,43 +66,38 @@ export const connectTelegram = (chatId: string) =>
 export const testTelegram = () =>
   apiClient.post<{ status: string }>("/api/integrations/telegram/test");
 
+// --- sources ----------------------------------------------------------------
+
 export const listSources = () => apiClient.get<SourceHealth[]>("/api/sources");
-export const syncSource = (sourceName: string) =>
-  apiClient.post<{ status: string; source: string }>(`/api/sources/${sourceName}/sync`);
+export const listScrapeRuns = () => apiClient.get<ScrapeRun[]>("/api/sources/runs");
+
+// --- jobs -------------------------------------------------------------------
 
 export const listJobs = (limit: number, offset: number, includeSkipped = false) =>
   apiClient.get<JobListResponse>(
     `/api/jobs?limit=${limit}&offset=${offset}&include_skipped=${includeSkipped}`,
   );
-export const getJob = (jobId: string) => apiClient.get<JobSummary>(`/api/jobs/${jobId}`);
-export const getJobMatch = (jobId: string) => apiClient.get<JobMatch>(`/api/jobs/${jobId}/match`);
-export const rescoreJob = (jobId: string) =>
-  apiClient.post<{ status: string; job_id: string }>(`/api/jobs/${jobId}/rescore`);
-/** Ask for an LLM review of this one match now, ahead of the daily ranking. */
-export const analyzeJob = (jobId: string) =>
-  apiClient.post<{ status: string; job_id: string }>(`/api/jobs/${jobId}/analyze`);
-export const rescoreAllJobs = () =>
-  apiClient.post<{ status: string }>("/api/jobs/rescore-all");
+export const getJob = (jobId: string) => apiClient.get<JobDetail>(`/api/jobs/${jobId}`);
+/** Re-run search + rerank against the vacancies already in the database. */
+export const rematch = () => apiClient.post<{ status: string }>("/api/jobs/rematch");
 
-export const getNotificationThresholds = () =>
-  apiClient.get<NotificationThresholds>("/api/settings/notifications");
-export const updateNotificationThresholds = (thresholds: NotificationThresholds) =>
-  apiClient.patch<NotificationThresholds>("/api/settings/notifications", thresholds);
+// --- system -----------------------------------------------------------------
 
-export const getAiModels = () => apiClient.get<AiModelsResponse>("/api/ai/models");
-export const updateAiModels = (payload: AiModelsUpdateRequest) =>
-  apiClient.patch<AiModelsResponse>("/api/ai/models", payload);
-export const getPipelineStatus = () => apiClient.get<PipelineStatus>("/api/ai/pipeline");
-export const runScoring = () =>
-  apiClient.post<{ status: string; detail: string }>("/api/ai/pipeline/scoring/run");
-export const rebuildEmbeddings = () =>
-  apiClient.post<{ status: string; detail: string }>("/api/ai/pipeline/embeddings/rebuild");
-export const runRetrieval = () =>
-  apiClient.post<{ status: string; detail: string }>("/api/ai/pipeline/retrieval/run");
+export const getSystemStatus = () => apiClient.get<SystemStatus>("/api/system/status");
+export const getPipelineConfig = () => apiClient.get<PipelineConfig>("/api/system/config");
+export const updatePipelineConfig = (values: Record<string, string | number | boolean>) =>
+  apiClient.patch<PipelineConfig>("/api/system/config", { values });
+export const resetPipelineConfig = () =>
+  apiClient.post<PipelineConfig>("/api/system/config/reset");
+export const testVoyage = () => apiClient.post<TestVoyageResponse>("/api/system/config/test");
 
-export const getAiUsage = (hours = 24) => apiClient.get<AiUsage>(`/api/ai/usage?hours=${hours}`);
-export const testAiModel = (tier: "groq" | "gemini", model: string) =>
-  apiClient.post<TestModelResponse>("/api/ai/models/test", { tier, model });
+export type RunSteps = "full" | "match" | "scrape";
+export const runPipeline = (steps: RunSteps) =>
+  apiClient.post<{ status: string; task: string }>(`/api/system/run?steps=${steps}`);
+export const listPipelineRuns = () => apiClient.get<PipelineRun[]>("/api/system/runs");
 
-export const flushRedis = () => apiClient.post<FlushRedisResponse>("/api/system/redis/flush");
-export const purgeCelery = () => apiClient.post<PurgeCeleryResponse>("/api/system/celery/purge");
+export type ResetTarget = "notifications" | "matches" | "embeddings" | "jobs" | "all";
+export const resetData = (target: ResetTarget) =>
+  apiClient.post<ResetResponse>(`/api/system/reset/${target}`);
+export const purgeQueue = () => apiClient.post<ResetResponse>("/api/system/queue/purge");
+export const flushRedis = () => apiClient.post<ResetResponse>("/api/system/redis/flush");

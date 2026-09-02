@@ -1,118 +1,90 @@
 # Domain model
 
-## Core entities
+## Entities
 
 ```text
 User
-
-CandidateProfile
-CVDocument
-CandidateSkill
-UserPreference
-
-Source
-SearchProfile
-ScrapeRun
-
-RawJob
-CanonicalJob
-JobSourceRecord
-JobSkill
-JobRequirement
-JobVersion
-
-Embedding
-
-JobMatch
-MatchReason
-MatchGap
-
-UserJobAction
-Application
-
-Notification
-NotificationDelivery
-
-Feedback
-```
-
-## Relationships
-
-```text
-User
- │
- ├── CandidateProfile
- │      ├── CandidateSkill
- │      └── CVDocument
- │
- ├── UserPreference
- │
- ├── SearchProfile
- │
+ ├── CvDocument        uploaded file + extracted text; the newest is the active one
+ ├── UserPreference    what the user wants, and the rules that filter vacancies out
  ├── JobMatch ───── CanonicalJob
- │                    │
- │                    ├── JobSkill
- │                    ├── JobRequirement
- │                    ├── JobVersion
- │                    │
- │                    └── JobSourceRecord ─── Source
- │
- ├── Application
- ├── Feedback
- └── Notification
+ ├── TelegramIntegration
+ ├── NotificationSettings
+ └── Notification ── NotificationDelivery
+
+RawJob ── JobSourceRecord ── CanonicalJob
+DocumentEmbedding          one vector per (document, model); document is a job or a user
+ScrapeRun                  per source+category record; also the rotation's own state
+PipelineConfig             one row, app-wide, edited from the System page
+PipelineRun                one row per pipeline run, with per-step counts
 ```
 
-## Raw → Normalized → Canonical
+## Raw ≠ normalized ≠ canonical
 
-A scraped vacancy passes through three shapes, and no downstream module is allowed to
-skip a stage:
+Three stages, and collapsing any two of them makes a parser change ripple into
+matching:
 
-1. **`RawJob`** — exactly what the adapter fetched (e.g. raw HTML, source id, url).
-   Nothing is thrown away here, so a parser bug is always recoverable by re-running
-   normalization against stored raw payloads.
-2. **`NormalizedJob`** — source-independent shape: title, company, description,
-   employment type, location, salary, seniority, required experience, skills. Matching,
-   dedup and notifications only ever see this shape or later.
-3. **`CanonicalJob`** — the deduplicated, single real-world vacancy, which may be backed
-   by more than one `JobSourceRecord` (the same job posted on DOU *and* Djinni).
+- **`RawJob`** — the scraped payload, stored exactly as fetched.
+  `unique(source, external_id)` makes re-scraping idempotent.
+- **`JobSourceRecord`** — that payload mapped into a source-independent shape by
+  the adapter's mapper. Also `unique(source, external_id)`.
+- **`CanonicalJob`** — one real-world vacancy, deduplicated across sources. A job
+  posted on both DOU and Djinni is one canonical job with two source records, and
+  the Telegram card links out to both.
 
-This separation means a parser rewrite (source HTML changed) never touches matching
-logic, and a matching algorithm change never touches scraping.
+Every field on a `NormalizedJob` is parsed deterministically: title, company,
+description, employment type, location, salary, seniority, required years.
+Nothing on a vacancy is inferred by a model — what a posting asks for is read at
+match time, from its text, by the embedding and rerank models.
 
-## Candidate profile vs. user preferences
+## Experience ≠ preference
 
-Two distinct models that must never be merged:
+Two separate things, never merged:
 
-- **`CandidateProfile`** — what the candidate has actually done: experience years,
-  roles, skills (with level/years), work history, achievements, domains, AI experience.
-  Derived from parsed CVs, refinable by hand.
-- **`UserPreference`** — what the candidate wants: desired salary, preferred/acceptable/
-  blocked stack, work format, locations, max required experience the candidate is
-  willing to apply beyond, industry/company blacklist.
+- **What the candidate has done** — the `CvDocument`'s text. Embedded and handed
+  to the reranker verbatim. Nothing is extracted from it into a structure, so
+  nothing can be extracted wrongly.
+- **What the candidate wants** — `UserPreference`, typed in directly. It plays
+  two distinct roles, and the Settings page separates them because they behave
+  very differently:
 
-`CandidateProfile` answers "can I do this job?"; `UserPreference` answers "do I want
-this job?" — the matching engine scores both independently (see
-[matching-engine.md](matching-engine.md)).
+  | Field | Role |
+  |-------|------|
+  | `preferred_roles`, `preferred_stack`, `work_formats` | go into the text the models read, as the query |
+  | `blocked_stack`, `desired_salary_usd`, `locations`, `companies_blacklist`, `max_required_experience` | hard filters — remove vacancies before scoring |
 
-## Skill identity
+  A field is never both. Putting a constraint into the query as well would apply
+  the same fact twice.
 
-Skills are free text end to end, never normalized against a fixed vocabulary — a
-hand-maintained skill registry was tried and dropped, since it only ever covered a
-narrow slice of what real postings mention and silently defaulted unrecognized jobs
-to a perfect score. Instead, `"JS"`/`"Javascript"`/`"JavaScript"` (or `Django` vs
-`FastAPI`) are treated as "the same skill" by embedding cosine similarity — no
-canonicalization step needed. See
-`backend/app/domain/matching/skill_matching.py`'s `SkillMatcher` and
-[matching-engine.md](matching-engine.md) for how that similarity feeds scoring.
+## Vectors
 
-## Multiple CV profiles
+`DocumentEmbedding` holds one vector per `(document_type, document_id, model)`:
 
-A candidate may keep more than one CV variant (e.g. `fullstack`, `frontend`,
-`ai_fullstack`). Each vacancy is scored against every variant, and the platform
-recommends whichever CV scores highest for that specific job.
+- `document_type = "job"` → `document_id` is a canonical job id
+- `document_type = "profile"` → `document_id` is a user id
 
-## Change detection
+The `model` column is load-bearing. Vectors from two models are not comparable,
+so every query filters on it; changing the configured model doesn't corrupt the
+index, it just leaves the old rows unmatched until they're rebuilt.
 
-A `CanonicalJob` is versioned (`JobVersion`) so re-scraping the same vacancy can detect
-`NEW` / `UPDATED` / `CLOSED` / `REOPENED` transitions (e.g. a salary range changing),
-not just "new vs. already seen."
+`content_hash` is the hash of the exact text the vector came from, which is what
+makes re-embedding an unchanged corpus free.
+
+## Matches
+
+A `JobMatch` is deliberately small:
+
+```text
+eligible + filter_reasons     did the user's own rules reject it, and which
+similarity                    cosine, 0-1
+relevance                     reranker, 0-1 — null when it was never reranked
+rerank_position               where the reranker put it
+score                         the blend, 0-100
+recommendation                apply | consider | skip
+embedding_model / rerank_model / rerank_weight
+decision                      the user's own Approve/Reject, never overwritten by a re-match
+```
+
+`score` is always reproducible from the three values above it, which is the whole
+point: the UI shows the arithmetic rather than asking for trust. An ineligible
+vacancy is still stored — a job missing because of a rule you set is a different
+thing from a job that was never seen.

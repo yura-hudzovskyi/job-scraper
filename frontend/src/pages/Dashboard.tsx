@@ -1,27 +1,32 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
-import { getProfile, getTelegramStatus, listJobs, listSources } from "../api/endpoints";
-import { Button, Card, SectionTitle } from "../components/ui";
+import { getProfile, getSystemStatus, getTelegramStatus } from "../api/endpoints";
+import { Button, Card, InfoBanner, SectionTitle, Stat } from "../components/ui";
 
 function StatusRow({
   done,
   label,
+  detail,
   to,
   linkLabel,
 }: {
   done: boolean;
   label: string;
+  detail: string;
   to: string;
   linkLabel: string;
 }) {
   return (
-    <div className="flex items-center justify-between border-b border-slate-100 py-2 last:border-0">
-      <div className="flex items-center gap-2">
+    <div className="flex items-start justify-between gap-3 border-b border-slate-100 py-2 last:border-0">
+      <div className="flex items-start gap-2">
         <span className={done ? "text-green-600" : "text-slate-300"}>{done ? "✓" : "○"}</span>
-        <span className={done ? "text-slate-700" : "text-slate-500"}>{label}</span>
+        <div>
+          <p className={done ? "text-slate-700" : "text-slate-500"}>{label}</p>
+          <p className="text-xs text-slate-500">{detail}</p>
+        </div>
       </div>
-      <Link to={to} className="text-sm text-slate-600 underline hover:text-slate-900">
+      <Link to={to} className="shrink-0 text-sm text-slate-600 underline hover:text-slate-900">
         {linkLabel}
       </Link>
     </div>
@@ -30,73 +35,93 @@ function StatusRow({
 
 export function Dashboard() {
   const profileQuery = useQuery({ queryKey: ["profile"], queryFn: getProfile });
-  const sourcesQuery = useQuery({ queryKey: ["sources"], queryFn: listSources });
-  // Only the total count is needed here, so ask for the smallest possible page
-  // instead of pulling every job just to read jobsQuery.data.length. This stat is
-  // "how much has been scraped overall," not "how much is relevant to me" — pass
-  // includeSkipped so it isn't silently filtered by the Jobs page's relevance gate.
-  const jobsQuery = useQuery({
-    queryKey: ["jobs-count"],
-    queryFn: () => listJobs(1, 0, true),
-  });
+  const statusQuery = useQuery({ queryKey: ["system-status"], queryFn: getSystemStatus });
   const telegramQuery = useQuery({ queryKey: ["telegram-status"], queryFn: getTelegramStatus });
 
-  const rawJobsStored = sourcesQuery.data?.reduce((sum, s) => sum + s.raw_jobs_stored, 0) ?? 0;
+  const status = statusQuery.data;
   const hasCv = (profileQuery.data?.cv_count ?? 0) > 0;
   const hasPreferences = profileQuery.data?.has_preferences ?? false;
-  const hasJobs = rawJobsStored > 0;
-  const hasTelegram = telegramQuery.data?.connected ?? false;
-  const setupComplete = hasCv && hasPreferences && hasJobs && hasTelegram;
+  const jobs = status?.counts.canonical_jobs ?? 0;
+  const matches = status?.counts.matches ?? 0;
+  const hasKey = status?.voyage_configured ?? false;
 
   return (
     <div className="flex flex-col gap-6">
       <Card>
         <SectionTitle>Setup</SectionTitle>
-        <StatusRow done={hasCv} label="CV uploaded" to="/profile" linkLabel="Upload / analyze" />
+        <StatusRow
+          done={hasKey}
+          label="Voyage API key"
+          detail="Set VOYAGE_API_KEY in .env — without it there is no embedding search and no reranking."
+          to="/system"
+          linkLabel="Check"
+        />
+        <StatusRow
+          done={hasCv}
+          label="CV uploaded"
+          detail="Its text is embedded as-is and handed to the reranker."
+          to="/profile"
+          linkLabel="Upload"
+        />
         <StatusRow
           done={hasPreferences}
           label="Preferences set"
+          detail="What you want, plus the rules that filter vacancies out."
           to="/settings"
           linkLabel="Configure"
         />
-        <StatusRow done={hasJobs} label="Jobs scraped" to="/sources" linkLabel="Sync now" />
         <StatusRow
-          done={hasTelegram}
-          label="Telegram connected"
-          to="/settings"
-          linkLabel="Connect + test"
+          done={jobs > 0}
+          label="Vacancies scraped"
+          detail="Run the pipeline once to fetch, embed and match."
+          to="/system"
+          linkLabel="Run pipeline"
         />
-        {setupComplete && (
-          <div className="mt-4 flex items-center justify-between rounded border border-green-200 bg-green-50 p-3">
+        <StatusRow
+          done={telegramQuery.data?.connected ?? false}
+          label="Telegram connected"
+          detail="Optional — matches above your threshold arrive as swipe cards."
+          to="/settings"
+          linkLabel="Connect"
+        />
+
+        {status && status.blockers.length === 0 && matches === 0 && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded border border-green-200 bg-green-50 p-3">
             <p className="text-sm text-green-800">
-              Everything's set up — score jobs against your profile to start getting matches.
+              Everything's in place — run the pipeline to get your first matches.
             </p>
-            <Link to="/jobs">
-              <Button className="shrink-0">Score jobs →</Button>
+            <Link to="/system">
+              <Button className="shrink-0">Run pipeline →</Button>
             </Link>
+          </div>
+        )}
+        {status && status.blockers.length > 0 && (
+          <div className="mt-4">
+            <InfoBanner tone="warn">
+              <ul className="list-inside list-disc">
+                {status.blockers.map((blocker) => (
+                  <li key={blocker}>{blocker}</li>
+                ))}
+              </ul>
+            </InfoBanner>
           </div>
         )}
       </Card>
 
       <Card>
         <SectionTitle>At a glance</SectionTitle>
-        <div className="grid grid-cols-3 gap-4 text-center">
-          <div>
-            <p className="text-2xl font-bold">{jobsQuery.data?.total ?? "—"}</p>
-            <p className="text-sm text-slate-500">canonical jobs</p>
-          </div>
-          <div>
-            <p className="text-2xl font-bold">{rawJobsStored}</p>
-            <p className="text-sm text-slate-500">raw jobs stored</p>
-          </div>
-          <div>
-            <p className="text-2xl font-bold">{profileQuery.data?.cv_count ?? "—"}</p>
-            <p className="text-sm text-slate-500">CVs on file</p>
-          </div>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <Stat value={jobs} label="vacancies" />
+          <Stat value={status?.embeddings.jobs_embedded ?? "—"} label="embedded" />
+          <Stat value={matches} label="matches" />
+          <Stat value={profileQuery.data?.cv_count ?? "—"} label="CVs on file" />
         </div>
-        <div className="mt-4 text-center">
-          <Link to="/jobs" className="text-sm text-slate-600 underline hover:text-slate-900">
+        <div className="mt-4 flex gap-4 text-sm">
+          <Link to="/jobs" className="text-slate-600 underline hover:text-slate-900">
             Browse jobs →
+          </Link>
+          <Link to="/system" className="text-slate-600 underline hover:text-slate-900">
+            Pipeline &amp; settings →
           </Link>
         </div>
       </Card>

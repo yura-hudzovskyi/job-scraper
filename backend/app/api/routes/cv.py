@@ -1,18 +1,22 @@
-"""CV upload/listing/analysis — see docs/api.md."""
+"""CV upload, listing and deletion — see docs/api.md.
+
+The most recently uploaded CV is the active one: it is what gets embedded and
+what the reranker reads. There is no analysis endpoint because there is no
+analysis step — the text goes to the models as-is.
+"""
 
 import uuid
 from datetime import datetime
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user_id, get_cv_service
-from app.domain.candidates.models import CandidateProfile, CvDocument, SkillLevel, SkillOverride
-from app.domain.skills.normalizer import dedupe_key
-from app.services.ai_errors import LlmCallFailed, LlmNotConfigured
-from app.services.cv_service import CvService, UnsupportedCvFormat
-from app.workers.tasks.backfill import score_existing_jobs_for_user
+from app.api.deps import get_candidate_repository, get_current_user_id, get_cv_service
+from app.domain.candidates.models import CvDocument
+from app.domain.matching.documents import profile_document
+from app.repositories.candidate_repository import CandidateRepository
+from app.services.cv_service import CvService, EmptyCv, UnsupportedCvFormat
+from app.workers.tasks.pipeline import match_user
 
 router = APIRouter(prefix="/api/cv", tags=["cv"])
 
@@ -21,83 +25,29 @@ class CvDocumentResponse(BaseModel):
     id: str
     filename: str
     uploaded_at: datetime
+    characters: int
     text_preview: str
+    # True for the CV that is actually used. Exactly one, always the newest.
+    active: bool
 
 
-class CandidateSkillResponse(BaseModel):
-    name: str
-    level: str
-    years: float | None
-    # "llm" / "rules" / "user" — a skill the user corrected is theirs, and the UI
-    # says so rather than presenting it as something the model read off the CV.
-    source: str
+class ActiveCvResponse(BaseModel):
+    """The active CV plus the exact document built from it. That text is what the
+    embedding and rerank models see, so showing it is the difference between
+    "trust the score" and "check the score"."""
+
+    cv: CvDocumentResponse | None
+    model_document: str
 
 
-class SkillCorrectionRequest(BaseModel):
-    name: str
-    level: Literal["aware", "commercial", "strong", "expert"] | None = None
-    years: float | None = None
-
-
-class ExperienceEntryResponse(BaseModel):
-    company: str
-    title: str
-    start_date: str
-    end_date: str | None
-    description: str
-    skills: list[str]
-
-
-class CandidateProfileResponse(BaseModel):
-    id: str
-    experience_years: float
-    roles: list[str]
-    skills: list[CandidateSkillResponse]
-    experience: list[ExperienceEntryResponse]
-    achievements: list[str]
-    domains: list[str]
-    ai_experience: list[str]
-    generated_by: str | None
-
-
-def _to_response(document: CvDocument) -> CvDocumentResponse:
+def _to_response(document: CvDocument, active: bool) -> CvDocumentResponse:
     return CvDocumentResponse(
         id=document.id,
         filename=document.filename,
         uploaded_at=document.uploaded_at,
+        characters=len(document.raw_text),
         text_preview=document.raw_text[:500],
-    )
-
-
-def _to_profile_response(profile: CandidateProfile) -> CandidateProfileResponse:
-    return CandidateProfileResponse(
-        id=profile.id,
-        experience_years=profile.experience_years,
-        roles=profile.roles,
-        skills=[
-            CandidateSkillResponse(
-                name=skill.name,
-                level=skill.level.value,
-                years=skill.years,
-                source=skill.source.value,
-            )
-            for skill in profile.skills
-        ],
-        experience=[
-            ExperienceEntryResponse(
-                company=entry.company,
-                title=entry.title,
-                start_date=entry.start_date,
-                end_date=entry.end_date,
-                description=entry.description,
-                skills=entry.skills,
-            )
-            for entry in profile.experience
-        ],
-        achievements=profile.achievements,
-        domains=profile.domains,
-        ai_experience=profile.ai_experience,
-        generated_by=profile.generated_by,
+        active=active,
     )
 
 
@@ -110,9 +60,13 @@ async def upload_cv(
     content = await file.read()
     try:
         document = await cv_service.upload_cv(user_id, file.filename or "cv.txt", content)
-    except UnsupportedCvFormat as exc:
+    except (UnsupportedCvFormat, EmptyCv) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _to_response(document)
+
+    # This is now the active CV, so every existing match was scored against a
+    # different candidate. Re-matching immediately is what makes that visible.
+    match_user.delay(str(user_id))
+    return _to_response(document, active=True)
 
 
 @router.get("", response_model=list[CvDocumentResponse])
@@ -121,7 +75,23 @@ async def list_cvs(
     cv_service: CvService = Depends(get_cv_service),
 ) -> list[CvDocumentResponse]:
     documents = await cv_service.list_cvs(user_id)
-    return [_to_response(document) for document in documents]
+    return [_to_response(document, active=index == 0) for index, document in enumerate(documents)]
+
+
+@router.get("/active", response_model=ActiveCvResponse)
+async def get_active_cv(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    cv_service: CvService = Depends(get_cv_service),
+    candidate_repository: CandidateRepository = Depends(get_candidate_repository),
+) -> ActiveCvResponse:
+    document = await cv_service.get_active_cv(user_id)
+    if document is None:
+        return ActiveCvResponse(cv=None, model_document="")
+    preferences = await candidate_repository.get_preferences(user_id)
+    return ActiveCvResponse(
+        cv=_to_response(document, active=True),
+        model_document=profile_document(document.raw_text, preferences),
+    )
 
 
 @router.delete("/{cv_id}", status_code=204)
@@ -130,91 +100,8 @@ async def delete_cv(
     user_id: uuid.UUID = Depends(get_current_user_id),
     cv_service: CvService = Depends(get_cv_service),
 ) -> None:
-    """Deleting a CV never deletes a CandidateProfile already extracted from it —
-    see the ON DELETE SET NULL note on CandidateProfileModel.cv_document_id."""
-    deleted = await cv_service.delete_cv(user_id, cv_id)
-    if not deleted:
+    """Deleting the active CV promotes the next-newest one, so matching keeps
+    working with whatever is left."""
+    if not await cv_service.delete_cv(user_id, cv_id):
         raise HTTPException(status_code=404, detail="CV not found")
-
-
-@router.get("/profile", response_model=CandidateProfileResponse | None)
-async def get_latest_profile(
-    user_id: uuid.UUID = Depends(get_current_user_id),
-    cv_service: CvService = Depends(get_cv_service),
-) -> CandidateProfileResponse | None:
-    """Returns the already-analyzed profile, if any — without re-running the LLM."""
-    profile = await cv_service.get_latest_profile(user_id)
-    return _to_profile_response(profile) if profile else None
-
-
-@router.post("/profile/skills", response_model=CandidateProfileResponse)
-async def correct_skill(
-    payload: SkillCorrectionRequest,
-    user_id: uuid.UUID = Depends(get_current_user_id),
-    cv_service: CvService = Depends(get_cv_service),
-) -> CandidateProfileResponse:
-    """Add a skill the CV never named, or correct the level/years of one it did.
-    The correction is remembered separately from the profile, so re-analyzing the
-    CV re-applies it instead of undoing it (see CvService.correct_skill)."""
-    try:
-        profile = await cv_service.correct_skill(
-            user_id,
-            SkillOverride(
-                skill_key=dedupe_key(payload.name),
-                name=payload.name.strip(),
-                level=SkillLevel(payload.level) if payload.level else None,
-                years=payload.years,
-            ),
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    # The profile that every match is scored against just changed.
-    score_existing_jobs_for_user.delay(str(user_id))
-    return _to_profile_response(profile)
-
-
-@router.delete("/profile/skills/{name}", response_model=CandidateProfileResponse)
-async def remove_skill(
-    name: str,
-    user_id: uuid.UUID = Depends(get_current_user_id),
-    cv_service: CvService = Depends(get_cv_service),
-) -> CandidateProfileResponse:
-    """"The CV mentions it, don't count it" — recorded as a correction, so it
-    stays gone when the CV is analyzed again. Bringing it back means re-analyzing
-    the CV: profile revisions only move forward."""
-    try:
-        profile = await cv_service.correct_skill(
-            user_id,
-            SkillOverride(skill_key=dedupe_key(name), name=name.strip(), removed=True),
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    score_existing_jobs_for_user.delay(str(user_id))
-    return _to_profile_response(profile)
-
-
-@router.post("/analyze", response_model=CandidateProfileResponse)
-async def analyze_cv(
-    user_id: uuid.UUID = Depends(get_current_user_id),
-    cv_service: CvService = Depends(get_cv_service),
-) -> CandidateProfileResponse:
-    """Analyzes the most recently uploaded CV into a structured CandidateProfile."""
-    documents = await cv_service.list_cvs(user_id)
-    if not documents:
-        raise HTTPException(status_code=404, detail="no CV uploaded yet")
-    latest = documents[0]
-
-    try:
-        profile = await cv_service.analyze_cv(user_id, uuid.UUID(latest.id), latest.raw_text)
-    except LlmNotConfigured as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except LlmCallFailed as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    # Score this (newly analyzed or re-analyzed) profile against every existing
-    # job, not just ones scraped from now on — see workers/tasks/backfill.py.
-    score_existing_jobs_for_user.delay(str(user_id))
-
-    return _to_profile_response(profile)
+    match_user.delay(str(user_id))

@@ -1,17 +1,12 @@
-"""Basic profile summary — see docs/api.md.
-
-Full CandidateProfile (skills/experience extracted from a CV) doesn't exist until
-Phase 2's LLM extraction, so this only reports what's on file. Preferences (what the
-candidate wants) are edited via /api/settings, not here — see docs/domain-model.md.
-"""
+"""Onboarding summary — what the Dashboard checks to tell the user what's left."""
 
 import uuid
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user_id, get_profile_service
-from app.services.profile_service import ProfileService
+from app.api.deps import get_candidate_repository, get_current_user_id
+from app.repositories.candidate_repository import CandidateRepository
 
 router = APIRouter(prefix="/api/profile", tags=["profile"])
 
@@ -25,11 +20,12 @@ class ProfileSummaryResponse(BaseModel):
 @router.get("", response_model=ProfileSummaryResponse)
 async def get_profile(
     user_id: uuid.UUID = Depends(get_current_user_id),
-    profile_service: ProfileService = Depends(get_profile_service),
+    candidate_repository: CandidateRepository = Depends(get_candidate_repository),
 ) -> ProfileSummaryResponse:
-    summary = await profile_service.get_profile_summary(user_id)
+    documents = await candidate_repository.list_cv_documents(user_id)
+    preferences = await candidate_repository.get_preferences(user_id)
     return ProfileSummaryResponse(
-        user_id=summary.user_id,
-        cv_count=len(summary.cv_documents),
-        has_preferences=summary.has_preferences,
+        user_id=str(user_id),
+        cv_count=len(documents),
+        has_preferences=preferences is not None,
     )

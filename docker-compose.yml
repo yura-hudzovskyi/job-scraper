@@ -32,7 +32,7 @@ services:
 
   worker:
     build: ./backend
-    command: celery -A app.workers.celery_app worker --loglevel=info -Q default,ai_interactive,ai_extraction,ai_matching,ai_backfill
+    command: celery -A app.workers.celery_app worker --loglevel=info
     env_file: .env
     volumes:
       - ./backend:/app

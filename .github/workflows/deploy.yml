@@ -20,10 +20,8 @@ on:
 jobs:
   build-and-push:
     # Native ARM64 runner (free for public repos) — the Oracle VM is Ampere (ARM64),
-    # and building natively instead of cross-compiling via QEMU emulation on an amd64
-    # runner is what actually fixed the 15-20min builds (QEMU translates every
-    # instruction pip/python execute while installing the torch/sentence-transformers
-    # stack). No docker/setup-qemu-action needed here anymore as a result.
+    # so building natively avoids cross-compiling under QEMU emulation. No
+    # docker/setup-qemu-action needed as a result.
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -40,13 +38,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Registry-based cache (a dedicated :buildcache tag on the same GHCR package)
-      # instead of type=gha: the gha backend shares one 10GB-per-repo quota, and the
-      # torch/sentence-transformers/transformers/anthropic/openai/google-genai layer
-      # here is big enough to get evicted between runs — which is why builds kept
-      # costing 16-18min even after the dependency layer was already split out to be
-      # cacheable (see "perf(deploy): cache pip installs..."). GHCR storage for a
-      # public repo's packages isn't bounded the same way, so this cache actually
-      # persists.
+      # rather than type=gha, whose 10GB-per-repo quota evicts layers between runs.
+      # GHCR storage for a public repo's packages isn't bounded the same way, so
+      # this cache actually persists.
       - name: Build and push backend
         uses: docker/build-push-action@v6
         with:

@@ -1,8 +1,6 @@
-"""FastAPI dependency wiring: constructs services from repositories/integrations.
+"""FastAPI dependency wiring: constructs repositories and services per request.
 
-Routes depend on these, never on repositories or integrations directly.
-
-get_current_user_id verifies a JWT bearer token (see app/security/tokens.py) rather
+get_current_user_id verifies a JWT bearer token (app/security/tokens.py) rather
 than touching the database — auth is stateless, no session lookup needed.
 """
 
@@ -12,25 +10,22 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config.runtime_settings import get_effective_settings
 from app.config.settings import get_settings
 from app.db.session import get_session
-from app.integrations.ai.llm.base import LLMProvider
-from app.integrations.ai.llm.factory import build_llm_router
-from app.integrations.ai.routing.router import Capability
-from app.repositories.ai_invocation_repository import AiInvocationRepository
 from app.repositories.candidate_repository import CandidateRepository
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
 from app.repositories.notification_repository import NotificationRepository
+from app.repositories.pipeline_config_repository import PipelineConfigRepository
+from app.repositories.pipeline_run_repository import PipelineRunRepository
 from app.repositories.user_repository import UserRepository
 from app.security.tokens import InvalidToken, decode_access_token
 from app.services.auth_service import AuthService
 from app.services.cv_service import CvService
 from app.services.job_ingestion_service import JobIngestionService
 from app.services.job_service import JobService
-from app.services.profile_service import ProfileService
+from app.services.system_service import SystemService
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -56,25 +51,11 @@ def get_user_repository(session: AsyncSession = Depends(get_session)) -> UserRep
     return UserRepository(session)
 
 
-def get_auth_service(
-    user_repository: UserRepository = Depends(get_user_repository),
-) -> AuthService:
-    return AuthService(user_repository, get_settings().secret_key)
-
-
 def get_candidate_repository(session: AsyncSession = Depends(get_session)) -> CandidateRepository:
     return CandidateRepository(session)
 
 
-def get_ai_invocation_repository(
-    session: AsyncSession = Depends(get_session),
-) -> AiInvocationRepository:
-    return AiInvocationRepository(session)
-
-
-def get_embedding_repository(
-    session: AsyncSession = Depends(get_session),
-) -> EmbeddingRepository:
+def get_embedding_repository(session: AsyncSession = Depends(get_session)) -> EmbeddingRepository:
     return EmbeddingRepository(session)
 
 
@@ -92,25 +73,28 @@ def get_notification_repository(
     return NotificationRepository(session)
 
 
-async def get_quality_llm_provider() -> LLMProvider | None:
-    """CV analysis and preferences AI-fill both read a CV into structure, so both
-    run on the profile-extraction capability and share its protected budget."""
-    settings = await get_effective_settings(get_settings())
-    return build_llm_router(Capability.PROFILE_EXTRACTION, settings)
+def get_pipeline_config_repository(
+    session: AsyncSession = Depends(get_session),
+) -> PipelineConfigRepository:
+    return PipelineConfigRepository(session)
+
+
+def get_pipeline_run_repository(
+    session: AsyncSession = Depends(get_session),
+) -> PipelineRunRepository:
+    return PipelineRunRepository(session)
+
+
+def get_auth_service(
+    user_repository: UserRepository = Depends(get_user_repository),
+) -> AuthService:
+    return AuthService(user_repository, get_settings().secret_key)
 
 
 def get_cv_service(
     candidate_repository: CandidateRepository = Depends(get_candidate_repository),
-    llm_provider: LLMProvider | None = Depends(get_quality_llm_provider),
 ) -> CvService:
-    return CvService(candidate_repository, llm_provider)
-
-
-def get_profile_service(
-    candidate_repository: CandidateRepository = Depends(get_candidate_repository),
-    llm_provider: LLMProvider | None = Depends(get_quality_llm_provider),
-) -> ProfileService:
-    return ProfileService(candidate_repository, llm_provider)
+    return CvService(candidate_repository)
 
 
 def get_job_service(
@@ -124,3 +108,21 @@ def get_job_ingestion_service(
     job_repository: JobRepository = Depends(get_job_repository),
 ) -> JobIngestionService:
     return JobIngestionService(job_repository)
+
+
+def get_system_service(
+    job_repository: JobRepository = Depends(get_job_repository),
+    match_repository: MatchRepository = Depends(get_match_repository),
+    notification_repository: NotificationRepository = Depends(get_notification_repository),
+    embedding_repository: EmbeddingRepository = Depends(get_embedding_repository),
+    candidate_repository: CandidateRepository = Depends(get_candidate_repository),
+    run_repository: PipelineRunRepository = Depends(get_pipeline_run_repository),
+) -> SystemService:
+    return SystemService(
+        job_repository,
+        match_repository,
+        notification_repository,
+        embedding_repository,
+        candidate_repository,
+        run_repository,
+    )

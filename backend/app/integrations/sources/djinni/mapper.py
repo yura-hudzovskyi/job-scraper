@@ -25,5 +25,4 @@ def to_normalized_job(raw_job: RawJob) -> NormalizedJob:
         salary=parse_salary_range(detail["salary_text"]),
         seniority=guess_seniority(title),
         required_experience_years=parser.parse_experience_years(detail["experience_text"]),
-        skills=[],
     )

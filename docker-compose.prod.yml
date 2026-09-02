@@ -27,12 +27,8 @@ services:
   worker:
     image: ghcr.io/yura-hudzovskyi/job-scraper-backend:latest
     restart: unless-stopped
-    command: celery -A app.workers.celery_app worker --loglevel=info -Q default,ai_interactive,ai_extraction,ai_matching,ai_backfill
+    command: celery -A app.workers.celery_app worker --loglevel=info
     env_file: .env
-    volumes:
-      # sentence-transformers' embedding model cache — without this it re-downloads
-      # from HuggingFace on every deploy (every container recreate), not just once.
-      - hf_cache:/root/.cache/huggingface
     depends_on:
       - postgres
       - redis
@@ -64,4 +60,3 @@ services:
 volumes:
   pgdata:
   caddy_data:
-  hf_cache:

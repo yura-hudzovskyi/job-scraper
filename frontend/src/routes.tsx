@@ -2,12 +2,10 @@ import { Route, Routes } from "react-router-dom";
 
 import { Layout } from "./components/Layout";
 import { RequireAuth } from "./components/RequireAuth";
-import { Applications } from "./pages/Applications";
 import { Dashboard } from "./pages/Dashboard";
 import { JobDetails } from "./pages/JobDetails";
 import { Jobs } from "./pages/Jobs";
 import { Login } from "./pages/Login";
-import { MarketInsights } from "./pages/MarketInsights";
 import { Profile } from "./pages/Profile";
 import { Register } from "./pages/Register";
 import { Settings } from "./pages/Settings";
@@ -29,9 +27,7 @@ export function AppRoutes() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/jobs" element={<Jobs />} />
         <Route path="/jobs/:jobId" element={<JobDetails />} />
-        <Route path="/applications" element={<Applications />} />
         <Route path="/profile" element={<Profile />} />
-        <Route path="/market-insights" element={<MarketInsights />} />
         <Route path="/sources" element={<Sources />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/system" element={<System />} />

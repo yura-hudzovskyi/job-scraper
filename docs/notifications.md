@@ -16,20 +16,25 @@ behind the same interface).
 
 ## Delivery policy
 
-Not every match is worth interrupting the user for. `NotificationPolicy`
-(`backend/app/domain/notifications/policy.py`) decides, based on score bands:
+Not every match is worth interrupting someone for. `NotificationPolicy`
+(`backend/app/domain/notifications/policy.py`) asks two questions, both
+answerable from settings the user can see:
 
 ```text
-score >= 85              → notify immediately
-score 75-84               → notify immediately if salary/location also match
-score 65-74               → include in the daily digest
-score < 65                → no notification
+score >= min_score (default 75)  and  outside quiet hours  ->  send
+anything else                                              ->  don't
 ```
+
+That is the whole policy. There is no digest tier and no component-level bar:
+neither was ever delivered, and a threshold nobody can see is worse than no
+threshold. `enabled` turns notifications off entirely.
 
 ### Quiet hours
 
-Notifications queued during quiet hours (e.g. 22:00–08:00) are held and delivered as a
-morning summary instead of interrupting the user overnight.
+A match that qualifies during quiet hours is simply not sent then. It is not
+queued for later — the next pipeline run re-evaluates it, and delivery is
+idempotent per match, so nothing is lost and nothing is duplicated. Setting start
+and end to the same hour means no quiet window at all.
 
 ## Message shape — a swipe card, not a report
 
@@ -43,23 +48,20 @@ dating app's yes/no rather than a document to read through. Built by
 Senior Full Stack Engineer — Acme Inc.
 💰 4000–5500 USD · 📍 Remote · 🎓 Senior
 
-✅ React, TypeScript, Python
-⚠️ AWS (required), NestJS
+🧮 similarity 71% · rerank 93%
 
 🔗 DOU · Djinni
 
 📊 12 pending · 5 approved · 3 rejected
-
-[✅ Approve]  [❌ Reject]
 ```
 
 The two link labels above are HTML hyperlinks (`<a href="...">DOU</a>`), one per
 source this canonical job is known under (see
 `JobRepository.list_source_links_for_canonical`) — a job posted on both DOU and
 Djinni links out to both by name instead of showing one raw URL. Scraped text
-(title, company, skill/gap labels) is HTML-escaped before being interpolated, since
+(title, company) is HTML-escaped before being interpolated, since
 the message is sent with `parse_mode: HTML`. There's no separate
-"requirement match vs. practical fit" breakdown here — that level of detail lives
+"score breakdown" here beyond the two signals — the full arithmetic lives
 on the Job Details page; a swipe decision only needs the headline score.
 
 The stats line (`📊 ...`) is the running total of every eligible match this user

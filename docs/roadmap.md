@@ -1,86 +1,49 @@
 # Roadmap
 
-Build in phases. Don't let a coding agent (or yourself) attempt everything at once —
-each phase should be independently mergeable and demoable.
+What is built, what was deliberately left out, and what comes next.
 
-## Phase 1 — Foundation
+## Done
 
-- FastAPI + Postgres + Redis + React, wired together via Docker Compose
-- User profile, CV upload, basic settings
-- DOU adapter, Djinni adapter (fetch + normalize only)
-- Raw job storage, normalization, deduplication
+**Foundation** — FastAPI + Postgres/pgvector + Redis + React via Docker Compose.
+CV upload, preferences, the DOU and Djinni adapters, raw storage, normalization,
+cross-source deduplication, and a category rotation so scraping reaches every
+category over time.
 
-## Phase 2 — Matching
+**Matching** — one Voyage vector per vacancy and per CV, pgvector cosine search,
+hard filters, Voyage reranking over the top of the results, and a score that is
+the weighted blend of those two signals. Every match stores both inputs and the
+weight, and the UI shows the arithmetic.
 
-- CV extraction into `CandidateProfile`
-- Skill identity via embedding similarity (no hand-maintained registry)
-- Hard filters + deterministic scoring
-- Local embeddings + pgvector similarity
-- Match explanation (component breakdown, strengths/gaps)
+**Telegram** — swipe cards with real Approve/Reject buttons via webhook,
+idempotent delivery, quiet hours, a per-user score threshold.
 
-## Phase 3 — Telegram
+**Operations** — a System page that reports readiness and its blockers, runs the
+whole pipeline on demand, records what every step did, edits every tunable, and
+resets any part of the data with a per-table count of what it deleted.
 
-- Bot connection flow
-- Instant notifications + daily digest
-- Inline actions: save / hide / applied
+## Deliberately not built
 
-## Phase 4 — AI
+**An LLM layer.** Per-requirement gap analysis, "should I apply?" write-ups, cover
+letters and CV-variant advice all need a language model to be honest, and an
+earlier version of this app had one. It was removed: the extraction it depended on
+was the least reliable part of the system, and a confident-looking verdict built on
+a bad skill list is worse than no verdict. Adding it back is a new step after
+reranking, not a rewrite — but it should arrive with an evaluation set, not before
+one.
 
-- LLM provider abstraction (Groq + Gemini free tiers, OpenAI/Anthropic optional),
-  now a capability router with per-capability budgets, failure classification and a
-  usage ledger — see [ai-pipeline-v3.md](ai-pipeline-v3.md)
-- ~~Job requirement extraction~~ — done, moved earlier: runs once per scraped job
-  (see `backend/app/services/job_skill_extraction_service.py`), not gated behind
-  the rest of Phase 4
-- ~~LLM reranking, gap analysis, "should I apply?", CV variant recommendation~~ —
-  done for the per-match case (`MatchingService.should_i_apply`, gated to
-  APPLY-tier matches with a daily call budget — see
-  `backend/app/domain/matching/llm_reranker.py`). Batch reranking over a literal
-  shortlist (`rerank_shortlist`) is still deferred — no shortlist view or digest
-  batching exists yet to feed it.
+**A daily digest.** The notification policy is one threshold and quiet hours. A
+digest tier existed as a config field nobody could see the effect of, and was
+removed rather than left half-built.
 
-## Phase 5 — Job search cockpit
+## Still ahead, roughly in priority order
 
-- Application tracker + conversion analytics
-- Feedback-driven preference-weight suggestions
-- Missing-skill analytics ("learning NestJS unlocks ~18% more high-fit jobs")
-- Market skill intelligence (skill demand across relevant jobs)
-
-## Nice-to-haves, roughly in priority order
-
-1. Application tracker
-2. Feedback learning loop
-3. Multiple CV variants + automatic CV recommendation
-4. Cover letter generation
-5. Missing-skill analytics
-6. Market trends
-7. Duplicate vacancy detection across sources
-8. Salary extraction/normalization
-9. Company blacklist
-10. Job freshness/expiry detection
-11. Daily/weekly Telegram digest
-12. Similar jobs
-13. Saved searches
-14. Company intelligence
-
-## v1 definition of done
-
-1. CV uploads and is analyzed into a `CandidateProfile`.
-2. Profile is manually editable.
-3. DOU imports on a schedule.
-4. Djinni imports on a schedule.
-5. New jobs never duplicate (raw or canonical).
-6. Job descriptions are normalized.
-7. Skills/requirements are extracted.
-8. Every job has a 0–100 match score.
-9. Every score has a breakdown explaining it.
-10. Both `Requirement Match` and `Practical Fit` are shown.
-11. Top jobs are delivered via Telegram.
-12. Notifications never duplicate.
-13. Telegram supports save/reject/apply actions.
-14. The UI shows recommended jobs.
-15. One source failing doesn't break the others.
-16. A new scraper can be added by implementing `JobSourceAdapter` alone.
-17. Matching logic has unit test coverage.
-18. Parsers have fixture-based regression tests.
-19. Everything starts with `docker compose up`.
+- **Application tracker** — discovered → applied → interview → offer/rejected, and
+  the conversion analytics that only become possible once it exists.
+- **An evaluation set.** A few hundred labelled (CV, vacancy) pairs would turn
+  `rerank_weight`, `retrieval_limit` and the score thresholds from defensible
+  guesses into measured values, and is the prerequisite for taking any further
+  ranking change seriously.
+- **Missing-skill analytics** — "learning NestJS unlocks ~18% more high-fit jobs",
+  computed from the corpus rather than asserted by a model.
+- **More sources.** The adapter contract is the point; adding one should not touch
+  matching or notifications.

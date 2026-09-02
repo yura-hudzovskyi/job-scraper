@@ -1,7 +1,4 @@
-"""List/get canonical jobs and their match scores — see docs/api.md.
-
-save/apply/reject need the application tracker — Phase 5, see docs/roadmap.md.
-"""
+"""List/get vacancies and their match for the current user — see docs/api.md."""
 
 import uuid
 from datetime import datetime
@@ -9,20 +6,44 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user_id, get_job_service, get_match_repository
+from app.api.deps import (
+    get_current_user_id,
+    get_job_repository,
+    get_job_service,
+    get_match_repository,
+)
 from app.domain.jobs.models import CanonicalJob
-from app.domain.matching.models import JobMatch, LlmAssessment
-from app.domain.matching.provenance import MatchProvenance
+from app.domain.matching.documents import job_document
+from app.domain.matching.models import JobMatch
+from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
 from app.services.job_service import JobService
-from app.workers.tasks.backfill import rescore_all_jobs
-from app.workers.tasks.enrich import enrich_match
-from app.workers.tasks.score import score_job_for_user
+from app.workers.tasks.pipeline import match_user
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 _DEFAULT_PAGE_SIZE = 50
 _MAX_PAGE_SIZE = 200
+
+
+class JobMatchResponse(BaseModel):
+    """The whole result, with the arithmetic visible. `score` is always
+    reproducible from the other three: similarity when relevance is null,
+    otherwise similarity*(1-weight) + relevance*weight."""
+
+    id: str
+    eligible: bool
+    filter_reasons: list[str]
+    score: float
+    similarity: float
+    relevance: float | None
+    rerank_position: int | None
+    recommendation: str
+    embedding_model: str | None
+    rerank_model: str | None
+    rerank_weight: float | None
+    decision: str
+    scored_at: datetime | None
 
 
 class JobSummaryResponse(BaseModel):
@@ -31,15 +52,7 @@ class JobSummaryResponse(BaseModel):
     company: str
     description: str
     source_count: int
-    practical_fit: float | None = None
-    recommendation: str | None = None
-    # Enough provenance to label a row without opening it: a score produced by a
-    # full LLM review and one produced from a posting with nothing extracted are
-    # not the same claim, and the list is where that difference is easiest to
-    # miss (docs/ai-pipeline-v3.md, 9.1).
-    engine: str | None = None
-    analysis_level: str | None = None
-    confidence: float | None = None
+    match: JobMatchResponse | None = None
 
 
 class JobListResponse(BaseModel):
@@ -49,87 +62,31 @@ class JobListResponse(BaseModel):
     offset: int
 
 
-class ScoreBreakdownResponse(BaseModel):
-    skills: float
-    role: float
-    experience: float
-    semantic_fit: float
-    salary: float
-    location: float
-    transferable_skills: float
-    preferences: float
+class JobDetailResponse(JobSummaryResponse):
+    # The exact text the embedding and rerank models were given for this
+    # vacancy. Shown in the UI because "why did this score like that" is only
+    # answerable if you can see what the model actually read.
+    model_document: str
 
 
-class LlmAssessmentResponse(BaseModel):
-    overall_fit: float
-    recommendation: str
-    confidence: float
-    strengths: list[str]
-    gaps: list[str]
-    critical_gaps: list[str]
-    transferable_experience: list[str]
-    interview_risk: str
-    summary: str
-    recommended_cv: str | None
-    model_label: str
-
-
-class MatchReasonResponse(BaseModel):
-    label: str
-    detail: str
-
-
-class MatchGapResponse(BaseModel):
-    label: str
-    critical: bool
-
-
-class DocumentVersionResponse(BaseModel):
-    version: int
-    content_hash: str
-
-
-class PipelineVersionsResponse(BaseModel):
-    scorer: str
-    match_prompt: str
-    skill_taxonomy: str
-    rerank_instruction: str | None
-    calibration: str | None
-
-
-class MatchProvenanceResponse(BaseModel):
-    """How this result was produced — read back from what was stored with it, so
-    it keeps naming the models that really ran even after the System page points
-    the app at different ones. See docs/ai-pipeline-v3.md (9.2)."""
-
-    engine: str
-    analysis_level: str
-    profile: DocumentVersionResponse | None
-    job: DocumentVersionResponse | None
-    embedding_model: str | None
-    cross_encoder_model: str | None
-    skills_model: str | None
-    rerank_model: str | None
-    match_model: str | None
-    fallback_reason: str | None
-    versions: PipelineVersionsResponse
-    generated_at: datetime | None
-
-
-class JobMatchResponse(BaseModel):
-    id: str
-    eligible: bool
-    requirement_match: float
-    practical_fit: float
-    breakdown: ScoreBreakdownResponse
-    strengths: list[MatchReasonResponse]
-    gaps: list[MatchGapResponse]
-    recommendation: str | None
-    confidence: float | None
-    risks: list[str]
-    llm_assessment: LlmAssessmentResponse | None
-    provenance: MatchProvenanceResponse | None
-    scored_at: datetime | None
+def _to_match_response(match: JobMatch | None) -> JobMatchResponse | None:
+    if match is None:
+        return None
+    return JobMatchResponse(
+        id=match.id,
+        eligible=match.eligible,
+        filter_reasons=match.filter_reasons,
+        score=match.score,
+        similarity=match.similarity,
+        relevance=match.relevance,
+        rerank_position=match.rerank_position,
+        recommendation=match.recommendation.value,
+        embedding_model=match.embedding_model,
+        rerank_model=match.rerank_model,
+        rerank_weight=match.rerank_weight,
+        decision=match.decision.value,
+        scored_at=match.scored_at,
+    )
 
 
 def _to_summary(job: CanonicalJob, match: JobMatch | None) -> JobSummaryResponse:
@@ -139,91 +96,7 @@ def _to_summary(job: CanonicalJob, match: JobMatch | None) -> JobSummaryResponse
         company=job.normalized.company,
         description=job.normalized.description,
         source_count=len(job.source_records),
-        practical_fit=match.practical_fit if match else None,
-        recommendation=(
-            match.recommendation.value if match and match.recommendation else None
-        ),
-        engine=match.provenance.engine.value if match and match.provenance else None,
-        analysis_level=(
-            match.provenance.analysis_level.value if match and match.provenance else None
-        ),
-        confidence=match.confidence if match else None,
-    )
-
-
-def _to_llm_assessment_response(assessment: LlmAssessment | None) -> LlmAssessmentResponse | None:
-    if assessment is None:
-        return None
-    return LlmAssessmentResponse(
-        overall_fit=assessment.overall_fit,
-        recommendation=assessment.recommendation.value,
-        confidence=assessment.confidence,
-        strengths=assessment.strengths,
-        gaps=assessment.gaps,
-        critical_gaps=assessment.critical_gaps,
-        transferable_experience=assessment.transferable_experience,
-        interview_risk=assessment.interview_risk,
-        summary=assessment.summary,
-        recommended_cv=assessment.recommended_cv,
-        model_label=assessment.model_label,
-    )
-
-
-def _to_provenance_response(provenance: MatchProvenance | None) -> MatchProvenanceResponse | None:
-    if provenance is None:
-        return None
-    return MatchProvenanceResponse(
-        engine=provenance.engine.value,
-        analysis_level=provenance.analysis_level.value,
-        profile=(
-            DocumentVersionResponse(
-                version=provenance.profile.version, content_hash=provenance.profile.content_hash
-            )
-            if provenance.profile
-            else None
-        ),
-        job=(
-            DocumentVersionResponse(
-                version=provenance.job.version, content_hash=provenance.job.content_hash
-            )
-            if provenance.job
-            else None
-        ),
-        embedding_model=provenance.embedding_model,
-        cross_encoder_model=provenance.cross_encoder_model,
-        skills_model=provenance.skills_model,
-        rerank_model=provenance.rerank_model,
-        match_model=provenance.match_model,
-        fallback_reason=provenance.fallback_reason.value if provenance.fallback_reason else None,
-        versions=PipelineVersionsResponse(
-            scorer=provenance.versions.scorer,
-            match_prompt=provenance.versions.match_prompt,
-            skill_taxonomy=provenance.versions.skill_taxonomy,
-            rerank_instruction=provenance.versions.rerank_instruction,
-            calibration=provenance.versions.calibration,
-        ),
-        generated_at=provenance.generated_at,
-    )
-
-
-def _to_match_response(match: JobMatch) -> JobMatchResponse:
-    return JobMatchResponse(
-        id=match.id,
-        eligible=match.eligible,
-        requirement_match=match.requirement_match,
-        practical_fit=match.practical_fit,
-        breakdown=ScoreBreakdownResponse(**vars(match.breakdown)),
-        strengths=[
-            MatchReasonResponse(label=reason.label, detail=reason.detail)
-            for reason in match.strengths
-        ],
-        gaps=[MatchGapResponse(label=gap.label, critical=gap.critical) for gap in match.gaps],
-        recommendation=match.recommendation.value if match.recommendation else None,
-        confidence=match.confidence,
-        risks=match.risks,
-        llm_assessment=_to_llm_assessment_response(match.llm_assessment),
-        provenance=_to_provenance_response(match.provenance),
-        scored_at=match.scored_at,
+        match=_to_match_response(match),
     )
 
 
@@ -238,75 +111,39 @@ async def list_jobs(
     jobs, matches, total = await job_service.list_jobs(
         user_id, limit, offset, include_skipped=include_skipped
     )
-    items = [_to_summary(job, matches.get(job.id)) for job in jobs]
-    return JobListResponse(items=items, total=total, limit=limit, offset=offset)
+    return JobListResponse(
+        items=[_to_summary(job, matches.get(job.id)) for job in jobs],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
-@router.get("/{job_id}", response_model=JobSummaryResponse)
+@router.get("/{job_id}", response_model=JobDetailResponse)
 async def get_job(
-    job_id: uuid.UUID, job_service: JobService = Depends(get_job_service)
-) -> JobSummaryResponse:
+    job_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    job_service: JobService = Depends(get_job_service),
+    job_repository: JobRepository = Depends(get_job_repository),
+    match_repository: MatchRepository = Depends(get_match_repository),
+) -> JobDetailResponse:
     job = await job_service.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
-    return _to_summary(job, match=None)
 
-
-@router.get("/{job_id}/match", response_model=JobMatchResponse)
-async def get_job_match(
-    job_id: uuid.UUID,
-    user_id: uuid.UUID = Depends(get_current_user_id),
-    match_repository: MatchRepository = Depends(get_match_repository),
-) -> JobMatchResponse:
+    normalized = await job_repository.get_normalized_job_for_canonical(job_id)
     match = await match_repository.get_for_canonical_job(user_id, job_id)
-    if match is None:
-        raise HTTPException(
-            status_code=404, detail="not scored yet — POST /rescore first"
-        )
-    return _to_match_response(match)
+    summary = _to_summary(job, match)
+    return JobDetailResponse(
+        **summary.model_dump(),
+        model_document=job_document(normalized) if normalized else "",
+    )
 
 
-@router.post("/{job_id}/rescore")
-async def rescore_job(
-    job_id: uuid.UUID, user_id: uuid.UUID = Depends(get_current_user_id)
-) -> dict[str, str]:
-    score_job_for_user.delay(str(user_id), str(job_id))
-    return {"status": "queued", "job_id": str(job_id)}
-
-
-@router.post("/{job_id}/analyze")
-async def analyze_job(
-    job_id: uuid.UUID, user_id: uuid.UUID = Depends(get_current_user_id)
-) -> dict[str, str]:
-    """Ask for an LLM review of this one match now, ahead of the daily ranking.
-    Someone opening a vacancy and pressing the button is the strongest
-    value-of-information signal there is, so it goes on the interactive queue —
-    see app/workers/tasks/enrich.py."""
-    enrich_match.delay(str(user_id), str(job_id))
-    return {"status": "queued", "job_id": str(job_id)}
-
-
-@router.post("/rescore-all")
-async def rescore_all(user_id: uuid.UUID = Depends(get_current_user_id)) -> dict[str, str]:
-    """Re-extracts skills and rescores every canonical job for this user (see
-    workers/tasks/backfill.py::rescore_all_jobs). Which models that runs on comes
-    from the server config / System page (app/api/routes/ai_settings.py), never
-    from the request."""
-    rescore_all_jobs.delay(str(user_id))
+@router.post("/rematch")
+async def rematch(user_id: uuid.UUID = Depends(get_current_user_id)) -> dict[str, str]:
+    """Re-run embedding search and reranking for this user against the vacancies
+    already in the database. What to press after editing preferences or uploading
+    a new CV; the System page's "Run pipeline" is what also fetches new ones."""
+    match_user.delay(str(user_id))
     return {"status": "queued"}
-
-
-@router.post("/{job_id}/save")
-async def save_job(job_id: str) -> None:
-    """Requires the application tracker — Phase 5. See docs/roadmap.md."""
-    raise NotImplementedError
-
-
-@router.post("/{job_id}/apply")
-async def apply_to_job(job_id: str) -> None:
-    raise NotImplementedError
-
-
-@router.post("/{job_id}/reject")
-async def reject_job(job_id: str) -> None:
-    raise NotImplementedError

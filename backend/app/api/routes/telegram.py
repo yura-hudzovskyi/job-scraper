@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.api.deps import get_current_user_id, get_match_repository, get_notification_repository
 from app.config.settings import get_settings
-from app.domain.matching.models import JobMatch, Recommendation, ScoreBreakdown
+from app.domain.matching.models import JobMatch, Recommendation
 from app.domain.notifications.models import JobMatchNotification
 from app.integrations.notifications.factory import build_telegram_provider
 from app.integrations.notifications.telegram_provider import (
@@ -46,9 +46,9 @@ def _sample_notification() -> JobMatchNotification:
         user_id="test",
         canonical_job_id="test",
         eligible=True,
-        requirement_match=87.0,
-        practical_fit=87.0,
-        breakdown=ScoreBreakdown(90, 90, 90, 90, 100, 100, 80, 100),
+        score=87.0,
+        similarity=0.72,
+        relevance=0.94,
         recommendation=Recommendation.APPLY,
     )
     return JobMatchNotification(

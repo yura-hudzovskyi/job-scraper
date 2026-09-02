@@ -3,94 +3,75 @@ import { useEffect, useState } from "react";
 
 import { ApiError } from "../api/client";
 import {
-  aiFillPreferences,
   connectTelegram,
-  getNotificationThresholds,
+  getNotificationSettings,
   getPreferences,
   getTelegramBotInfo,
   getTelegramStatus,
   testTelegram,
-  updateNotificationThresholds,
+  updateNotificationSettings,
   updatePreferences,
 } from "../api/endpoints";
-import { EMPTY_PREFERENCES, type NotificationThresholds, type Preferences } from "../api/types";
-import { Button, Card, ErrorBanner, Field, SectionTitle, inputClass } from "../components/ui";
+import { EMPTY_PREFERENCES, type NotificationSettings, type Preferences } from "../api/types";
+import {
+  Badge,
+  Button,
+  Card,
+  ErrorBanner,
+  Field,
+  InfoBanner,
+  SecondaryButton,
+  SectionTitle,
+  inputClass,
+} from "../components/ui";
 
-const DEFAULT_THRESHOLDS: NotificationThresholds = {
-  immediate_threshold: 85,
-  conditional_threshold: 75,
-  digest_threshold: 65,
-  strong_component_threshold: 90,
+const DEFAULT_NOTIFICATIONS: NotificationSettings = {
+  enabled: true,
+  min_score: 75,
   quiet_hours_start: 22,
   quiet_hours_end: 8,
 };
 
-function listToText(values: string[]): string {
-  return values.join(", ");
-}
-
-function textToList(text: string): string[] {
-  return text
+const listToText = (values: string[]) => values.join(", ");
+const textToList = (text: string) =>
+  text
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
-}
 
 export function Settings() {
   const queryClient = useQueryClient();
+
   const preferencesQuery = useQuery({ queryKey: ["preferences"], queryFn: getPreferences });
   const [form, setForm] = useState<Preferences>(EMPTY_PREFERENCES);
-
   useEffect(() => {
-    if (preferencesQuery.data) {
-      setForm(preferencesQuery.data);
-    }
+    if (preferencesQuery.data) setForm(preferencesQuery.data);
   }, [preferencesQuery.data]);
 
   const saveMutation = useMutation({
     mutationFn: () => updatePreferences(form),
-    onSuccess: (data) => {
-      queryClient.setQueryData(["preferences"], data);
-    },
+    onSuccess: (data) => queryClient.setQueryData(["preferences"], data),
   });
 
-  const [aiFillModel, setAiFillModel] = useState<string | null>(null);
-  const aiFillMutation = useMutation({
-    mutationFn: aiFillPreferences,
-    onSuccess: (data) => {
-      const { model_label, ...suggested } = data;
-      setForm(suggested);
-      setAiFillModel(model_label);
-    },
+  const notificationsQuery = useQuery({
+    queryKey: ["notification-settings"],
+    queryFn: getNotificationSettings,
   });
-
-  const notificationThresholdsQuery = useQuery({
-    queryKey: ["notification-thresholds"],
-    queryFn: getNotificationThresholds,
-  });
-  const [thresholds, setThresholds] = useState<NotificationThresholds>(DEFAULT_THRESHOLDS);
-
+  const [notifications, setNotifications] = useState<NotificationSettings>(DEFAULT_NOTIFICATIONS);
   useEffect(() => {
-    if (notificationThresholdsQuery.data) {
-      setThresholds(notificationThresholdsQuery.data);
-    }
-  }, [notificationThresholdsQuery.data]);
+    if (notificationsQuery.data) setNotifications(notificationsQuery.data);
+  }, [notificationsQuery.data]);
 
-  const saveThresholdsMutation = useMutation({
-    mutationFn: () => updateNotificationThresholds(thresholds),
-    onSuccess: (data) => {
-      queryClient.setQueryData(["notification-thresholds"], data);
-    },
+  const saveNotificationsMutation = useMutation({
+    mutationFn: () => updateNotificationSettings(notifications),
+    onSuccess: (data) => queryClient.setQueryData(["notification-settings"], data),
   });
 
   const telegramStatusQuery = useQuery({
     queryKey: ["telegram-status"],
     queryFn: getTelegramStatus,
   });
-  const botInfoQuery = useQuery({
-    queryKey: ["telegram-bot-info"],
-    queryFn: getTelegramBotInfo,
-  });
+  const botInfoQuery = useQuery({ queryKey: ["telegram-bot-info"], queryFn: getTelegramBotInfo });
   const [chatId, setChatId] = useState("");
   const connectMutation = useMutation({
     mutationFn: () => connectTelegram(chatId),
@@ -101,39 +82,48 @@ export function Settings() {
   return (
     <div className="flex flex-col gap-6">
       <Card>
-        <div className="mb-3 flex items-center justify-between">
-          <SectionTitle>Preferences</SectionTitle>
-          <Button
-            onClick={() => aiFillMutation.mutate()}
-            disabled={aiFillMutation.isPending}
-            className="bg-slate-600 hover:bg-slate-500"
-            title="Fill this form from your analyzed CV — review before saving."
-          >
-            {aiFillMutation.isPending ? "Filling…" : "✨ Fill with AI"}
-          </Button>
-        </div>
-        {aiFillModel && (
-          <p className="mb-3 -mt-2 text-xs text-slate-400">
-            Suggested using {aiFillModel} — review before saving.
-          </p>
-        )}
-        {aiFillMutation.isError && (
-          <div className="mb-3">
-            <ErrorBanner
-              message={
-                aiFillMutation.error instanceof ApiError
-                  ? aiFillMutation.error.message
-                  : "Failed to generate suggestions"
-              }
-            />
-          </div>
-        )}
-
-        <p className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-          Compensation &amp; experience
+        <SectionTitle>What you're looking for</SectionTitle>
+        <p className="mb-4 text-sm text-slate-600">
+          The first three fields describe what you want and go into the text the models read
+          alongside your CV. Everything under "Rules" is a hard filter instead: it removes vacancies
+          before any scoring, and every removal is shown with its reason on the job page.
         </p>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Desired salary (USD)">
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Preferred roles" hint="Comma-separated. Sent to the models as your target.">
+            <input
+              className={inputClass}
+              value={listToText(form.preferred_roles)}
+              onChange={(e) => setForm({ ...form, preferred_roles: textToList(e.target.value) })}
+            />
+          </Field>
+          <Field label="Preferred stack" hint="What you want to be matched on, not a constraint.">
+            <input
+              className={inputClass}
+              value={listToText(form.preferred_stack)}
+              onChange={(e) => setForm({ ...form, preferred_stack: textToList(e.target.value) })}
+            />
+          </Field>
+          <Field
+            label="Work formats"
+            hint='e.g. "remote". Listing only "remote" also filters out non-remote vacancies.'
+          >
+            <input
+              className={inputClass}
+              value={listToText(form.work_formats)}
+              onChange={(e) => setForm({ ...form, work_formats: textToList(e.target.value) })}
+            />
+          </Field>
+        </div>
+
+        <p className="mt-6 mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
+          Rules — these remove vacancies
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field
+            label="Minimum salary (USD)"
+            hint="Rejects a vacancy only when it states a USD maximum below this. An unstated or non-USD salary never rejects."
+          >
             <input
               type="number"
               className={inputClass}
@@ -146,7 +136,10 @@ export function Settings() {
               }
             />
           </Field>
-          <Field label="Max required experience (years)">
+          <Field
+            label="Max required experience (years)"
+            hint="Rejects vacancies asking for more than this, when they say so."
+          >
             <input
               type="number"
               className={inputClass}
@@ -159,67 +152,27 @@ export function Settings() {
               }
             />
           </Field>
-        </div>
-
-        <p className="mt-5 mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-          Role &amp; location
-        </p>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Preferred roles (comma-separated)">
-            <input
-              className={inputClass}
-              value={listToText(form.preferred_roles)}
-              onChange={(e) => setForm({ ...form, preferred_roles: textToList(e.target.value) })}
-            />
-          </Field>
-          <Field label="Locations (comma-separated)">
-            <input
-              className={inputClass}
-              value={listToText(form.locations)}
-              onChange={(e) => setForm({ ...form, locations: textToList(e.target.value) })}
-            />
-          </Field>
-          <Field label="Work formats (e.g. remote)">
-            <input
-              className={inputClass}
-              value={listToText(form.work_formats)}
-              onChange={(e) => setForm({ ...form, work_formats: textToList(e.target.value) })}
-            />
-          </Field>
-        </div>
-
-        <p className="mt-5 mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-          Tech stack
-        </p>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Preferred stack">
-            <input
-              className={inputClass}
-              value={listToText(form.preferred_stack)}
-              onChange={(e) => setForm({ ...form, preferred_stack: textToList(e.target.value) })}
-            />
-          </Field>
-          <Field label="Acceptable stack">
-            <input
-              className={inputClass}
-              value={listToText(form.acceptable_stack)}
-              onChange={(e) => setForm({ ...form, acceptable_stack: textToList(e.target.value) })}
-            />
-          </Field>
-          <Field label="Blocked stack">
+          <Field
+            label="Blocked stack"
+            hint="Rejects any vacancy whose title or description mentions one of these."
+          >
             <input
               className={inputClass}
               value={listToText(form.blocked_stack)}
               onChange={(e) => setForm({ ...form, blocked_stack: textToList(e.target.value) })}
             />
           </Field>
-        </div>
-
-        <p className="mt-5 mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-          Exclusions
-        </p>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Companies blacklist">
+          <Field
+            label="Locations"
+            hint="Rejects vacancies restricted to somewhere outside this list. Leave empty to allow anywhere."
+          >
+            <input
+              className={inputClass}
+              value={listToText(form.locations)}
+              onChange={(e) => setForm({ ...form, locations: textToList(e.target.value) })}
+            />
+          </Field>
+          <Field label="Companies blacklist" hint="Exact company-name match, case-insensitive.">
             <input
               className={inputClass}
               value={listToText(form.companies_blacklist)}
@@ -228,93 +181,53 @@ export function Settings() {
               }
             />
           </Field>
-          <Field label="Industries blacklist">
-            <input
-              className={inputClass}
-              value={listToText(form.industries_blacklist)}
-              onChange={(e) =>
-                setForm({ ...form, industries_blacklist: textToList(e.target.value) })
-              }
-            />
-          </Field>
         </div>
 
-        <div className="mt-4">
+        <div className="mt-4 flex items-center gap-3">
           <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
-            {saveMutation.isPending ? "Saving…" : "Save preferences"}
+            {saveMutation.isPending ? "Saving…" : "Save"}
           </Button>
           {saveMutation.isSuccess && (
-            <span className="ml-3 text-sm text-green-700">Saved.</span>
-          )}
-          {saveMutation.isError && (
-            <div className="mt-2">
-              <ErrorBanner
-                message={
-                  saveMutation.error instanceof ApiError
-                    ? saveMutation.error.message
-                    : "Save failed"
-                }
-              />
-            </div>
+            <span className="text-sm text-green-700">
+              Saved — re-matching every vacancy in the background.
+            </span>
           )}
         </div>
+        {saveMutation.isError && (
+          <div className="mt-2">
+            <ErrorBanner
+              message={
+                saveMutation.error instanceof ApiError ? saveMutation.error.message : "Save failed"
+              }
+            />
+          </div>
+        )}
       </Card>
 
       <Card>
-        <SectionTitle>Notification thresholds</SectionTitle>
+        <SectionTitle>Notifications</SectionTitle>
         <p className="mb-4 text-sm text-slate-600">
-          Controls when a scored match gets sent to Telegram instantly, folded into the (not yet
-          built) daily digest, or skipped entirely. See docs/notifications.md for the full policy.
+          A Telegram card is sent for each new match at or above this score, outside quiet hours.
+          Delivery is recorded per match, so the same vacancy is never sent twice.
         </p>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Instant notification threshold (practical fit %)">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="flex items-center gap-2 text-sm">
             <input
-              type="number"
-              min={0}
-              max={100}
-              className={inputClass}
-              value={thresholds.immediate_threshold}
-              onChange={(e) =>
-                setThresholds({ ...thresholds, immediate_threshold: Number(e.target.value) })
-              }
+              type="checkbox"
+              checked={notifications.enabled}
+              onChange={(e) => setNotifications({ ...notifications, enabled: e.target.checked })}
             />
-          </Field>
-          <Field label="Conditional threshold (%, needs strong salary + location too)">
+            Send Telegram notifications
+          </label>
+          <Field label="Minimum score (0-100)">
             <input
               type="number"
               min={0}
               max={100}
               className={inputClass}
-              value={thresholds.conditional_threshold}
+              value={notifications.min_score}
               onChange={(e) =>
-                setThresholds({ ...thresholds, conditional_threshold: Number(e.target.value) })
-              }
-            />
-          </Field>
-          <Field label="Strong salary/location match bar (%)">
-            <input
-              type="number"
-              min={0}
-              max={100}
-              className={inputClass}
-              value={thresholds.strong_component_threshold}
-              onChange={(e) =>
-                setThresholds({
-                  ...thresholds,
-                  strong_component_threshold: Number(e.target.value),
-                })
-              }
-            />
-          </Field>
-          <Field label="Digest-only threshold (%, below this: no notification at all)">
-            <input
-              type="number"
-              min={0}
-              max={100}
-              className={inputClass}
-              value={thresholds.digest_threshold}
-              onChange={(e) =>
-                setThresholds({ ...thresholds, digest_threshold: Number(e.target.value) })
+                setNotifications({ ...notifications, min_score: Number(e.target.value) })
               }
             />
           </Field>
@@ -324,45 +237,37 @@ export function Settings() {
               min={0}
               max={23}
               className={inputClass}
-              value={thresholds.quiet_hours_start}
+              value={notifications.quiet_hours_start}
               onChange={(e) =>
-                setThresholds({ ...thresholds, quiet_hours_start: Number(e.target.value) })
+                setNotifications({ ...notifications, quiet_hours_start: Number(e.target.value) })
               }
             />
           </Field>
-          <Field label="Quiet hours end (0-23, server time)">
+          <Field
+            label="Quiet hours end (0-23)"
+            hint="Set both to the same value for no quiet window at all."
+          >
             <input
               type="number"
               min={0}
               max={23}
               className={inputClass}
-              value={thresholds.quiet_hours_end}
+              value={notifications.quiet_hours_end}
               onChange={(e) =>
-                setThresholds({ ...thresholds, quiet_hours_end: Number(e.target.value) })
+                setNotifications({ ...notifications, quiet_hours_end: Number(e.target.value) })
               }
             />
           </Field>
         </div>
-        <div className="mt-4">
+        <div className="mt-4 flex items-center gap-3">
           <Button
-            onClick={() => saveThresholdsMutation.mutate()}
-            disabled={saveThresholdsMutation.isPending}
+            onClick={() => saveNotificationsMutation.mutate()}
+            disabled={saveNotificationsMutation.isPending}
           >
-            {saveThresholdsMutation.isPending ? "Saving…" : "Save thresholds"}
+            {saveNotificationsMutation.isPending ? "Saving…" : "Save"}
           </Button>
-          {saveThresholdsMutation.isSuccess && (
-            <span className="ml-3 text-sm text-green-700">Saved.</span>
-          )}
-          {saveThresholdsMutation.isError && (
-            <div className="mt-2">
-              <ErrorBanner
-                message={
-                  saveThresholdsMutation.error instanceof ApiError
-                    ? saveThresholdsMutation.error.message
-                    : "Save failed"
-                }
-              />
-            </div>
+          {saveNotificationsMutation.isSuccess && (
+            <span className="text-sm text-green-700">Saved.</span>
           )}
         </div>
       </Card>
@@ -371,14 +276,10 @@ export function Settings() {
         <div className="mb-3 flex items-center gap-3">
           <SectionTitle>Telegram</SectionTitle>
           {telegramStatusQuery.data && (
-            <span
-              className={`mb-3 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                telegramStatusQuery.data.connected
-                  ? "bg-green-100 text-green-800"
-                  : "bg-slate-100 text-slate-600"
-              }`}
-            >
-              {telegramStatusQuery.data.connected ? "Connected" : "Not connected"}
+            <span className="mb-3">
+              <Badge tone={telegramStatusQuery.data.connected ? "ok" : "neutral"}>
+                {telegramStatusQuery.data.connected ? "Connected" : "Not connected"}
+              </Badge>
             </span>
           )}
         </div>
@@ -397,10 +298,10 @@ export function Settings() {
               on Telegram to get your chat id, then paste it below.
             </>
           ) : (
-            "No Telegram bot is configured on the server yet."
+            "No Telegram bot is configured on the server (TELEGRAM_BOT_TOKEN is unset)."
           )}
         </p>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Chat id">
             <input
               className={inputClass}
@@ -417,38 +318,28 @@ export function Settings() {
           >
             {connectMutation.isPending ? "Connecting…" : "Connect"}
           </Button>
-          <Button
-            onClick={() => testMutation.mutate()}
-            disabled={testMutation.isPending}
-            className="bg-slate-600 hover:bg-slate-500"
-          >
+          <SecondaryButton onClick={() => testMutation.mutate()} disabled={testMutation.isPending}>
             {testMutation.isPending ? "Sending…" : "Send test message"}
-          </Button>
+          </SecondaryButton>
         </div>
         {connectMutation.isSuccess && (
-          <p className="mt-2 text-sm text-green-700">
-            Connected{connectMutation.data.bot_username && ` as @${connectMutation.data.bot_username}`}.
-          </p>
-        )}
-        {connectMutation.isError && (
-          <div className="mt-2">
-            <ErrorBanner
-              message={
-                connectMutation.error instanceof ApiError
-                  ? connectMutation.error.message
-                  : "Connect failed"
-              }
-            />
+          <div className="mt-3">
+            <InfoBanner tone="ok">
+              Connected
+              {connectMutation.data.bot_username && ` as @${connectMutation.data.bot_username}`}.
+            </InfoBanner>
           </div>
         )}
         {testMutation.isSuccess && (
           <p className="mt-2 text-sm text-green-700">Test message sent — check Telegram.</p>
         )}
-        {testMutation.isError && (
+        {(connectMutation.isError || testMutation.isError) && (
           <div className="mt-2">
             <ErrorBanner
               message={
-                testMutation.error instanceof ApiError ? testMutation.error.message : "Test failed"
+                (connectMutation.error ?? testMutation.error) instanceof ApiError
+                  ? (connectMutation.error ?? testMutation.error)!.message
+                  : "Telegram request failed"
               }
             />
           </div>

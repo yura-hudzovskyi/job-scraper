@@ -7,7 +7,7 @@ docs/notifications.md.
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +18,7 @@ from app.db.models.notification import (
     TelegramIntegrationModel,
 )
 from app.domain.notifications.policy import NotificationPolicyConfig
+from app.repositories.base import rows_affected
 
 
 class NotificationRepository:
@@ -60,10 +61,9 @@ class NotificationRepository:
         return result.scalar_one_or_none()
 
     async def get_notification_policy_config(self, user_id: uuid.UUID) -> NotificationPolicyConfig:
-        """Always returns a usable config — NotificationPolicyConfig()'s hardcoded
-        defaults when the user has never saved a row, their saved thresholds
-        otherwise. See app/api/routes/settings.py's GET/PATCH /api/settings/notifications
-        and app/workers/tasks/notify.py, which builds NotificationPolicy from this."""
+        """Always returns a usable config — NotificationPolicyConfig()'s defaults
+        when the user has never saved a row, their own values otherwise. See
+        GET/PATCH /api/settings/notifications and app/workers/tasks/notify.py."""
         result = await self._session.execute(
             select(NotificationSettingsModel).where(NotificationSettingsModel.user_id == user_id)
         )
@@ -71,10 +71,8 @@ class NotificationRepository:
         if model is None:
             return NotificationPolicyConfig()
         return NotificationPolicyConfig(
-            immediate_threshold=model.immediate_threshold,
-            conditional_threshold=model.conditional_threshold,
-            digest_threshold=model.digest_threshold,
-            strong_component_threshold=model.strong_component_threshold,
+            enabled=model.enabled,
+            min_score=model.min_score,
             quiet_hours_start=model.quiet_hours_start,
             quiet_hours_end=model.quiet_hours_end,
         )
@@ -90,10 +88,8 @@ class NotificationRepository:
             model = NotificationSettingsModel(user_id=user_id)
             self._session.add(model)
 
-        model.immediate_threshold = config.immediate_threshold
-        model.conditional_threshold = config.conditional_threshold
-        model.digest_threshold = config.digest_threshold
-        model.strong_component_threshold = config.strong_component_threshold
+        model.enabled = config.enabled
+        model.min_score = config.min_score
         model.quiet_hours_start = config.quiet_hours_start
         model.quiet_hours_end = config.quiet_hours_end
 
@@ -170,3 +166,18 @@ class NotificationRepository:
         )
         await self._session.execute(stmt)
         await self._session.flush()
+
+    async def count_all(self) -> int:
+        result = await self._session.execute(select(func.count()).select_from(NotificationModel))
+        return int(result.scalar_one())
+
+    async def delete_all(self) -> dict[str, int]:
+        """Every notification and delivery record, deliveries first (they
+        reference notifications). Used by the System page's reset actions."""
+        deliveries = await self._session.execute(delete(NotificationDeliveryModel))
+        notifications = await self._session.execute(delete(NotificationModel))
+        await self._session.flush()
+        return {
+            "notification_deliveries": rows_affected(deliveries),
+            "notifications": rows_affected(notifications),
+        }

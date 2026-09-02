@@ -2,30 +2,62 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
-import { listJobs, rescoreAllJobs, rescoreJob } from "../api/endpoints";
-import { Button, Card, ErrorBanner, Modal, SectionTitle } from "../components/ui";
+import { listJobs, rematch } from "../api/endpoints";
+import type { JobMatch } from "../api/types";
+import {
+  Badge,
+  Card,
+  ErrorBanner,
+  InfoBanner,
+  SecondaryButton,
+  SectionTitle,
+} from "../components/ui";
 
 const PAGE_SIZE = 25;
 
-// A score from a full LLM review and one from a posting with nothing extracted
-// are different claims; the list is where that difference is easiest to miss.
-const ENGINE_LABELS: Record<string, string> = {
-  deterministic: "deterministic",
-  hybrid: "hybrid",
-  llm_enriched: "full AI",
-};
+const RECOMMENDATION_TONES = {
+  apply: "ok",
+  consider: "warn",
+  skip: "neutral",
+} as const;
 
-const ANALYSIS_LABELS: Record<string, string> = {
-  full: "an LLM reviewed this",
-  standard: "scored against extracted requirements",
-  limited: "nothing was extracted to check against",
-};
+/** The score, and immediately next to it the two numbers it was computed from.
+ *  A list that shows only a percentage teaches people to trust it; this one
+ *  keeps the arithmetic in view. */
+function MatchBadges({ match }: { match: JobMatch }) {
+  if (!match.eligible) {
+    return (
+      <Badge tone="bad" title={match.filter_reasons.join("; ")}>
+        filtered out
+      </Badge>
+    );
+  }
+  const tone = RECOMMENDATION_TONES[match.recommendation as keyof typeof RECOMMENDATION_TONES];
+  return (
+    <>
+      <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white tabular-nums">
+        {match.score.toFixed(0)}
+      </span>
+      <Badge tone={tone ?? "neutral"}>{match.recommendation}</Badge>
+      <Badge
+        title={
+          match.relevance === null
+            ? "Outside the rerank top-K — scored on embedding similarity alone"
+            : `similarity ${(match.similarity * 100).toFixed(0)}% · rerank ${(match.relevance * 100).toFixed(0)}%`
+        }
+      >
+        {match.relevance === null
+          ? `sim ${(match.similarity * 100).toFixed(0)}%`
+          : `sim ${(match.similarity * 100).toFixed(0)}% · rr ${(match.relevance * 100).toFixed(0)}%`}
+      </Badge>
+    </>
+  );
+}
 
 export function Jobs() {
   const queryClient = useQueryClient();
   const [offset, setOffset] = useState(0);
   const [includeSkipped, setIncludeSkipped] = useState(false);
-  const [isRescoreAllOpen, setIsRescoreAllOpen] = useState(false);
 
   const jobsQuery = useQuery({
     queryKey: ["jobs", offset, includeSkipped],
@@ -35,82 +67,71 @@ export function Jobs() {
   const jobs = jobsQuery.data?.items ?? [];
   const total = jobsQuery.data?.total ?? 0;
 
-  const unscoredJobIds = jobs.filter((job) => job.practical_fit === null).map((job) => job.id);
-
-  const scoreAllMutation = useMutation({
-    mutationFn: () => Promise.all(unscoredJobIds.map((jobId) => rescoreJob(jobId))),
+  const rematchMutation = useMutation({
+    mutationFn: rematch,
     onSuccess: () => {
-      setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: ["jobs", offset, includeSkipped] });
-      }, 3000);
+      // Matching is a background pass; give it a moment before reloading.
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["jobs"] }), 4000);
     },
   });
 
-  const rescoreAllMutation = useMutation({
-    mutationFn: () => rescoreAllJobs(),
-    onSuccess: () => setIsRescoreAllOpen(false),
-  });
-
-  const hasPrevious = offset > 0;
-  const hasNext = offset + PAGE_SIZE < total;
+  const unmatched = jobs.filter((job) => job.match === null).length;
 
   return (
     <Card>
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <SectionTitle>Jobs</SectionTitle>
-        <div className="flex items-center gap-2">
-          {unscoredJobIds.length > 0 && (
-            <Button
-              onClick={() => scoreAllMutation.mutate()}
-              disabled={scoreAllMutation.isPending}
-            >
-              {scoreAllMutation.isPending
-                ? "Queuing…"
-                : `Score unscored on this page (${unscoredJobIds.length})`}
-            </Button>
-          )}
-          <Button
-            className="bg-slate-600 hover:bg-slate-500"
-            title="Re-extract skills and recompute the AI match for every vacancy in the database, not just this page. Uses Groq first, falling back to Gemini once Groq's rate limit is hit. Runs in the background and can take a while."
-            onClick={() => setIsRescoreAllOpen(true)}
-          >
-            Rescore all vacancies…
-          </Button>
-        </div>
+        <SecondaryButton
+          onClick={() => rematchMutation.mutate()}
+          disabled={rematchMutation.isPending}
+          title="Re-run embedding search and reranking against the vacancies already stored"
+        >
+          {rematchMutation.isPending ? "Queuing…" : "Re-match"}
+        </SecondaryButton>
       </div>
-      {rescoreAllMutation.isSuccess && (
-        <p className="mb-3 text-sm text-green-700">
-          Queued — rescoring every vacancy in the background, this can take a while.
-        </p>
+
+      <p className="mb-3 text-sm text-slate-600">
+        Ranked by embedding similarity to your CV, then reranked at the top. Each row shows the
+        score and the two signals behind it — <code>sim</code> is cosine similarity,{" "}
+        <code>rr</code> is the reranker's relevance.
+      </p>
+
+      {rematchMutation.isSuccess && (
+        <div className="mb-3">
+          <InfoBanner tone="ok">
+            Queued — matching runs in the background and this list refreshes shortly.
+          </InfoBanner>
+        </div>
       )}
+
       <label className="mb-3 flex w-fit items-center gap-2 text-sm text-slate-600">
         <input
           type="checkbox"
           checked={includeSkipped}
-          onChange={(e) => {
-            setIncludeSkipped(e.target.checked);
+          onChange={(event) => {
+            setIncludeSkipped(event.target.checked);
             setOffset(0);
           }}
         />
-        Show all, including low matches
+        Show everything, including low scores and filtered-out vacancies
       </label>
-      {scoreAllMutation.isSuccess && (
-        <p className="mb-3 text-sm text-green-700">
-          Queued — this runs in the background, refresh in a few seconds.
-        </p>
-      )}
-      {scoreAllMutation.isError && (
-        <div className="mb-3">
-          <ErrorBanner message="Failed to queue scoring for one or more jobs" />
-        </div>
-      )}
+
       {jobsQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
       {jobsQuery.isError && <ErrorBanner message="Failed to load jobs" />}
       {jobs.length === 0 && !jobsQuery.isLoading && (
         <p className="text-sm text-slate-500">
-          No jobs yet — trigger a sync on the Sources page, or wait for the next scheduled scrape.
+          Nothing here yet — run the pipeline from the System page to scrape, embed and match.
         </p>
       )}
+      {unmatched > 0 && (
+        <div className="mb-3">
+          <InfoBanner>
+            {unmatched} vacancy(ies) on this page have no match yet — they were scraped but fell
+            outside the retrieval limit, or matching hasn't run since.
+          </InfoBanner>
+        </div>
+      )}
+
       <ul className="flex flex-col gap-2">
         {jobs.map((job) => (
           <li key={job.id}>
@@ -118,31 +139,13 @@ export function Jobs() {
               to={`/jobs/${job.id}`}
               className="block rounded border border-slate-200 p-3 hover:border-slate-400"
             >
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-medium">{job.title}</span>
-                <div className="flex items-center gap-2">
-                  {job.practical_fit !== null && (
-                    <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">
-                      {job.practical_fit.toFixed(0)}%
-                    </span>
-                  )}
-                  {job.engine && (
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs ${
-                        job.engine === "llm_enriched"
-                          ? "bg-sky-100 text-sky-900"
-                          : "bg-slate-100 text-slate-600"
-                      }`}
-                      title={
-                        job.confidence !== null
-                          ? `${ANALYSIS_LABELS[job.analysis_level ?? ""] ?? job.analysis_level} · ${(
-                              job.confidence * 100
-                            ).toFixed(0)}% confidence`
-                          : (ANALYSIS_LABELS[job.analysis_level ?? ""] ?? undefined)
-                      }
-                    >
-                      {ENGINE_LABELS[job.engine] ?? job.engine}
-                    </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  {job.match ? (
+                    <MatchBadges match={job.match} />
+                  ) : (
+                    <Badge title="Scraped, but not scored for you yet">not matched</Badge>
                   )}
                   {job.source_count > 1 && (
                     <span className="text-xs text-slate-500">{job.source_count} sources</span>
@@ -154,60 +157,27 @@ export function Jobs() {
           </li>
         ))}
       </ul>
+
       {total > 0 && (
         <div className="mt-4 flex items-center justify-between">
           <p className="text-sm text-slate-500">
             {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}
           </p>
           <div className="flex gap-2">
-            <Button
-              className="bg-slate-600 hover:bg-slate-500"
+            <SecondaryButton
               onClick={() => setOffset((current) => Math.max(0, current - PAGE_SIZE))}
-              disabled={!hasPrevious}
+              disabled={offset === 0}
             >
               Previous
-            </Button>
-            <Button
-              className="bg-slate-600 hover:bg-slate-500"
+            </SecondaryButton>
+            <SecondaryButton
               onClick={() => setOffset((current) => current + PAGE_SIZE)}
-              disabled={!hasNext}
+              disabled={offset + PAGE_SIZE >= total}
             >
               Next
-            </Button>
+            </SecondaryButton>
           </div>
         </div>
-      )}
-
-      {isRescoreAllOpen && (
-        <Modal title="Rescore all vacancies" onClose={() => setIsRescoreAllOpen(false)}>
-          <p className="mb-3 text-sm text-slate-600">
-            Re-extracts skills and recomputes the AI match for every vacancy currently in the
-            database — not just this page. Uses Groq first (same provider as automatic
-            per-scrape extraction and AI matching), falling back to Gemini if Groq's rate limit
-            is hit mid-run. This runs in the background and can take a while for a large
-            backlog. To change which models it runs on, use the System page.
-          </p>
-          <div className="mt-4 flex justify-end gap-2">
-            <Button
-              className="bg-slate-600 hover:bg-slate-500"
-              onClick={() => setIsRescoreAllOpen(false)}
-              disabled={rescoreAllMutation.isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={() => rescoreAllMutation.mutate()}
-              disabled={rescoreAllMutation.isPending}
-            >
-              {rescoreAllMutation.isPending ? "Queuing…" : "Confirm"}
-            </Button>
-          </div>
-          {rescoreAllMutation.isError && (
-            <div className="mt-2">
-              <ErrorBanner message="Failed to queue rescore-all" />
-            </div>
-          )}
-        </Modal>
       )}
     </Card>
   );

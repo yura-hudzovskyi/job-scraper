@@ -86,7 +86,7 @@ def parse_vacancy_page(html: str) -> dict[str, Any]:
 
 def parse_experience_years(experience_text: str | None) -> float | None:
     """Djinni states minimum experience as free text ("Виключно від 1 року досвіду",
-    "Без досвіду") — extract the leading number deterministically, no LLM needed."""
+    "Без досвіду") — extract the leading number deterministically."""
     if not experience_text:
         return None
     if "без досвіду" in experience_text.lower():

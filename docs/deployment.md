@@ -27,10 +27,10 @@ instead of using a `.duckdns.org` name; everything else is identical.
      Free ARM shape. Give it 2-4 OCPUs and 12-24 GB RAM (the free tier's total
      allowance across all A1 instances is 4 OCPU / 24 GB, so one VM can use all of
      it). The x86 "Micro" free shapes only have 1 GB RAM each — too little for
-     Postgres + sentence-transformers + everything else running together. Ampere is
-     also plain ARM64, which every image here already supports natively — nothing
-     extra to configure. 12 GB is enough now that no local LLM runs on this box;
-     the extra headroom on the 24 GB end only helps with a bigger scrape backlog.
+     Postgres plus the rest running together. Ampere is also plain ARM64, which
+     every image here supports natively. Nothing runs model inference on this box —
+     embedding and reranking are HTTPS calls to Voyage — so the low end of that
+     range is plenty; the headroom only helps with a bigger scrape backlog.
    - **SSH key**: generate a keypair locally if you don't have one —
      `ssh-keygen -t ed25519 -f ~/.ssh/oracle_vm -C "oracle-vm"` — and paste the
      **public** key (`~/.ssh/oracle_vm.pub`) into the "Add SSH keys" box.
@@ -95,29 +95,27 @@ At minimum set:
 - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — from @BotFather, same as local dev.
   `TELEGRAM_WEBHOOK_SECRET` can stay blank — it's derived from `SECRET_KEY`
   automatically if unset.
-- `GEMINI_API_KEY` and `GROQ_API_KEY` — both free, and both worth setting (from
-  [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and
-  [console.groq.com/keys](https://console.groq.com/keys)). CV analysis and
-  preferences AI-fill try Gemini first and fall back to Groq; the job pipeline
-  (skill extraction, "should I apply?") tries Groq first and falls back to Gemini —
-  see docs/matching-engine.md. With neither set the app still scrapes, stores and
-  scores deterministically; only the LLM layers go quiet.
-- `LLM_PROVIDER`/`LLM_MODEL` — optional paid leg (`openai` or `anthropic`, plus the
-  matching `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`), tried only after both free tiers.
-  Leave blank unless you'd rather not depend on a free tier at all.
-- `LLM_DAILY_LIMIT_*` — one daily call ceiling per capability (CV analysis, job
-  extraction, "should I apply?"). Separate counters are what keep a backlog run
-  from spending what interactive work needs; the System page shows how much of
-  each is used today.
-- `EMBEDDING_PROVIDER=sentence_transformers` (the default — needs no key, runs
-  locally in the API/worker containers)
+- `VOYAGE_API_KEY` — required, from
+  [dashboard.voyageai.com](https://dashboard.voyageai.com/). It is the only model
+  credential this app has: without it there is no embedding search and no
+  reranking, so the app still scrapes and stores vacancies but ranks nothing, and
+  the System page reports that as a blocker rather than showing an empty list.
+- `SCRAPE_INTERVAL_SECONDS` — how often the full pipeline runs. The only pipeline
+  number that isn't editable from the UI, because Celery beat reads its schedule at
+  startup.
 
-**Upgrading an existing `.env`**: settings that no longer exist (`OLLAMA_*`,
-`LLM_RERANK_DAILY_LIMIT`, `GROQ_CIRCUIT_BREAKER_COOLDOWN_SECONDS`) are ignored, and
-`LLM_PROVIDER=ollama` is ignored with a warning rather than refused — a retired
-option must not take the app down on boot. Clearing those lines silences the
-warning. If the `ollama` container is still on the box from an earlier deploy,
-`docker compose -f docker-compose.prod.yml up -d --remove-orphans` removes it.
+Which Voyage models are used, the rerank weight, score thresholds and retention are
+**not** environment variables — they live in the database and are edited from the
+System page. See [pipeline.md](pipeline.md).
+
+**Upgrading an existing `.env`**: settings that no longer exist (`LLM_PROVIDER`,
+`GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+`LLM_DAILY_LIMIT_*`, `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `CLOUDFLARE_*`,
+`CROSS_ENCODER_*`, `MATCHING_PIPELINE_V3`, `LLM_ENRICHMENT`,
+`MULTI_EMBEDDING_LANES`, `JOB_RETENTION_DAYS`, `SCRAPE_MAX_JOBS_PER_RUN`) are
+ignored rather than rejected — a stale line must never take the app down on boot.
+Delete them when convenient. `JOB_RETENTION_DAYS` and `SCRAPE_MAX_JOBS_PER_RUN`
+moved into the database; set them on the System page instead.
 
 Then run the script again to actually start everything and apply migrations:
 
@@ -243,18 +241,13 @@ from the git checkout.
   mounts, `--reload`, `npm run dev`) exactly as before. `docker-compose.prod.yml` is
   a separate, self-contained file for the server, and doesn't include a frontend
   service at all.
-- **First deploy will be slow**: the backend image bundles sentence-transformers
-  (and its PyTorch dependency), which is a large download. Subsequent deploys reuse
-  Docker's layer cache and a registry-based buildx cache (a `:buildcache` tag on the
-  same GHCR image — see `.github/workflows/deploy.yml`), so they're much faster
-  unless `pyproject.toml` changes. The build also runs on a native ARM64 GitHub
-  Actions runner rather than cross-compiling via QEMU on an amd64 one, which is what
-  actually keeps this fast — an earlier version used `type=gha` for the cache, which
-  shares one 10GB-per-repo quota and kept evicting this image's large dependency
-  layer, silently regressing back to a full ~20min rebuild every time regardless of
-  what changed.
-- **LLM latency is the provider's, not this box's**: every LLM call now goes to a
-  hosted free tier (Groq then Gemini, or the reverse — see docs/matching-engine.md),
-  so it answers in a second or two and needs no RAM here. Matching/scoring itself
-  never calls an LLM at all, so a rate-limited provider only degrades the "Analyze
-  CV" and "should I apply?" layers, never the score.
+- **The image is small**: the backend is a plain Python web app — no PyTorch, no
+  sentence-transformers, no model weights — because embedding and reranking are two
+  HTTPS calls. Builds run on a native ARM64 GitHub Actions runner (no QEMU
+  cross-compilation) and reuse a registry-based buildx cache (a `:buildcache` tag on
+  the same GHCR image, see `.github/workflows/deploy.yml`), so a deploy that doesn't
+  touch `pyproject.toml` is quick.
+- **Model latency is Voyage's, not this box's**: nothing runs inference here, so a
+  slow or rate-limited provider shows up as a failed step on the run record — with
+  the affected vacancies simply left for the next pass — rather than as memory
+  pressure on the VM.

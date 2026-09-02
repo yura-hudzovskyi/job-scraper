@@ -1,37 +1,32 @@
 """Persistence for the Raw -> Normalized -> Canonical job pipeline (docs/domain-model.md).
 
-unique(source, external_id) on raw_jobs and job_source_records makes re-scraping and
-re-normalizing idempotent — upserts, never duplicates.
+unique(source, external_id) on raw_jobs and job_source_records makes re-scraping
+and re-normalizing idempotent — upserts, never duplicates.
 """
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.application import ApplicationModel
 from app.db.models.job import (
     CanonicalJobModel,
     JobSourceRecordModel,
     RawJobModel,
     ScrapeRunModel,
 )
-from app.domain.categories import JobCategory
 from app.domain.jobs.models import (
     CanonicalJob,
     EmploymentType,
     JobLocation,
     NormalizedJob,
-    NormalizedJobSkill,
     RawJob,
-    RequirementType,
     SalaryRange,
 )
 from app.domain.jobs.scrape_rotation import pick_next_category
-from app.domain.versioning import DocumentVersion, job_content_hash
+from app.repositories.base import rows_affected
 
 
 def _to_raw_job(model: RawJobModel) -> RawJob:
@@ -57,34 +52,6 @@ def _canonical_candidate_view(model: CanonicalJobModel) -> NormalizedJob:
         description=model.description,
         employment_type=EmploymentType.FULL_TIME,
         location=JobLocation(remote=False),
-        salary=None,
-        seniority=None,
-        required_experience_years=None,
-    )
-
-
-def _skills_payload(skills: list[NormalizedJobSkill]) -> list[dict[str, Any]]:
-    return [
-        {
-            "name": skill.name,
-            "requirement": skill.requirement.value,
-            "canonical_id": skill.canonical_id,
-            "evidence": skill.evidence,
-            "confidence": skill.confidence,
-        }
-        for skill in skills
-    ]
-
-
-def _requirement_from_payload(payload: dict[str, Any]) -> RequirementType:
-    stored = payload.get("requirement")
-    if stored is not None:
-        return RequirementType(stored)
-    # Rows written before requirement types existed only knew required yes/no.
-    return (
-        RequirementType.REQUIRED_EXPLICIT
-        if payload.get("required")
-        else RequirementType.OPTIONAL_EXPLICIT
     )
 
 
@@ -108,25 +75,14 @@ def _to_normalized_job(model: JobSourceRecordModel) -> NormalizedJob:
         salary=salary,
         seniority=model.seniority,
         required_experience_years=model.required_experience_years,
-        skills=[
-            NormalizedJobSkill(
-                name=skill["name"],
-                requirement=_requirement_from_payload(skill),
-                canonical_id=skill.get("canonical_id"),
-                evidence=skill.get("evidence"),
-                confidence=skill.get("confidence"),
-            )
-            for skill in model.skills
-        ],
-        skills_extracted_by=model.skills_extracted_by,
-        category=JobCategory(model.category) if model.category else None,
-        category_confidence=model.category_confidence,
     )
 
 
 class JobRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
+
+    # --- raw ---
 
     async def count_raw_jobs_by_source(self) -> dict[str, int]:
         result = await self._session.execute(
@@ -167,10 +123,12 @@ class JobRepository:
         await self._session.flush()
         return result.scalar_one()
 
+    # --- scrape rotation ---
+
     async def get_least_recently_scraped_category(self, source: str, categories: list[str]) -> str:
-        """Which of `categories` to scrape next for this source — whichever has gone
-        longest without a run (or has never been run at all). See scrape_rotation.py
-        for the selection logic itself."""
+        """Which of `categories` to scrape next for this source — whichever has
+        gone longest without a run, or has never run at all. See
+        scrape_rotation.py for the selection itself."""
         result = await self._session.execute(
             select(ScrapeRunModel.category, func.max(ScrapeRunModel.started_at))
             .where(ScrapeRunModel.source == source, ScrapeRunModel.category.in_(categories))
@@ -189,35 +147,35 @@ class JobRepository:
         new_count: int,
         errors: int,
     ) -> None:
-        model = ScrapeRunModel(
-            source=source,
-            category=category,
-            started_at=started_at,
-            finished_at=finished_at,
-            jobs_seen=jobs_seen,
-            new_count=new_count,
-            errors=errors,
+        self._session.add(
+            ScrapeRunModel(
+                source=source,
+                category=category,
+                started_at=started_at,
+                finished_at=finished_at,
+                jobs_seen=jobs_seen,
+                new_count=new_count,
+                errors=errors,
+            )
         )
-        self._session.add(model)
         await self._session.flush()
 
-    async def get_raw_job(self, raw_job_id: uuid.UUID) -> RawJob:
-        model = await self._session.get(RawJobModel, raw_job_id)
-        if model is None:
-            raise LookupError(f"raw job {raw_job_id} not found")
-        return _to_raw_job(model)
+    async def list_recent_scrape_runs(self, limit: int = 10) -> list[ScrapeRunModel]:
+        result = await self._session.execute(
+            select(ScrapeRunModel).order_by(ScrapeRunModel.started_at.desc()).limit(limit)
+        )
+        return list(result.scalars())
+
+    # --- canonical ---
 
     async def count_canonical_jobs(self, exclude_ids: set[uuid.UUID] | None = None) -> int:
         stmt = select(func.count()).select_from(CanonicalJobModel)
         if exclude_ids:
             stmt = stmt.where(CanonicalJobModel.id.notin_(exclude_ids))
         result = await self._session.execute(stmt)
-        return result.scalar_one()
+        return int(result.scalar_one())
 
     async def list_all_canonical_job_ids(self) -> list[uuid.UUID]:
-        """Every canonical job id, no join — used to fan out backfill scoring for a
-        newly-onboarded user (see workers/tasks/backfill.py) without paying for the
-        source-records join list_canonical_jobs does for the full jobs-list view."""
         result = await self._session.execute(select(CanonicalJobModel.id))
         return list(result.scalars())
 
@@ -227,15 +185,9 @@ class JobRepository:
         offset: int = 0,
         exclude_ids: set[uuid.UUID] | None = None,
     ) -> list[CanonicalJob]:
-        """Canonical jobs, newest-seen first. `limit=None` (the default) returns every
-        row — used by DeduplicationService, which needs the full candidate set. The
-        jobs list API must always pass a real `limit`; without one, every page load
-        would pull the entire table (and, before pagination existed, the frontend
-        additionally fired one match request per row on top of that — see
-        docs/api.md and Jobs.tsx). `exclude_ids` lets the jobs-list API hide jobs
-        already recommendation=SKIP for the current user by default (see
-        JobService.list_jobs) — omitted (or empty) entirely skips the clause rather
-        than filtering on an empty NOT IN, which is both pointless and edge-case-prone."""
+        """Canonical jobs, newest-seen first. `limit=None` returns every row —
+        used by DeduplicationService, which needs the full candidate set. The jobs
+        list API must always pass a real limit."""
         stmt = select(CanonicalJobModel).order_by(CanonicalJobModel.last_seen_at.desc())
         if exclude_ids:
             stmt = stmt.where(CanonicalJobModel.id.notin_(exclude_ids))
@@ -251,15 +203,15 @@ class JobRepository:
                 JobSourceRecordModel.canonical_job_id.in_([m.id for m in canonical_models])
             )
         )
-        source_record_ids_by_canonical: dict[uuid.UUID, list[str]] = {}
+        source_record_ids: dict[uuid.UUID, list[str]] = {}
         for canonical_id, source_record_id in source_records_result.all():
-            source_record_ids_by_canonical.setdefault(canonical_id, []).append(str(source_record_id))
+            source_record_ids.setdefault(canonical_id, []).append(str(source_record_id))
 
         return [
             CanonicalJob(
                 id=str(model.id),
                 normalized=_canonical_candidate_view(model),
-                source_records=source_record_ids_by_canonical.get(model.id, []),
+                source_records=source_record_ids.get(model.id, []),
             )
             for model in canonical_models
         ]
@@ -268,22 +220,23 @@ class JobRepository:
         model = await self._session.get(CanonicalJobModel, canonical_job_id)
         if model is None:
             return None
-        source_records_result = await self._session.execute(
+        result = await self._session.execute(
             select(JobSourceRecordModel.id).where(
                 JobSourceRecordModel.canonical_job_id == canonical_job_id
             )
         )
-        source_record_ids = [str(row[0]) for row in source_records_result.all()]
         return CanonicalJob(
-            id=str(model.id), normalized=_canonical_candidate_view(model), source_records=source_record_ids
+            id=str(model.id),
+            normalized=_canonical_candidate_view(model),
+            source_records=[str(row[0]) for row in result.all()],
         )
 
     async def get_normalized_job_for_canonical(
         self, canonical_job_id: uuid.UUID
     ) -> NormalizedJob | None:
-        """The full NormalizedJob (salary, location, skills, ...) for one of this
-        canonical job's source records — canonical_jobs itself only stores the
-        title/company/description subset used for dedup matching. Picks whichever
+        """The full NormalizedJob (salary, location, seniority, ...) for one of
+        this canonical job's source records — canonical_jobs itself only stores
+        the title/company/description subset used for dedup. Picks whichever
         source record was normalized most recently."""
         result = await self._session.execute(
             select(JobSourceRecordModel)
@@ -294,14 +247,29 @@ class JobRepository:
         model = result.scalar_one_or_none()
         return _to_normalized_job(model) if model else None
 
+    async def list_normalized_jobs_for_canonical(
+        self, canonical_job_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, NormalizedJob]:
+        """The same selection as above, for a whole batch in one query — what
+        embedding and matching iterate over. Most recently normalized wins."""
+        if not canonical_job_ids:
+            return {}
+        result = await self._session.execute(
+            select(JobSourceRecordModel)
+            .where(JobSourceRecordModel.canonical_job_id.in_(canonical_job_ids))
+            .order_by(JobSourceRecordModel.normalized_at.desc())
+        )
+        jobs: dict[uuid.UUID, NormalizedJob] = {}
+        for model in result.scalars():
+            if model.canonical_job_id is not None:
+                jobs.setdefault(model.canonical_job_id, _to_normalized_job(model))
+        return jobs
+
     async def list_source_links_for_canonical(
         self, canonical_job_id: uuid.UUID
     ) -> list[tuple[str, str]]:
-        """(source, url) pairs for every source this canonical job is known under —
-        used by the Telegram notification to link out to DOU/Djinni/etc. by name
-        instead of a single, arbitrarily-chosen URL. One row per source (most
-        recently normalized wins if a source somehow has more than one record for
-        the same canonical job)."""
+        """(source, url) pairs for every source this vacancy is known under — the
+        Telegram card links out to each by name rather than one arbitrary URL."""
         result = await self._session.execute(
             select(JobSourceRecordModel.source, JobSourceRecordModel.url)
             .where(JobSourceRecordModel.canonical_job_id == canonical_job_id)
@@ -311,100 +279,6 @@ class JobRepository:
         for source, url in result.all():
             links.setdefault(source, url)
         return list(links.items())
-
-    async def update_skills_for_canonical(
-        self,
-        canonical_job_id: uuid.UUID,
-        skills: list[NormalizedJobSkill],
-        generated_by: str | None,
-        category: JobCategory | None = None,
-        category_confidence: float | None = None,
-        extraction_key: str | None = None,
-    ) -> None:
-        """Saves extracted requirements onto whichever source record scoring reads via
-        get_normalized_job_for_canonical — same "most recently normalized" selection,
-        so extraction writes to exactly the row matching later reads from. The
-        category comes from the same extraction call, so it is written here rather
-        than costing a second pass over the posting."""
-        result = await self._session.execute(
-            select(JobSourceRecordModel)
-            .where(JobSourceRecordModel.canonical_job_id == canonical_job_id)
-            .order_by(JobSourceRecordModel.normalized_at.desc())
-            .limit(1)
-        )
-        model = result.scalar_one_or_none()
-        if model is None:
-            return
-        model.skills = _skills_payload(skills)
-        model.skills_extracted_by = generated_by
-        model.skills_extraction_key = extraction_key
-        if category is not None:
-            model.category = category.value
-            model.category_confidence = category_confidence
-        await self._session.flush()
-
-    async def categories_for(
-        self, canonical_job_ids: list[uuid.UUID]
-    ) -> dict[uuid.UUID, tuple[JobCategory | None, float | None]]:
-        """How each of these vacancies was classified, for the retrieval category
-        gate. Reads the same source record scoring reads; a job with no category
-        simply isn't in the result, which the gate treats as "don't know"."""
-        if not canonical_job_ids:
-            return {}
-        result = await self._session.execute(
-            select(
-                JobSourceRecordModel.canonical_job_id,
-                JobSourceRecordModel.category,
-                JobSourceRecordModel.category_confidence,
-            )
-            .where(
-                JobSourceRecordModel.canonical_job_id.in_(canonical_job_ids),
-                JobSourceRecordModel.category.is_not(None),
-            )
-            .order_by(JobSourceRecordModel.normalized_at.desc())
-        )
-        categories: dict[uuid.UUID, tuple[JobCategory | None, float | None]] = {}
-        for canonical_job_id, category, confidence in result.all():
-            # Most recently normalized wins, same selection every other read uses.
-            categories.setdefault(canonical_job_id, (JobCategory(category), confidence))
-        return categories
-
-    async def get_extraction_key(self, canonical_job_id: uuid.UUID) -> str | None:
-        """What the last extraction for this job was keyed on (posting hash +
-        extraction version), or None if it was never extracted — see
-        JobSkillExtractionService."""
-        result = await self._session.execute(
-            select(JobSourceRecordModel.skills_extraction_key)
-            .where(JobSourceRecordModel.canonical_job_id == canonical_job_id)
-            .order_by(JobSourceRecordModel.normalized_at.desc())
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
-
-    async def refresh_canonical_content_version(
-        self, canonical_job_id: uuid.UUID
-    ) -> DocumentVersion | None:
-        """Recompute this vacancy's content identity from the source record scoring
-        actually reads, bumping its version when the analysis-relevant content
-        changed since last time (see app/domain/versioning.py). Called from the
-        scoring path — the one place that needs the identity — so it is always
-        current for the result being produced, and a job stored before hashing
-        existed heals on its next score. Returns None for a canonical job with no
-        source record to read."""
-        normalized = await self.get_normalized_job_for_canonical(canonical_job_id)
-        model = await self._session.get(CanonicalJobModel, canonical_job_id)
-        if normalized is None or model is None:
-            return None
-
-        new_hash = job_content_hash(normalized)
-        if model.content_hash != new_hash:
-            # A first hash isn't a new version — it's the same posting, finally
-            # identified. Only a *changed* hash means the content moved.
-            if model.content_hash is not None:
-                model.content_version += 1
-            model.content_hash = new_hash
-            await self._session.flush()
-        return DocumentVersion(version=model.content_version, content_hash=new_hash)
 
     async def create_canonical_job(self, normalized: NormalizedJob) -> uuid.UUID:
         model = CanonicalJobModel(
@@ -428,7 +302,8 @@ class JobRepository:
         normalized: NormalizedJob,
         canonical_job_id: uuid.UUID,
     ) -> uuid.UUID:
-        """Upsert the JobSourceRecord for (source, external_id), attached to canonical_job_id."""
+        """Upsert the JobSourceRecord for (source, external_id), attached to
+        canonical_job_id."""
         common_fields = {
             "title": normalized.title,
             "company": normalized.company,
@@ -442,7 +317,6 @@ class JobRepository:
             "salary_currency": normalized.salary.currency if normalized.salary else None,
             "seniority": normalized.seniority,
             "required_experience_years": normalized.required_experience_years,
-            "skills": _skills_payload(normalized.skills),
         }
         stmt = (
             insert(JobSourceRecordModel)
@@ -464,6 +338,8 @@ class JobRepository:
         await self._session.flush()
         return result.scalar_one()
 
+    # --- retention / reset ---
+
     async def find_stale_canonical_job_ids(self, cutoff: datetime) -> list[uuid.UUID]:
         result = await self._session.execute(
             select(CanonicalJobModel.id).where(CanonicalJobModel.last_seen_at < cutoff)
@@ -471,17 +347,12 @@ class JobRepository:
         return [row[0] for row in result.all()]
 
     async def delete_stale_jobs(self, canonical_job_ids: list[uuid.UUID]) -> None:
-        """Deletes applications and job_source_records for these canonical jobs, then
-        the canonical_jobs themselves, then any raw_jobs left unreferenced by that.
-        Must run after MatchRepository.delete_for_canonical_jobs — job_matches also
-        reference canonical_jobs and would block this otherwise. See
-        JobRetentionService for the full cross-table ordering."""
+        """Deletes job_source_records for these canonical jobs, then the canonical
+        jobs themselves, then any raw_jobs left unreferenced. Must run after
+        MatchRepository.delete_for_canonical_jobs — job_matches also reference
+        canonical_jobs and would block this otherwise."""
         if not canonical_job_ids:
             return
-
-        await self._session.execute(
-            delete(ApplicationModel).where(ApplicationModel.canonical_job_id.in_(canonical_job_ids))
-        )
 
         raw_job_ids_result = await self._session.execute(
             select(JobSourceRecordModel.raw_job_id).where(
@@ -506,8 +377,23 @@ class JobRepository:
                 )
             )
             still_referenced = {row[0] for row in still_referenced_result.all()}
-            orphaned = [raw_job_id for raw_job_id in raw_job_ids if raw_job_id not in still_referenced]
+            orphaned = [id_ for id_ in raw_job_ids if id_ not in still_referenced]
             if orphaned:
                 await self._session.execute(delete(RawJobModel).where(RawJobModel.id.in_(orphaned)))
 
         await self._session.flush()
+
+    async def delete_all_jobs(self) -> dict[str, int]:
+        """Every vacancy, in dependency order. Callers must have deleted matches
+        and their notifications first — see SystemService.reset_jobs."""
+        source_records = await self._session.execute(delete(JobSourceRecordModel))
+        canonical = await self._session.execute(delete(CanonicalJobModel))
+        raw = await self._session.execute(delete(RawJobModel))
+        runs = await self._session.execute(delete(ScrapeRunModel))
+        await self._session.flush()
+        return {
+            "job_source_records": rows_affected(source_records),
+            "canonical_jobs": rows_affected(canonical),
+            "raw_jobs": rows_affected(raw),
+            "scrape_runs": rows_affected(runs),
+        }

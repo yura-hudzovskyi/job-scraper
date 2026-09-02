@@ -10,17 +10,15 @@ from app.domain.matching.models import JobMatch
 
 class NotificationChannel(StrEnum):
     TELEGRAM = "telegram"
-    EMAIL = "email"
 
 
 @dataclass(frozen=True)
 class JobMatchNotification:
-    """A JobMatch plus the display fields a provider needs to render it —
-    JobMatch itself only carries ids/scores, not title/company/salary/links.
+    """A JobMatch plus the display fields a provider needs to render it — the
+    match itself only carries ids and numbers, not title/company/salary/links.
 
-    source_links is (source name, url) pairs — a job seen on both DOU and Djinni
-    carries both, so the message can link out to each by name instead of picking
-    one URL arbitrarily (see JobRepository.list_source_links_for_canonical)."""
+    source_links is (source name, url) pairs, so a vacancy seen on both DOU and
+    Djinni links out to each by name instead of one arbitrarily-chosen URL."""
 
     match: JobMatch
     job_title: str
@@ -28,12 +26,9 @@ class JobMatchNotification:
     source_links: list[tuple[str, str]] = field(default_factory=list)
     salary: SalaryRange | None = None
     seniority: str | None = None
-    required_experience_years: float | None = None
     remote: bool = False
-    # Running Approve/Reject totals across every match this user has, shown as a
-    # small progress footer on the swipe card (see telegram_provider.py) — same
-    # spirit as a dating app showing "12 to go, 5 liked." Includes this match
-    # itself (already pending at send time).
+    # Running Approve/Reject totals across this user's matches, shown as a small
+    # progress footer on the card. Includes this match itself.
     pending_count: int = 0
     approved_count: int = 0
     rejected_count: int = 0
@@ -46,11 +41,3 @@ class Notification:
     job_match_id: str
     channel: NotificationChannel
     created_at: datetime
-
-
-@dataclass(frozen=True)
-class NotificationDelivery:
-    notification_id: str
-    channel: NotificationChannel
-    delivered_at: datetime | None
-    error: str | None = None
