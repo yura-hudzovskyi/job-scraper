@@ -1426,7 +1426,7 @@ at every commit.
 - [x] Phase 4 - multi-lane embeddings and retrieval
 - [x] Phase 5 - reranking chain
 - [x] Phase 6 - hybrid match engine
-- [ ] Phase 7 - LLM enrichment and priority scheduler
+- [x] Phase 7 - LLM enrichment and priority scheduler
 - [ ] Phase 8 - UI completion and operations
 - [ ] Phase 9 - evaluation, rollout, and cleanup
 
@@ -1656,3 +1656,32 @@ Deviations from the plan text:
 - **Retrieval still doesn't drive scoring.** Every eligible job is still scored for every
   user; wiring retrieval into the fan-out is phase 7's job, where the priority order it
   produces is actually used.
+
+### Phase 7 notes
+
+Landed: `LlmMatchEnricher` with claim validation and the 60/30/10 enriched score
+(`app/domain/matching/enrichment.py`), the value-of-information scheduler
+(`app/domain/matching/scheduling.py`), daily and interactive enrichment tasks on their own
+queues, `POST /api/jobs/{id}/analyze` with an "Analyze with AI" button, and the scoring
+path no longer calling an LLM under the v3 flag. Backend suite 378 passed, `ruff` clean,
+frontend `tsc -b` clean.
+
+Acceptance checked: boundary, disagreeing and low-confidence matches outrank comfortable
+ones and ties are deterministic (`tests/unit/test_enrichment_scheduling.py`); an
+already-analysed match is never a candidate, so no job is analysed twice; running out of
+capacity mid-batch leaves the hybrid results in place and reschedules; claims naming
+anything absent from both documents are dropped and counted
+(`tests/unit/test_enrichment.py`); the UI can upgrade one hybrid result on demand.
+
+Deviations from the plan text:
+
+- **Retrieval and rerank still aren't in the live path.** The scheduler ranks stored
+  matches, which carry more information than a similarity score does — the full hybrid
+  analysis, its confidence and where its signals disagree. Retrieval earns its place when
+  scoring itself becomes expensive (hosted embeddings per job) or the corpus outgrows
+  "score everything cheaply"; it is built, tested and behind `MULTI_EMBEDDING_LANES`
+  until then. Phase 9's evaluation is the other consumer.
+- **No shadow/experiment enrichment.** Comparing two prompts or two models needs the
+  labelled set to compare them *against*, which is phase 9.
+- **Capacity is reserved as call counts, not tokens** — the same deviation phase 3
+  recorded, inherited here.

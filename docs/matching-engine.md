@@ -298,6 +298,41 @@ The query is not just the CV: a short versioned instruction ("prioritize
 mandatory skills, penalise missing must-haves, don't reward keyword repetition")
 goes in front of it, because that text changes what a reranker returns.
 
+### LLM enrichment and how it is scheduled
+
+Under `MATCHING_PIPELINE_V3` the scoring path calls no LLM at all. Every match is
+scored by the hybrid engine, and a separate pass reviews the ones where a second
+opinion could change what the user does
+(`backend/app/domain/matching/enrichment.py`,
+`backend/app/domain/matching/scheduling.py`).
+
+**What the model is asked.** Not "score this job" — that was the retired
+`AiMatcher`, and it doesn't survive a per-job budget. It is shown what the
+pipeline found (requirements, gaps, unknowns, dimension scores, the score itself)
+and asked what that got wrong: which dimensions should move, which listed gaps
+are real blockers, which the candidate's other experience covers, what could
+still go wrong in an interview.
+
+**What is done with the answer.** Claims are checked against the inputs — a
+confirmed gap must be one of the gaps it was shown, a transferable strength must
+name a skill in the posting or the CV, compared through the ontology — and
+anything else is dropped and counted. The score stays arithmetic: judgments nudge
+dimensions by a bounded step, the same weighted sum runs again, and the result is
+60% hybrid base, 30% adjusted dimensions, 10% for the model's recommendation
+agreeing with where the score lands. The *label* comes from the score band, never
+from the model's own recommendation — that opinion already moved the score once.
+
+**Which matches get reviewed.** Ranked by value of information: proximity to the
+apply/consider boundary (a 74 and a 76 mean different advice), disagreement
+between the evidence-based and similarity-based views, low confidence, and how
+high the score is. A match that already has a verdict is not a candidate at all.
+A user pressing "Analyze with AI" on a job page jumps the queue entirely — that
+is the strongest signal there is — and lands on the interactive queue.
+
+**Running out of capacity is normal.** The hybrid results stand, nothing is
+half-written, and the task comes back when the provider reopens
+(`app/workers/pacing.py`).
+
 ### Stage 4 — "Should I apply?" (CONSIDER+APPLY)
 
 A separate, optional LLM call (`LlmReranker`) layered on top of an already-scored
