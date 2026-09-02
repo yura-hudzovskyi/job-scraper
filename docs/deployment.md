@@ -112,6 +112,13 @@ At minimum set:
 - `EMBEDDING_PROVIDER=sentence_transformers` (the default — needs no key, runs
   locally in the API/worker containers)
 
+**Upgrading an existing `.env`**: settings that no longer exist (`OLLAMA_*`,
+`LLM_RERANK_DAILY_LIMIT`, `GROQ_CIRCUIT_BREAKER_COOLDOWN_SECONDS`) are ignored, and
+`LLM_PROVIDER=ollama` is ignored with a warning rather than refused — a retired
+option must not take the app down on boot. Clearing those lines silences the
+warning. If the `ollama` container is still on the box from an earlier deploy,
+`docker compose -f docker-compose.prod.yml up -d --remove-orphans` removes it.
+
 Then run the script again to actually start everything and apply migrations:
 
 ```bash
