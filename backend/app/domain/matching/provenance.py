@@ -73,6 +73,9 @@ class PipelineVersions:
     scorer: str = SCORER_VERSION
     match_prompt: str = MATCH_PROMPT_VERSION
     skill_taxonomy: str = SKILL_TAXONOMY_VERSION
+    # The rerank instruction changes ranking behaviour, so it is versioned like a
+    # prompt (app/domain/matching/rerank.py).
+    rerank_instruction: str | None = None
     # No calibration layer exists yet — phase 6 introduces one and starts filling
     # this in. Stored as None rather than omitted so old rows read back the same.
     calibration: str | None = None
@@ -87,6 +90,10 @@ class MatchProvenance:
     embedding_model: str | None = None
     cross_encoder_model: str | None = None
     skills_model: str | None = None  # which LLM extracted the job's requirements
+    # Which reranker ordered the candidate set, when one ran — its raw scores are
+    # model-specific, so the calibration version below only means anything
+    # alongside this.
+    rerank_model: str | None = None
     match_model: str | None = None  # which LLM produced the "should I apply?" verdict
     fallback_reason: FallbackReason | None = None
     versions: PipelineVersions = PipelineVersions()
@@ -115,6 +122,7 @@ def provenance_payload(provenance: MatchProvenance) -> dict[str, Any]:
         "embedding_model": provenance.embedding_model,
         "cross_encoder_model": provenance.cross_encoder_model,
         "skills_model": provenance.skills_model,
+        "rerank_model": provenance.rerank_model,
         "match_model": provenance.match_model,
         "fallback_reason": (
             provenance.fallback_reason.value if provenance.fallback_reason else None
@@ -123,6 +131,7 @@ def provenance_payload(provenance: MatchProvenance) -> dict[str, Any]:
             "scorer": provenance.versions.scorer,
             "match_prompt": provenance.versions.match_prompt,
             "skill_taxonomy": provenance.versions.skill_taxonomy,
+            "rerank_instruction": provenance.versions.rerank_instruction,
             "calibration": provenance.versions.calibration,
         },
         "generated_at": (
@@ -147,6 +156,7 @@ def provenance_from_payload(payload: dict[str, Any] | None) -> MatchProvenance |
         embedding_model=payload.get("embedding_model"),
         cross_encoder_model=payload.get("cross_encoder_model"),
         skills_model=payload.get("skills_model"),
+        rerank_model=payload.get("rerank_model"),
         match_model=payload.get("match_model"),
         fallback_reason=(
             FallbackReason(payload["fallback_reason"]) if payload.get("fallback_reason") else None
@@ -155,6 +165,7 @@ def provenance_from_payload(payload: dict[str, Any] | None) -> MatchProvenance |
             scorer=versions.get("scorer", SCORER_VERSION),
             match_prompt=versions.get("match_prompt", MATCH_PROMPT_VERSION),
             skill_taxonomy=versions.get("skill_taxonomy", SKILL_TAXONOMY_VERSION),
+            rerank_instruction=versions.get("rerank_instruction"),
             calibration=versions.get("calibration"),
         ),
         generated_at=datetime.fromisoformat(generated_at) if generated_at else None,

@@ -14,6 +14,7 @@ from app.domain.jobs.models import (
     RequirementType,
 )
 from app.domain.matching.filters import HardFilterService
+from app.domain.matching.hybrid import HybridMatchEngine
 from app.domain.matching.models import (
     JobMatch,
     LlmAssessment,
@@ -392,3 +393,65 @@ async def test_weak_match_recommends_skip() -> None:
 
     assert match.eligible is True
     assert match.recommendation == Recommendation.SKIP
+
+
+def _hybrid_service(embedding_provider: object) -> MatchingService:
+    return MatchingService(
+        HardFilterService(),
+        DeterministicScorer(),
+        SemanticScorer(embedding_provider),  # type: ignore[arg-type]
+        SkillMatcher(embedding_provider),  # type: ignore[arg-type]
+        RoleMatcher(embedding_provider),  # type: ignore[arg-type]
+        models=PipelineModels(embedding="all-MiniLM-L6-v2"),
+        hybrid_engine=HybridMatchEngine(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_hybrid_engine_owns_the_score_when_it_is_enabled() -> None:
+    service = _hybrid_service(_FakeEmbeddingProvider())
+    job = _job(
+        skills=[NormalizedJobSkill(name="Django", requirement=RequirementType.REQUIRED_EXPLICIT)],
+        skills_extracted_by="Groq (llama-3.3-70b-versatile)",
+    )
+
+    match = await service.evaluate("canonical-1", job, _profile(skills=["Django"]), _preferences())
+
+    assert match.provenance is not None
+    assert match.provenance.engine is MatchEngine.HYBRID
+    # The score now says how sure it is, separately from how high it is.
+    assert match.confidence is not None and 0.0 < match.confidence <= 1.0
+    assert match.provenance.versions.scorer == "hybrid-1"
+    assert match.requirement_match == 100.0
+
+
+@pytest.mark.asyncio
+async def test_the_hybrid_engine_reports_unknowns_as_risks_not_gaps() -> None:
+    # Explicit vectors: this fake makes every unlisted text identical, so an
+    # unrelated skill would otherwise "match" the candidate's at similarity 1.0.
+    service = _hybrid_service(
+        _FakeEmbeddingProvider({"Rust": [0.0, 1.0], "Django": [1.0, 0.0]})
+    )
+    job = _job(
+        skills=[NormalizedJobSkill(name="Rust", requirement=RequirementType.UNKNOWN)],
+        skills_extracted_by="Groq (llama-3.3-70b-versatile)",
+    )
+
+    match = await service.evaluate("canonical-1", job, _profile(skills=["Django"]), _preferences())
+
+    assert match.gaps == []
+    assert any("without saying whether they are required" in risk for risk in match.risks)
+
+
+@pytest.mark.asyncio
+async def test_without_the_flag_nothing_about_the_old_path_changes() -> None:
+    # The pre-v3 pipeline stays the default until the flag is switched on.
+    service = _matching_service(_FakeEmbeddingProvider())
+    job = _job(skills=[NormalizedJobSkill(name="Django", requirement=RequirementType.REQUIRED_EXPLICIT)])
+
+    match = await service.evaluate("canonical-1", job, _profile(skills=["Django"]), _preferences())
+
+    assert match.provenance is not None
+    assert match.provenance.engine is MatchEngine.DETERMINISTIC
+    assert match.confidence is None
+    assert match.risks == []

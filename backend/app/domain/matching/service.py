@@ -28,6 +28,7 @@ from dataclasses import dataclass, replace
 from app.domain.candidates.models import CandidateProfile, UserPreference
 from app.domain.jobs.models import NormalizedJob
 from app.domain.matching.filters import HardFilterService
+from app.domain.matching.hybrid import HybridMatchEngine, HybridResult
 from app.domain.matching.llm_reranker import LlmReranker
 from app.domain.matching.models import (
     JobMatch,
@@ -42,6 +43,7 @@ from app.domain.matching.provenance import (
     MatchEngine,
     MatchProvenance,
     PipelineModels,
+    PipelineVersions,
     now,
 )
 from app.domain.matching.role_matching import RoleMatcher
@@ -94,6 +96,7 @@ class MatchingService:
         thresholds: MatchingThresholds | None = None,
         llm_reranker: LlmReranker | None = None,
         models: PipelineModels | None = None,
+        hybrid_engine: HybridMatchEngine | None = None,
     ):
         self._hard_filters = hard_filters
         self._deterministic_scorer = deterministic_scorer
@@ -105,6 +108,11 @@ class MatchingService:
         # Recorded, not used: which models this instance was built with, so every
         # result it produces can say so (see provenance.py).
         self._models = models or PipelineModels()
+        # When present, the hybrid engine owns the scoring rules and this class
+        # keeps doing what it always did: gather the signals, apply the gates,
+        # persistably shape the result. None means the pre-v3 weighted scorer,
+        # which stays until MATCHING_PIPELINE_V3 is on everywhere.
+        self._hybrid_engine = hybrid_engine
 
     async def evaluate(
         self,
@@ -161,6 +169,28 @@ class MatchingService:
             self._role_matcher.assess(job.title, preferences.preferred_roles, profile.roles),
         )
         semantic_fit = semantic_similarity * 100
+
+        if self._hybrid_engine is not None:
+            return self._from_hybrid(
+                canonical_job_id,
+                job,
+                profile,
+                job_version,
+                self._hybrid_engine.evaluate(
+                    job=job,
+                    profile=profile,
+                    preferences=preferences,
+                    skills=skill_assessment,
+                    semantic_fit=semantic_fit,
+                    role_fit=role,
+                    salary_score=salary,
+                    location_score=location,
+                ),
+                role=role,
+                salary=salary,
+                location=location,
+                transferable=skill_assessment.transferable_score,
+            )
 
         deterministic = DeterministicScore(
             skills=skill_assessment.skills_score,
@@ -239,6 +269,57 @@ class MatchingService:
                 job,
                 job_version,
             ),
+        )
+
+    def _from_hybrid(
+        self,
+        canonical_job_id: str,
+        job: NormalizedJob,
+        profile: CandidateProfile,
+        job_version: DocumentVersion | None,
+        result: HybridResult,
+        role: float,
+        salary: float,
+        location: float,
+        transferable: float,
+    ) -> JobMatch:
+        """Shape the engine's result into the JobMatch every consumer already
+        reads. The breakdown keeps its field names — the UI, the notifications
+        and the Telegram cards don't need to learn a new vocabulary for the same
+        six facets."""
+        provenance = replace(
+            self._provenance(result.analysis_level, profile, job, job_version),
+            engine=MatchEngine.HYBRID,
+            versions=replace(
+                PipelineVersions(),
+                scorer=result.scorer_version,
+                calibration=result.calibration_version,
+            ),
+        )
+        return JobMatch(
+            id="",
+            user_id=profile.user_id,
+            canonical_job_id=canonical_job_id,
+            eligible=True,
+            # The literal fit: how much of what the posting requires is covered.
+            requirement_match=result.dimensions.required_skills,
+            practical_fit=result.score,
+            breakdown=ScoreBreakdown(
+                skills=result.dimensions.required_skills,
+                role=role,
+                experience=result.dimensions.relevant_experience,
+                semantic_fit=result.dimensions.role_domain_fit,
+                salary=salary,
+                location=location,
+                transferable_skills=transferable,
+                preferences=result.dimensions.preferences,
+            ),
+            strengths=result.strengths,
+            gaps=result.gaps,
+            recommendation=self._recommend(result.score),
+            confidence=result.confidence,
+            risks=result.risks,
+            provenance=provenance,
         )
 
     def _provenance(

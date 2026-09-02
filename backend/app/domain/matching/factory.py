@@ -5,6 +5,7 @@ without one (semantic_fit and skill matching both need it).
 
 from app.config.settings import Settings
 from app.domain.matching.filters import HardFilterService
+from app.domain.matching.hybrid import HybridMatchEngine
 from app.domain.matching.llm_reranker import LlmReranker
 from app.domain.matching.provenance import PipelineModels
 from app.domain.matching.role_matching import RoleMatcher
@@ -34,6 +35,12 @@ def build_matching_service(settings: Settings) -> MatchingService | None:
     llm_provider = build_llm_router(Capability.MATCH_ENRICHMENT, settings)
     llm_reranker = LlmReranker(llm_provider) if llm_provider is not None else None
 
+    # MATCHING_PIPELINE_V3 swaps the scoring rules for the hybrid engine: same
+    # inputs, but requirement coverage, merged experience intervals, confidence
+    # and evidence-backed explanations instead of one weighted sum. Off means the
+    # app behaves exactly as it did before phase 6.
+    hybrid_engine = HybridMatchEngine() if settings.matching_pipeline_v3 else None
+
     return MatchingService(
         HardFilterService(),
         DeterministicScorer(),
@@ -47,4 +54,5 @@ def build_matching_service(settings: Settings) -> MatchingService | None:
             embedding=settings.embedding_model,
             cross_encoder=settings.cross_encoder_model,
         ),
+        hybrid_engine=hybrid_engine,
     )

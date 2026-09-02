@@ -89,6 +89,12 @@ class JobMatch:
     gaps: list[MatchGap] = field(default_factory=list)
 
     recommendation: Recommendation | None = None
+    # How much evidence stood behind the score, 0-1 — see hybrid.py. Deliberately
+    # separate from the score: an 84 backed by two extracted requirements and an
+    # 84 backed by twelve are not the same claim.
+    confidence: float | None = None
+    # What the result could not establish. Never gaps — see HybridMatchEngine.
+    risks: list[str] = field(default_factory=list)
     llm_assessment: LlmAssessment | None = None
     # How this result was produced — engine, analysis level, the CV/job revisions
     # it was scored against, the models involved. See provenance.py; None only for

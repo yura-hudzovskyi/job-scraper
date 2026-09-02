@@ -85,6 +85,7 @@ class PipelineVersionsResponse(BaseModel):
     scorer: str
     match_prompt: str
     skill_taxonomy: str
+    rerank_instruction: str | None
     calibration: str | None
 
 
@@ -100,6 +101,7 @@ class MatchProvenanceResponse(BaseModel):
     embedding_model: str | None
     cross_encoder_model: str | None
     skills_model: str | None
+    rerank_model: str | None
     match_model: str | None
     fallback_reason: str | None
     versions: PipelineVersionsResponse
@@ -115,6 +117,8 @@ class JobMatchResponse(BaseModel):
     strengths: list[MatchReasonResponse]
     gaps: list[MatchGapResponse]
     recommendation: str | None
+    confidence: float | None
+    risks: list[str]
     llm_assessment: LlmAssessmentResponse | None
     provenance: MatchProvenanceResponse | None
     scored_at: datetime | None
@@ -175,12 +179,14 @@ def _to_provenance_response(provenance: MatchProvenance | None) -> MatchProvenan
         embedding_model=provenance.embedding_model,
         cross_encoder_model=provenance.cross_encoder_model,
         skills_model=provenance.skills_model,
+        rerank_model=provenance.rerank_model,
         match_model=provenance.match_model,
         fallback_reason=provenance.fallback_reason.value if provenance.fallback_reason else None,
         versions=PipelineVersionsResponse(
             scorer=provenance.versions.scorer,
             match_prompt=provenance.versions.match_prompt,
             skill_taxonomy=provenance.versions.skill_taxonomy,
+            rerank_instruction=provenance.versions.rerank_instruction,
             calibration=provenance.versions.calibration,
         ),
         generated_at=provenance.generated_at,
@@ -200,6 +206,8 @@ def _to_match_response(match: JobMatch) -> JobMatchResponse:
         ],
         gaps=[MatchGapResponse(label=gap.label, critical=gap.critical) for gap in match.gaps],
         recommendation=match.recommendation.value if match.recommendation else None,
+        confidence=match.confidence,
+        risks=match.risks,
         llm_assessment=_to_llm_assessment_response(match.llm_assessment),
         provenance=_to_provenance_response(match.provenance),
         scored_at=match.scored_at,

@@ -45,6 +45,8 @@ def _to_job_match(model: JobMatchModel) -> JobMatch:
         strengths=[MatchReason(**reason) for reason in model.strengths],
         gaps=[MatchGap(**gap) for gap in model.gaps],
         recommendation=Recommendation(model.recommendation) if model.recommendation else None,
+        confidence=model.confidence,
+        risks=list(model.risks or []),
         llm_assessment=_to_llm_assessment(model.llm_assessment),
         provenance=provenance_from_payload(model.provenance),
         scored_at=model.scored_at,
@@ -65,6 +67,8 @@ class MatchRepository:
             "strengths": [asdict(reason) for reason in match.strengths],
             "gaps": [asdict(gap) for gap in match.gaps],
             "recommendation": match.recommendation.value if match.recommendation else None,
+            "confidence": match.confidence,
+            "risks": list(match.risks),
             "llm_assessment": (
                 {**asdict(match.llm_assessment), "recommendation": match.llm_assessment.recommendation.value}
                 if match.llm_assessment
