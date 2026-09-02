@@ -19,13 +19,19 @@ flip at runtime from an authenticated session.
 
 import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user_id, get_embedding_repository, get_job_repository
+from app.api.deps import (
+    get_ai_invocation_repository,
+    get_current_user_id,
+    get_embedding_repository,
+    get_job_repository,
+)
 from app.config.runtime_settings import get_effective_settings
 from app.config.settings import Settings, get_settings
 from app.integrations.ai.llm.base import LLMProvider
@@ -34,6 +40,7 @@ from app.integrations.ai.quota.budget import DailyCapabilityBudget
 from app.integrations.ai.routing import policy
 from app.integrations.ai.routing.router import Capability
 from app.integrations.ai.routing.state import ProviderStateStore
+from app.repositories.ai_invocation_repository import AiInvocationRepository
 from app.repositories.ai_settings_repository import AiSettingsRepository
 from app.repositories.embedding_repository import JOB, EmbeddingRepository
 from app.repositories.job_repository import JobRepository
@@ -196,6 +203,35 @@ async def update_ai_models(
     except redis.RedisError as exc:
         raise HTTPException(status_code=503, detail=f"could not save — Redis unreachable: {exc}") from exc
     return await get_ai_models(user_id, embedding_repository, job_repository)
+
+
+class UsageRow(BaseModel):
+    capability: str
+    outcome: str
+    calls: int
+
+
+class AiUsageResponse(BaseModel):
+    """What the router actually did recently, from the durable ledger. Budgets
+    say what is left today; this says where it went and how much of it failed."""
+
+    since_hours: int
+    rows: list[UsageRow]
+
+
+@router.get("/usage", response_model=AiUsageResponse)
+async def get_ai_usage(
+    hours: int = 24,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    repository: AiInvocationRepository = Depends(get_ai_invocation_repository),
+) -> AiUsageResponse:
+    window = max(1, min(hours, 24 * 30))
+    counts = await repository.count_since(datetime.now(UTC) - timedelta(hours=window))
+    rows = [
+        UsageRow(capability=capability, outcome=outcome, calls=calls)
+        for (capability, outcome), calls in sorted(counts.items(), key=lambda item: -item[1])
+    ]
+    return AiUsageResponse(since_hours=window, rows=rows)
 
 
 class TestModelRequest(BaseModel):

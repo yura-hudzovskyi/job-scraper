@@ -268,7 +268,12 @@ export function JobDetails() {
 
             {matchQuery.data.strengths.length > 0 && (
               <div>
-                <p className="mb-1 text-sm text-slate-500">Matched skills</p>
+                <p className="mb-1 text-sm text-slate-500">
+                  Matched skills{" "}
+                  <span className="text-xs text-slate-400">
+                    — each one quotes the line in the posting it came from
+                  </span>
+                </p>
                 <div className="flex flex-wrap gap-1.5">
                   {matchQuery.data.strengths.map((strength) => (
                     <span
@@ -281,6 +286,14 @@ export function JobDetails() {
                   ))}
                 </div>
               </div>
+            )}
+
+            {matchQuery.data.strengths.some((strength) => strength.detail) && (
+              <ul className="-mt-1 flex flex-col gap-0.5 text-xs text-slate-500">
+                {matchQuery.data.strengths.map((strength) => (
+                  <li key={`why-${strength.label}`}>{strength.detail}</li>
+                ))}
+              </ul>
             )}
 
             {matchQuery.data.gaps.length > 0 && (

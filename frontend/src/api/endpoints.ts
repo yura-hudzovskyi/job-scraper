@@ -1,6 +1,7 @@
 import { apiClient } from "./client";
 import type {
   AiModelsResponse,
+  AiUsage,
   AiModelsUpdateRequest,
   CandidateProfile,
   ConnectTelegramResponse,
@@ -87,6 +88,7 @@ export const updateNotificationThresholds = (thresholds: NotificationThresholds)
 export const getAiModels = () => apiClient.get<AiModelsResponse>("/api/ai/models");
 export const updateAiModels = (payload: AiModelsUpdateRequest) =>
   apiClient.patch<AiModelsResponse>("/api/ai/models", payload);
+export const getAiUsage = (hours = 24) => apiClient.get<AiUsage>(`/api/ai/usage?hours=${hours}`);
 export const testAiModel = (tier: "groq" | "gemini", model: string) =>
   apiClient.post<TestModelResponse>("/api/ai/models/test", { tier, model });
 

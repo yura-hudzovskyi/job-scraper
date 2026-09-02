@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
   flushRedis,
   getAiModels,
+  getAiUsage,
   purgeCelery,
   testAiModel,
   updateAiModels,
@@ -122,6 +123,9 @@ function Badge({ open, label }: { open: boolean; label: string }) {
 export function System() {
   const queryClient = useQueryClient();
   const modelsQuery = useQuery({ queryKey: ["ai-models"], queryFn: getAiModels });
+  // Budgets say what is left today; the ledger says where it went and how much
+  // of it failed — the two answer different questions.
+  const usageQuery = useQuery({ queryKey: ["ai-usage"], queryFn: () => getAiUsage(24) });
 
   const [inputs, setInputs] = useState<Record<ModelFieldKey, string>>({
     groq_model: "",
@@ -291,6 +295,44 @@ export function System() {
           <div className="mt-2">
             <ErrorBanner message="Failed to save — see server logs" />
           </div>
+        )}
+      </Card>
+
+      <Card>
+        <SectionTitle>AI usage</SectionTitle>
+        <p className="mb-3 text-sm text-slate-600">
+          Every LLM call the router made in the last {usageQuery.data?.since_hours ?? 24} hours,
+          by capability and outcome. Failures here are normal in small numbers — a rate limit
+          means the next leg served the call — but a capability that is mostly failing is a
+          problem the badges above won't show.
+        </p>
+        {usageQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+        {usageQuery.data && usageQuery.data.rows.length === 0 && (
+          <p className="text-sm text-slate-500">
+            No calls recorded yet — the ledger is flushed from Redis every few minutes.
+          </p>
+        )}
+        {usageQuery.data && usageQuery.data.rows.length > 0 && (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-slate-400 uppercase">
+                <th className="py-1">Capability</th>
+                <th className="py-1">Outcome</th>
+                <th className="py-1 text-right">Calls</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usageQuery.data.rows.map((row) => (
+                <tr key={`${row.capability}:${row.outcome}`} className="border-t border-slate-100">
+                  <td className="py-1 text-slate-600">{row.capability}</td>
+                  <td className={`py-1 ${row.outcome === "ok" ? "text-slate-500" : "text-amber-700"}`}>
+                    {row.outcome}
+                  </td>
+                  <td className="py-1 text-right text-slate-600">{row.calls}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </Card>
 

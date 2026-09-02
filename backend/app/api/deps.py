@@ -18,6 +18,7 @@ from app.db.session import get_session
 from app.integrations.ai.llm.base import LLMProvider
 from app.integrations.ai.llm.factory import build_llm_router
 from app.integrations.ai.routing.router import Capability
+from app.repositories.ai_invocation_repository import AiInvocationRepository
 from app.repositories.candidate_repository import CandidateRepository
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.job_repository import JobRepository
@@ -63,6 +64,12 @@ def get_auth_service(
 
 def get_candidate_repository(session: AsyncSession = Depends(get_session)) -> CandidateRepository:
     return CandidateRepository(session)
+
+
+def get_ai_invocation_repository(
+    session: AsyncSession = Depends(get_session),
+) -> AiInvocationRepository:
+    return AiInvocationRepository(session)
 
 
 def get_embedding_repository(

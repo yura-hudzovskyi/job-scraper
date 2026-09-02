@@ -75,6 +75,17 @@ export interface SourceHealth {
   raw_jobs_stored: number;
 }
 
+export interface UsageRow {
+  capability: string;
+  outcome: string;
+  calls: number;
+}
+
+export interface AiUsage {
+  since_hours: number;
+  rows: UsageRow[];
+}
+
 export interface JobSummary {
   id: string;
   title: string;
@@ -83,6 +94,10 @@ export interface JobSummary {
   source_count: number;
   practical_fit: number | null;
   recommendation: string | null;
+  /** Enough provenance to label a row without opening it. */
+  engine: string | null;
+  analysis_level: string | null;
+  confidence: number | null;
 }
 
 export interface JobListResponse {

@@ -33,6 +33,13 @@ class JobSummaryResponse(BaseModel):
     source_count: int
     practical_fit: float | None = None
     recommendation: str | None = None
+    # Enough provenance to label a row without opening it: a score produced by a
+    # full LLM review and one produced from a posting with nothing extracted are
+    # not the same claim, and the list is where that difference is easiest to
+    # miss (docs/ai-pipeline-v3.md, 9.1).
+    engine: str | None = None
+    analysis_level: str | None = None
+    confidence: float | None = None
 
 
 class JobListResponse(BaseModel):
@@ -136,6 +143,11 @@ def _to_summary(job: CanonicalJob, match: JobMatch | None) -> JobSummaryResponse
         recommendation=(
             match.recommendation.value if match and match.recommendation else None
         ),
+        engine=match.provenance.engine.value if match and match.provenance else None,
+        analysis_level=(
+            match.provenance.analysis_level.value if match and match.provenance else None
+        ),
+        confidence=match.confidence if match else None,
     )
 
 

@@ -7,6 +7,20 @@ import { Button, Card, ErrorBanner, Modal, SectionTitle } from "../components/ui
 
 const PAGE_SIZE = 25;
 
+// A score from a full LLM review and one from a posting with nothing extracted
+// are different claims; the list is where that difference is easiest to miss.
+const ENGINE_LABELS: Record<string, string> = {
+  deterministic: "deterministic",
+  hybrid: "hybrid",
+  llm_enriched: "full AI",
+};
+
+const ANALYSIS_LABELS: Record<string, string> = {
+  full: "an LLM reviewed this",
+  standard: "scored against extracted requirements",
+  limited: "nothing was extracted to check against",
+};
+
 export function Jobs() {
   const queryClient = useQueryClient();
   const [offset, setOffset] = useState(0);
@@ -110,6 +124,24 @@ export function Jobs() {
                   {job.practical_fit !== null && (
                     <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">
                       {job.practical_fit.toFixed(0)}%
+                    </span>
+                  )}
+                  {job.engine && (
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs ${
+                        job.engine === "llm_enriched"
+                          ? "bg-sky-100 text-sky-900"
+                          : "bg-slate-100 text-slate-600"
+                      }`}
+                      title={
+                        job.confidence !== null
+                          ? `${ANALYSIS_LABELS[job.analysis_level ?? ""] ?? job.analysis_level} · ${(
+                              job.confidence * 100
+                            ).toFixed(0)}% confidence`
+                          : (ANALYSIS_LABELS[job.analysis_level ?? ""] ?? undefined)
+                      }
+                    >
+                      {ENGINE_LABELS[job.engine] ?? job.engine}
                     </span>
                   )}
                   {job.source_count > 1 && (
