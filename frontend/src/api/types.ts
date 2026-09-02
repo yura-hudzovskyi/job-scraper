@@ -226,12 +226,26 @@ export interface CapabilityStatus {
   budget_limit: number;
 }
 
+/** One embedding lane: its own vector space, and how much of the corpus it has
+ *  indexed. A lane only answers queries once it covers nearly everything. */
+export interface LaneStatus {
+  id: string;
+  provider: string;
+  model: string;
+  dimension: number;
+  role: string;
+  state: string;
+  jobs_covered: number;
+  jobs_total: number;
+}
+
 export interface AiModelsResponse {
   groq_configured: boolean;
   groq_model: AiModelField;
   gemini_configured: boolean;
   gemini_model: AiModelField;
   capabilities: CapabilityStatus[];
+  lanes: LaneStatus[];
 }
 
 export interface AiModelsUpdateRequest {

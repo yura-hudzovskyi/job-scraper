@@ -8,7 +8,12 @@ import {
   testAiModel,
   updateAiModels,
 } from "../api/endpoints";
-import type { AiModelField, AiModelsUpdateRequest, CapabilityStatus } from "../api/types";
+import type {
+  AiModelField,
+  AiModelsUpdateRequest,
+  CapabilityStatus,
+  LaneStatus,
+} from "../api/types";
 import { Button, Card, ErrorBanner, Modal, SectionTitle, inputClass } from "../components/ui";
 
 type ModelFieldKey = keyof AiModelsUpdateRequest;
@@ -77,6 +82,28 @@ function CapabilityCard({ status }: { status: CapabilityStatus }) {
         </ol>
       )}
     </div>
+  );
+}
+
+/** Embedding lanes and how far each one has got. Coverage is the number that
+ *  matters: a lane below the readiness threshold is skipped by retrieval
+ *  entirely, because a half-built lane quietly returns a smaller world. */
+function LaneRow({ lane }: { lane: LaneStatus }) {
+  const percent = lane.jobs_total > 0 ? Math.floor((lane.jobs_covered / lane.jobs_total) * 100) : 0;
+
+  return (
+    <li className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="text-slate-600">
+        {lane.provider} · {lane.model}
+      </span>
+      <span className="text-slate-400">
+        {lane.role} · {lane.dimension}d
+      </span>
+      <Badge open={lane.state !== "ready"} label={lane.state} />
+      <span className="text-slate-500">
+        {lane.jobs_covered}/{lane.jobs_total} jobs ({percent}%)
+      </span>
+    </li>
   );
 }
 
@@ -227,6 +254,22 @@ export function System() {
                 <CapabilityCard key={capability.capability} status={capability} />
               ))}
             </div>
+            {modelsQuery.data.lanes.length > 0 && (
+              <div className="mb-4 rounded border border-slate-200 p-3">
+                <p className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
+                  Embedding lanes
+                </p>
+                <ul className="flex flex-col gap-1">
+                  {modelsQuery.data.lanes.map((lane) => (
+                    <LaneRow key={lane.id} lane={lane} />
+                  ))}
+                </ul>
+                <p className="mt-2 text-xs text-slate-400">
+                  Retrieval uses the best lane that covers the corpus and never mixes two — vectors
+                  from different models aren't comparable.
+                </p>
+              </div>
+            )}
             <p className="mb-3 text-xs font-semibold tracking-wide text-slate-400 uppercase">
               Job pipeline model
             </p>

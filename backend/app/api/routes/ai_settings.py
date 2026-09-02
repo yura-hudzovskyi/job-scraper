@@ -25,7 +25,7 @@ import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user_id
+from app.api.deps import get_current_user_id, get_embedding_repository, get_job_repository
 from app.config.runtime_settings import get_effective_settings
 from app.config.settings import Settings, get_settings
 from app.integrations.ai.llm.base import LLMProvider
@@ -35,6 +35,8 @@ from app.integrations.ai.routing import policy
 from app.integrations.ai.routing.router import Capability
 from app.integrations.ai.routing.state import ProviderStateStore
 from app.repositories.ai_settings_repository import AiSettingsRepository
+from app.repositories.embedding_repository import JOB, EmbeddingRepository
+from app.repositories.job_repository import JobRepository
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +71,28 @@ class CapabilityStatus(BaseModel):
     budget_limit: int
 
 
+class LaneStatus(BaseModel):
+    """One embedding lane: its own vector space, and how much of the corpus it
+    has actually indexed. A lane only answers queries once it covers nearly
+    everything — see app/services/embedding_indexing_service.py."""
+
+    id: str
+    provider: str
+    model: str
+    dimension: int
+    role: str
+    state: str
+    jobs_covered: int
+    jobs_total: int
+
+
 class AiModelsResponse(BaseModel):
     groq_configured: bool
     groq_model: ModelFieldStatus
     gemini_configured: bool
     gemini_model: ModelFieldStatus
     capabilities: list[CapabilityStatus]
+    lanes: list[LaneStatus]
 
 
 async def _capability_status(
@@ -107,9 +125,30 @@ async def _capability_status(
     )
 
 
+async def _lane_statuses(
+    embedding_repository: EmbeddingRepository, job_repository: JobRepository
+) -> list[LaneStatus]:
+    jobs_total = await job_repository.count_canonical_jobs()
+    return [
+        LaneStatus(
+            id=lane.id,
+            provider=lane.provider,
+            model=lane.model,
+            dimension=lane.dimension,
+            role=lane.role,
+            state=lane.state,
+            jobs_covered=await embedding_repository.documents_with_vectors(lane.id, JOB),
+            jobs_total=jobs_total,
+        )
+        for lane in await embedding_repository.list_lanes()
+    ]
+
+
 @router.get("/models", response_model=AiModelsResponse)
 async def get_ai_models(
     user_id: uuid.UUID = Depends(get_current_user_id),
+    embedding_repository: EmbeddingRepository = Depends(get_embedding_repository),
+    job_repository: JobRepository = Depends(get_job_repository),
 ) -> AiModelsResponse:
     settings = get_settings()
     overrides = await _ai_settings_repository(settings).get_overrides()
@@ -131,6 +170,7 @@ async def get_ai_models(
         capabilities=[
             await _capability_status(capability, effective, client) for capability in Capability
         ],
+        lanes=await _lane_statuses(embedding_repository, job_repository),
     )
 
 
@@ -145,6 +185,8 @@ class AiModelsUpdateRequest(BaseModel):
 async def update_ai_models(
     payload: AiModelsUpdateRequest,
     user_id: uuid.UUID = Depends(get_current_user_id),
+    embedding_repository: EmbeddingRepository = Depends(get_embedding_repository),
+    job_repository: JobRepository = Depends(get_job_repository),
 ) -> AiModelsResponse:
     settings = get_settings()
     repository = _ai_settings_repository(settings)
@@ -153,7 +195,7 @@ async def update_ai_models(
             await repository.set_override(field, value)
     except redis.RedisError as exc:
         raise HTTPException(status_code=503, detail=f"could not save — Redis unreachable: {exc}") from exc
-    return await get_ai_models(user_id)
+    return await get_ai_models(user_id, embedding_repository, job_repository)
 
 
 class TestModelRequest(BaseModel):

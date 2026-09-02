@@ -19,6 +19,7 @@ from app.integrations.ai.llm.base import LLMProvider
 from app.integrations.ai.llm.factory import build_llm_router
 from app.integrations.ai.routing.router import Capability
 from app.repositories.candidate_repository import CandidateRepository
+from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
 from app.repositories.notification_repository import NotificationRepository
@@ -62,6 +63,12 @@ def get_auth_service(
 
 def get_candidate_repository(session: AsyncSession = Depends(get_session)) -> CandidateRepository:
     return CandidateRepository(session)
+
+
+def get_embedding_repository(
+    session: AsyncSession = Depends(get_session),
+) -> EmbeddingRepository:
+    return EmbeddingRepository(session)
 
 
 def get_job_repository(session: AsyncSession = Depends(get_session)) -> JobRepository:
