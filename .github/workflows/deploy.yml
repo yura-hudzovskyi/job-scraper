@@ -63,6 +63,25 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      # The server needs exactly two files from this repo — the compose file and
+      # the Caddyfile — and it used to fetch them by running `git pull` itself.
+      # That made every deploy depend on the box holding working GitHub
+      # credentials, which is one more thing that can expire (and did: a private
+      # repo over HTTPS asks for a username no non-interactive shell can answer).
+      # Copying them from the runner removes the dependency: the server needs no
+      # repo access at all now, only the image from GHCR.
+      - name: Copy deployment files
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: docker-compose.prod.yml,Caddyfile
+          target: ~/job-scraper
+          overwrite: true
+
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -72,8 +91,9 @@ jobs:
           script: |
             set -e
             cd ~/job-scraper
-            git pull
             docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d
+            # --remove-orphans drops containers whose service no longer exists in
+            # the compose file — the retired `ollama` one, for instance.
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
             docker compose -f docker-compose.prod.yml run --rm api alembic upgrade head
             docker image prune -f
