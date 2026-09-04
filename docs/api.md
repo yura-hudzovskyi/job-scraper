@@ -15,6 +15,16 @@ GET    /api/cv/active             the active CV plus the exact document the mode
 DELETE /api/cv/{id}
 
 GET    /api/profile               read-only onboarding summary (CVs on file, preferences set)
+GET    /api/profile/extracted     what extraction read out of the active CV, for the user to
+                                   check. 404 while there is no CV, and separately while
+                                   nothing has been extracted — they mean different things
+POST   /api/profile/extracted/review
+                                   the candidate's corrections. Creates a new profile
+                                   revision pointing at the one it corrected; never
+                                   overwrites. The submitted competency list replaces
+                                   rather than merges, so a removal is expressible
+GET    /api/profile/extracted/revisions
+                                   the extraction and every correction made to it
 
 GET    /api/jobs                  paginated (?limit, ?offset); each item carries its match —
                                    score, similarity, relevance, the models that produced them.

@@ -71,7 +71,47 @@ OutboxEvent                events published in the same transaction as the chang
   extracting would match on an empty profile and nothing downstream would notice.
 - **`ProfileRevision`** is append-only too, and for the same reason: a user
   correcting their extracted skills creates a new revision pointing at the one it
-  corrected, so a past match stays reproducible.
+  corrected, so a past match stays reproducible. `origin` records who produced
+  it — `structural_extraction` and `neural_extraction` are kept apart because
+  they fail differently, and `user_override` outranks both for the same field.
+  An automated origin must name the extractor behind it, or the profile cannot
+  be reproduced.
+
+## Extraction
+
+Runs from the outbox rather than inline with scraping, because it is the step
+that will call a model once GLiNER2 lands: off the scrape path, a slow extractor
+degrades throughput instead of taking scraping down, and a retry is free because
+the revision's state machine records where it got to
+(`PARSED → EXTRACTING → EXTRACTED`, or `FAILED` with a reason).
+
+What ships today is the **structural** extractor. It adds no understanding of
+its own — it gives values the source adapter already parsed the `Requirement`
+shape, an evidence span where the document actually says them, and
+`explicit=False` where it does not. It deliberately reads no competencies and no
+responsibilities: that is semantic work, it belongs to the model, and inventing
+keyword rules for it is what
+[the spec](universal-job-matching-system-spec-v1.md) forbids.
+
+`explicit` is the load-bearing flag. Only an explicit requirement may become a
+hard filter, because a filter that removes a vacancy has to be able to show the
+sentence it removed it for.
+
+Three guarantees hold regardless of which extractor is behind the interface:
+
+- a failure never touches the previous profile — nothing is overwritten, the
+  revision goes to `FAILED`, and whatever existed stays;
+- an evidence span is re-checked against the revision's stored `parsed_text`
+  before the write, because a span can be self-consistent and still point
+  somewhere else;
+- re-running is safe — a revision not in `PARSED` is skipped, since outbox
+  delivery is at-least-once.
+
+**Nothing extracted may influence a match score until the candidate has
+reviewed it** (`quality.user_reviewed`, set through
+`POST /api/profile/extracted/review`). Phase 7 is where that gate is enforced;
+the flag exists now so it can be trusted then rather than retrofitted onto
+profiles nobody ever looked at.
 - **`ModelRegistry`** records both kinds of model the spec uses — retrieval
   models called over an API (Voyage), and self-hosted understanding models
   (the Phase 3 extractor). Self-hosted rows must pin a revision; API rows need
