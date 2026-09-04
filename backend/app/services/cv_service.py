@@ -14,7 +14,9 @@ from docx import Document
 from pypdf import PdfReader
 
 from app.domain.candidates.models import CvDocument
+from app.domain.documents.models import EntityKind
 from app.repositories.candidate_repository import CandidateRepository
+from app.repositories.document_repository import DocumentRepository
 
 
 class UnsupportedCvFormat(ValueError):
@@ -41,8 +43,13 @@ def extract_text(filename: str, content: bytes) -> str:
 
 
 class CvService:
-    def __init__(self, candidate_repository: CandidateRepository):
+    def __init__(
+        self,
+        candidate_repository: CandidateRepository,
+        document_repository: DocumentRepository | None = None,
+    ):
         self._candidate_repository = candidate_repository
+        self._document_repository = document_repository
 
     async def upload_cv(self, user_id: uuid.UUID, filename: str, content: bytes) -> CvDocument:
         raw_text = extract_text(filename, content)
@@ -60,4 +67,14 @@ class CvService:
         return await self._candidate_repository.get_active_cv(user_id)
 
     async def delete_cv(self, user_id: uuid.UUID, cv_document_id: uuid.UUID) -> bool:
+        """The CV's revisions go first: they hold a foreign key to it, and nothing
+        in this schema cascades. Ownership is checked by the delete below, so the
+        revisions are only cleared once that delete confirms the CV was this
+        user's — order matters here in both directions."""
+        if not await self._candidate_repository.owns_cv_document(user_id, cv_document_id):
+            return False
+        if self._document_repository is not None:
+            await self._document_repository.delete_for_owners(
+                EntityKind.CANDIDATE, [cv_document_id]
+            )
         return await self._candidate_repository.delete_cv_document(user_id, cv_document_id)

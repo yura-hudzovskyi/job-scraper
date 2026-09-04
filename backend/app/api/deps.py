@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import get_settings
 from app.db.session import get_session
 from app.repositories.candidate_repository import CandidateRepository
+from app.repositories.document_repository import DocumentRepository
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
@@ -59,6 +60,10 @@ def get_embedding_repository(session: AsyncSession = Depends(get_session)) -> Em
     return EmbeddingRepository(session)
 
 
+def get_document_repository(session: AsyncSession = Depends(get_session)) -> DocumentRepository:
+    return DocumentRepository(session)
+
+
 def get_job_repository(session: AsyncSession = Depends(get_session)) -> JobRepository:
     return JobRepository(session)
 
@@ -93,8 +98,9 @@ def get_auth_service(
 
 def get_cv_service(
     candidate_repository: CandidateRepository = Depends(get_candidate_repository),
+    document_repository: DocumentRepository = Depends(get_document_repository),
 ) -> CvService:
-    return CvService(candidate_repository)
+    return CvService(candidate_repository, document_repository)
 
 
 def get_job_service(
@@ -117,6 +123,7 @@ def get_system_service(
     embedding_repository: EmbeddingRepository = Depends(get_embedding_repository),
     candidate_repository: CandidateRepository = Depends(get_candidate_repository),
     run_repository: PipelineRunRepository = Depends(get_pipeline_run_repository),
+    document_repository: DocumentRepository = Depends(get_document_repository),
 ) -> SystemService:
     return SystemService(
         job_repository,
@@ -125,4 +132,5 @@ def get_system_service(
         embedding_repository,
         candidate_repository,
         run_repository,
+        document_repository,
     )

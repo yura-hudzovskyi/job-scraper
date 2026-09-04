@@ -69,6 +69,16 @@ class CandidateRepository:
         model = result.scalar_one_or_none()
         return _to_cv_document(model) if model else None
 
+    async def owns_cv_document(self, user_id: uuid.UUID, cv_document_id: uuid.UUID) -> bool:
+        """Whether this CV is this user's. Lets a caller clear what hangs off a CV
+        before deleting it without having to trust an id from the request."""
+        result = await self._session.execute(
+            select(CvDocumentModel.id).where(
+                CvDocumentModel.id == cv_document_id, CvDocumentModel.user_id == user_id
+            )
+        )
+        return result.scalar_one_or_none() is not None
+
     async def delete_cv_document(self, user_id: uuid.UUID, cv_document_id: uuid.UUID) -> bool:
         """False when there was no such CV for this user — callers turn that into
         a 404."""

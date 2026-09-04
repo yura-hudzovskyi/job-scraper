@@ -36,6 +36,49 @@ description, employment type, location, salary, seniority, required years.
 Nothing on a vacancy is inferred by a model — what a posting asks for is read at
 match time, from its text, by the embedding and rerank models.
 
+## Document revisions
+
+Added by Phase 1 of
+[the matching-engine spec](universal-job-matching-system-spec-v1.md). **Nothing
+writes these yet** — ingestion still works exactly as described above. They exist
+so that the extractor arriving in Phase 3 has a versioned, immutable place to
+read from and write to, rather than that being retrofitted around live data.
+
+```text
+JobSourceRecord ─┐
+                 ├── DocumentRevision ── DocumentBlock
+CvDocument ──────┘         │              (parsed spans, offsets into parsed_text)
+                           ├── DocumentRevisionTransition   (status audit trail)
+                           └── ProfileRevision              (extraction output)
+ModelRegistry              which model produced what, and when
+```
+
+- **`DocumentRevision`** — one immutable version of a source document. A vacancy
+  whose text changes gets revision `n+1`; yesterday's text stays byte-identical,
+  which is what makes a score computed against it explainable later.
+  `unique(owner, content_hash)` makes "the scrape found nothing new" a database
+  fact, not an application convention.
+- Revisions attach to the **existing** `JobSourceRecord` / `CvDocument` rather
+  than to a new identity table. Those two already carry `unique(source,
+  external_id)` and the user relationship; a third table naming the same identity
+  would be a duplicate, not a layer.
+- **`status`** moves through `received → parsed → extracting → extracted →
+  indexing → searchable`, and every move is written to
+  `DocumentRevisionTransition`. Only `searchable` may be matched on. Illegal
+  jumps raise rather than write — a revision that reached `searchable` without
+  extracting would match on an empty profile and nothing downstream would notice.
+- **`ProfileRevision`** is append-only too, and for the same reason: a user
+  correcting their extracted skills creates a new revision pointing at the one it
+  corrected, so a past match stays reproducible.
+- **`ModelRegistry`** records both kinds of model the spec uses — retrieval
+  models called over an API (Voyage), and self-hosted understanding models
+  (the Phase 3 extractor). Self-hosted rows must pin a revision; API rows need
+  not, because the provider's model name already is the version.
+
+Nothing cascades in the schema, here as everywhere else: revisions are deleted
+explicitly before the rows they point at, by `JobRetentionService`,
+`SystemService.reset_jobs` and `CvService.delete_cv`.
+
 ## Experience ≠ preference
 
 Two separate things, never merged:

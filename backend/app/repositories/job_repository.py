@@ -346,6 +346,19 @@ class JobRepository:
         )
         return [row[0] for row in result.all()]
 
+    async def find_source_record_ids(self, canonical_job_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+        """The source records behind these canonical jobs. Callers need them to
+        clear what hangs off a *record* rather than off the canonical job —
+        document revisions, in particular — before delete_stale_jobs runs."""
+        if not canonical_job_ids:
+            return []
+        result = await self._session.execute(
+            select(JobSourceRecordModel.id).where(
+                JobSourceRecordModel.canonical_job_id.in_(canonical_job_ids)
+            )
+        )
+        return list(result.scalars())
+
     async def delete_stale_jobs(self, canonical_job_ids: list[uuid.UUID]) -> None:
         """Deletes job_source_records for these canonical jobs, then the canonical
         jobs themselves, then any raw_jobs left unreferenced. Must run after

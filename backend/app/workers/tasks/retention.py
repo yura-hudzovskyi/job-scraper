@@ -6,6 +6,7 @@ so it is editable from the System page like everything else.
 import asyncio
 
 from app.db.session import session_scope
+from app.repositories.document_repository import DocumentRepository
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
@@ -23,6 +24,7 @@ async def _run() -> int:
             MatchRepository(session),
             NotificationRepository(session),
             EmbeddingRepository(session),
+            DocumentRepository(session),
         )
         return await service.purge_stale_jobs(config.job_retention_days)
 

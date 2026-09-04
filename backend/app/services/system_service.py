@@ -13,8 +13,10 @@ canonical jobs. Each one returns what it actually deleted, so the UI reports
 
 from dataclasses import dataclass, field
 
+from app.domain.documents.models import EntityKind
 from app.domain.pipeline_config import PipelineConfig
 from app.repositories.candidate_repository import CandidateRepository
+from app.repositories.document_repository import DocumentRepository
 from app.repositories.embedding_repository import JOB, PROFILE, EmbeddingRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
@@ -74,6 +76,7 @@ class SystemService:
         embedding_repository: EmbeddingRepository,
         candidate_repository: CandidateRepository,
         run_repository: PipelineRunRepository,
+        document_repository: DocumentRepository | None = None,
     ):
         self._jobs = job_repository
         self._matches = match_repository
@@ -81,6 +84,7 @@ class SystemService:
         self._embeddings = embedding_repository
         self._candidates = candidate_repository
         self._runs = run_repository
+        self._documents = document_repository
 
     async def status(
         self,
@@ -138,9 +142,15 @@ class SystemService:
 
     async def reset_jobs(self) -> dict[str, int]:
         """Every vacancy, and everything that only exists because of one:
-        matches, notifications, vectors, scrape history."""
+        matches, notifications, vectors, document revisions, scrape history.
+
+        Revisions are dropped by entity kind rather than wholesale: the CVs'
+        revisions belong to the account, which every reset deliberately keeps.
+        """
         deleted = await self.reset_matches()
         deleted.update(await self.reset_embeddings())
+        if self._documents is not None:
+            deleted.update(await self._documents.delete_for_kind(EntityKind.JOB))
         deleted.update(await self._jobs.delete_all_jobs())
         return deleted
 
