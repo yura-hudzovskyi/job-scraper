@@ -41,6 +41,53 @@ def test_a_locally_grouped_phone_number_is_replaced() -> None:
         assert PHONE_PLACEHOLDER in redact(f"phone {written}"), written
 
 
+def test_a_telegram_bot_token_is_removed() -> None:
+    """Found in production logs. Telegram carries the token in the URL path
+    rather than a header, so httpx prints it on every call, and it grants full
+    control of the bot to anyone who can read the logs."""
+    line = (
+        "HTTP Request: POST https://api.telegram.org/"
+        "bot8882561835:AAH56ARM4-umg2yACZyigjotAdgjOlHTNrM/setWebhook"
+    )
+
+    redacted = redact(line)
+
+    assert "AAH56ARM4" not in redacted
+    assert "8882561835" not in redacted
+    assert "api.telegram.org" in redacted, "the URL should stay readable"
+
+
+def test_a_bot_token_is_not_half_eaten_by_the_phone_pattern() -> None:
+    """Credentials are redacted before phone numbers on purpose — the other
+    order takes the digit run and leaves the secret half behind."""
+    redacted = redact("bot123456789:ABCdefGHIjklMNOpqrsTUVwxyz012345")
+
+    assert "ABCdef" not in redacted
+    assert PHONE_PLACEHOLDER not in redacted
+
+
+def test_a_bearer_token_is_removed_but_the_scheme_stays() -> None:
+    redacted = redact("Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
+
+    assert "eyJhbGci" not in redacted
+    assert "Bearer" in redacted
+
+
+def test_a_secret_in_a_query_string_is_removed_but_the_parameter_stays() -> None:
+    """The parameter name is what makes a log line useful; the value is what
+    makes it dangerous."""
+    redacted = redact("GET /v1/embed?model=voyage-4-large&api_key=sk-live-abc123def456")
+
+    assert "sk-live-abc123def456" not in redacted
+    assert "api_key=" in redacted
+    assert "model=voyage-4-large" in redacted
+
+
+def test_the_word_bot_in_ordinary_text_survives() -> None:
+    assert redact("the bot replied") == "the bot replied"
+    assert redact("robots.txt disallows it") == "robots.txt disallows it"
+
+
 def test_several_details_in_one_string_all_go() -> None:
     redacted = redact("Oleh, oleh@example.com, +380501234567")
 

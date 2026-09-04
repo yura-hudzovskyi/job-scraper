@@ -22,6 +22,7 @@ import re
 
 EMAIL_PLACEHOLDER = "[email]"
 PHONE_PLACEHOLDER = "[phone]"
+CREDENTIAL_PLACEHOLDER = "[redacted]"
 
 # name@host.tld — the `@` plus a dotted host is the marker. Deliberately does not
 # try to match every RFC 5322 curiosity; it matches what people put in CVs.
@@ -43,6 +44,21 @@ _GROUPED_PHONE = re.compile(r"\b\(?\d{2,4}\)?(?:[\s.‐-―-]\d{2,4}){2,3}\b")
 # phone number.
 MIN_PHONE_DIGITS = 9
 
+# A Telegram bot token, which the API carries in the URL path rather than in a
+# header — so httpx's own request logging prints it in full on every call, and
+# anyone with log access can then control the bot. Found in production logs, not
+# imagined: this is why the filter covers credentials and not only personal
+# details. A token is arguably the more sensitive of the two.
+_BOT_TOKEN = re.compile(r"bot\d{6,}:[A-Za-z0-9_-]{20,}")
+
+# Bearer tokens and api keys in query strings, the other two shapes a secret
+# reaches a log line in. Deliberately narrow: each requires its own marker, so
+# ordinary text cannot trip them.
+_BEARER = re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/-]{16,}=*")
+_QUERY_SECRET = re.compile(
+    r"(?i)([?&](?:api[_-]?key|token|secret|access[_-]?token|password)=)[^&\s]+"
+)
+
 # How much of a document may appear in a log line at all. A preview exists to
 # identify *which* document went wrong, not to reproduce it.
 PREVIEW_CHARS = 120
@@ -58,15 +74,20 @@ def _redact_if_long_enough(match: re.Match[str]) -> str:
 
 
 def redact(text: str) -> str:
-    """Replace contact details with placeholders, leaving the rest intact.
+    """Replace contact details and credentials with placeholders.
 
-    Order matters: emails go first, or the digits inside an address like
-    `user2024@example.com` would be picked up as a grouped phone number and the
-    `@` left dangling.
+    Order matters twice. Credentials go before phone numbers, or the digit run in
+    a bot token is eaten as a phone number and the rest of the secret is left
+    behind. Emails go before phones for the same reason — the digits inside
+    `user2024@example.com` would otherwise be picked out and the `@` left
+    dangling.
     """
-    without_emails = _EMAIL.sub(EMAIL_PLACEHOLDER, text)
-    without_international = _INTERNATIONAL_PHONE.sub(PHONE_PLACEHOLDER, without_emails)
-    return _GROUPED_PHONE.sub(_redact_if_long_enough, without_international)
+    redacted = _BOT_TOKEN.sub(f"bot{CREDENTIAL_PLACEHOLDER}", text)
+    redacted = _BEARER.sub(rf"\1 {CREDENTIAL_PLACEHOLDER}", redacted)
+    redacted = _QUERY_SECRET.sub(rf"\1{CREDENTIAL_PLACEHOLDER}", redacted)
+    redacted = _EMAIL.sub(EMAIL_PLACEHOLDER, redacted)
+    redacted = _INTERNATIONAL_PHONE.sub(PHONE_PLACEHOLDER, redacted)
+    return _GROUPED_PHONE.sub(_redact_if_long_enough, redacted)
 
 
 def preview(text: str, limit: int = PREVIEW_CHARS) -> str:
