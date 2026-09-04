@@ -225,3 +225,32 @@ async def test_a_missing_revision_is_reported_not_raised() -> None:
 
     assert outcome.extracted is False
     assert outcome.skipped_reason == "no such revision"
+
+
+# --- linking is additive, never destructive ----------------------------------
+
+
+class _ExplodingLinker:
+    async def link(self, profile_revision_id: uuid.UUID, text: str) -> object:
+        raise RuntimeError("taxonomy is unavailable")
+
+
+@pytest.mark.asyncio
+async def test_a_linking_failure_leaves_the_extraction_standing() -> None:
+    """The profile is already written and the evidence is already valid. A
+    taxonomy problem must not undo either — the mentions are simply absent."""
+    revision = _revision()
+    documents = _FakeDocuments(revision)
+    profiles = _FakeProfiles()
+
+    service = ExtractionService(
+        documents,  # type: ignore[arg-type]
+        profiles,  # type: ignore[arg-type]
+        StructuralExtractor(),
+        _ExplodingLinker(),  # type: ignore[arg-type]
+    )
+    outcome = await service.extract(uuid.UUID(revision.id))
+
+    assert outcome.extracted is True
+    assert len(profiles.saved) == 1
+    assert documents.transitions[-1] == (RevisionStatus.EXTRACTED, None)

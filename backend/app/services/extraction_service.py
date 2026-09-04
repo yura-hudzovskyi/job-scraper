@@ -29,6 +29,7 @@ from app.domain.profiles.models import ProfileKind, ProfileOrigin
 from app.domain.profiles.schemas import spans_of
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.profile_repository import ProfileRepository
+from app.services.concept_linking_service import ConceptLinkingService
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class ExtractionOutcome:
     skipped_reason: str | None = None
     profile_revision_id: str | None = None
     discarded: int = 0
+    linked_concepts: int = 0
 
 
 class ExtractionService:
@@ -53,10 +55,12 @@ class ExtractionService:
         document_repository: DocumentRepository,
         profile_repository: ProfileRepository,
         extractor: ProfileExtractor,
+        linker: ConceptLinkingService | None = None,
     ):
         self._documents = document_repository
         self._profiles = profile_repository
         self._extractor = extractor
+        self._linker = linker
 
     async def extract(self, revision_id: uuid.UUID) -> ExtractionOutcome:
         revision = await self._documents.get(revision_id)
@@ -136,6 +140,25 @@ class ExtractionService:
             overall_confidence=result.profile.quality.overall_confidence,
             validation_warnings=result.discarded_records(),
         )
+        # Linking runs here rather than on its own event because the lexical
+        # stage is a dictionary lookup per word — half a millisecond for a whole
+        # vacancy. A failure to link must not undo a good extraction, though: the
+        # profile is already written and the revision is already extracted, so a
+        # taxonomy problem is logged and the mentions are simply absent.
+        linked = 0
+        if self._linker is not None:
+            try:
+                linking = await self._linker.link(uuid.UUID(profile_revision.id), parsed_text)
+                linked = linking.linked
+                if linking.skipped_reason:
+                    logger.info("revision %s not linked: %s", revision_id, linking.skipped_reason)
+            except Exception:
+                logger.warning(
+                    "concept linking failed for revision %s; the profile stands",
+                    revision_id,
+                    exc_info=True,
+                )
+
         await self._documents.transition(
             revision_id, RevisionStatus.EXTRACTED, reason="extraction succeeded"
         )
@@ -147,4 +170,5 @@ class ExtractionService:
             extracted=True,
             profile_revision_id=profile_revision.id,
             discarded=len(result.discarded),
+            linked_concepts=linked,
         )

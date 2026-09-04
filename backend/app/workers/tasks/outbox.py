@@ -27,8 +27,11 @@ from app.db.session import session_scope
 from app.domain.documents.events import DOCUMENT_REVISION_CREATED
 from app.domain.profiles.structural import StructuralExtractor
 from app.repositories.document_repository import DocumentRepository
+from app.repositories.mention_repository import MentionRepository
 from app.repositories.outbox_repository import OutboxRepository
 from app.repositories.profile_repository import ProfileRepository
+from app.repositories.taxonomy_repository import TaxonomyRepository
+from app.services.concept_linking_service import ConceptLinkingService
 from app.services.extraction_service import ExtractionService
 from app.workers.celery_app import celery_app
 
@@ -50,6 +53,9 @@ async def extract_document_revision(aggregate_id: str, payload: dict[str, Any]) 
             DocumentRepository(session),
             ProfileRepository(session),
             StructuralExtractor(),
+            ConceptLinkingService(
+                TaxonomyRepository(session), MentionRepository(session)
+            ),
         )
         outcome = await service.extract(uuid.UUID(aggregate_id))
     if outcome.skipped_reason:

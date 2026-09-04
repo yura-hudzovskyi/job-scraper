@@ -202,6 +202,27 @@ class TaxonomyRepository:
             for external_id, concept_id, labels in result.all()
         }
 
+    async def surface_forms(
+        self, namespace: str, version: str
+    ) -> list[tuple[uuid.UUID, list[str]]]:
+        """Every concept's labels in every imported language, for the alias index.
+
+        One query returning the whole release — 18 000 rows, roughly 15 MB of
+        JSONB. That is why the index is cached per version rather than rebuilt
+        per document (spec 9.5).
+        """
+        result = await self._session.execute(
+            select(TaxonomyConceptModel.id, TaxonomyConceptModel.labels).where(
+                TaxonomyConceptModel.namespace == namespace,
+                TaxonomyConceptModel.taxonomy_version == version,
+                TaxonomyConceptModel.status == "active",
+            )
+        )
+        return [
+            (concept_id, [form for forms in labels.values() for form in forms])
+            for concept_id, labels in result.all()
+        ]
+
     async def count_concepts(self, namespace: str, version: str) -> int:
         result = await self._session.execute(
             select(func.count())
