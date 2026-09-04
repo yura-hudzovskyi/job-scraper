@@ -1771,34 +1771,72 @@ benchmarks justify it. Voyage-виклики (retrieval embedding/rerank) лиш
 звичайними HTTP-запитами з `api`/`worker` — вони не додають топології, лише
 мережевий виклик, точно як сьогодні.
 
-### 17.2. Resource budget target
+### 17.2. Resource budget target — виміряно на цільовій VM
 
-За рішенням 3.5.1 `ml-service` вантажить дві моделі (extractor + concept
-linking), не три — retrieval embedding/reranking лишаються зовнішнім Voyage
-API call і не займають локальної RAM. Це суттєво легше за 8–11 GB, які
-оригінальна версія документа резервувала під extractor + embedder + reranker
-одночасно, але не нуль:
+**Статус: виміряно 2026-09-04 на самій Oracle VM**, не оцінено. Числа нижче —
+з реального прогону GLiNER2 на 30 справжніх вакансіях із продакшн-бази
+(розмір 500–7900 символів, середнє 3157). Деталі й наслідки — у 17.5.
 
-| Component | RAM target |
+| Component | RAM |
 |---|---:|
 | OS + Docker overhead | 2–3 GB |
-| PostgreSQL + vector indexes | 2–4 GB (exact search, 10.4 — HNSW лише якщо вимір покаже потребу) |
-| Redis/API/frontend/worker | 2–3 GB |
-| `ml-service` (GLiNER2 + concept-linking embedder/cross-encoder) | 3–5 GB |
+| PostgreSQL + vector indexes | 2–4 GB (exact search, 10.4) |
+| Redis/API/worker | 2–3 GB |
+| `ml-service` — **GLiNER2 сам** | **2.6 GB resident, 3.7 GB peak** (виміряно) |
+| `ml-service` — concept-linking embedder + cross-encoder | ще не виміряно, поверх наведеного |
 | safety reserve/page cache | 2–3 GB |
-| **total** | **12–18 GB** |
+| **total (без linking-моделей)** | **12–17 GB** |
 
-Вкладається в наявну Oracle VM (24 GB) із розумним запасом — на відміну від
-оригінальної версії документа (19–28 GB), бо `ml-service` тримає лише
-understanding-моделі, не весь трьохмодельний стек. Lazy loading чи eviction
-timer для `ml-service` лишаються опцією, якщо вимір покаже потребу, а не
-стартовою вимогою.
+**Оцінка «3–5 GB на весь `ml-service`» була заниженою.** GLiNER2 сам займає
+майже весь цей діапазон, тож concept-linking моделі (9.3) у нього не
+вміщаються. Три варіанти, і вибір належить Phase 4, а не цьому розділу:
+менші linking-моделі, lazy loading з eviction (ціна — 24 с холодного старту,
+див. нижче), або відмова від cross-encoder у лінкуванні на користь
+embedding-similarity з abstention, що 9.5 уже називає чесним fallback-ом.
 
-**Architecture check.** Oracle's Always Free 4 OCPU / 24 GB shape is
-`VM.Standard.A1.Flex` — ARM (Ampere), not x86. Перевірити в Phase 0, не в
-Phase 7: доступність `torch`/ONNX wheels під ARM, відсутність x86-only
-quantized kernels, і CPU-latency GLiNER2 + concept-linking cross-encoder на
-реальній VM, не на x86-ноутбуці.
+### 17.5. Phase 0 benchmark: GLiNER2 на Oracle ARM (2026-09-04)
+
+Прогін: `python:3.13-slim` на `VM.Standard.A1.Flex` (aarch64, 4 OCPU, 23 GB),
+контейнер обмежено `--memory=8g --cpus=4`, `fastino/gliner2-base-v1`, один
+bounded pass із entity-схемою, 30 реальних вакансій із продакшн-корпусу.
+
+| Метрика | Значення |
+|---|---:|
+| model load (cold) | 24.4 s |
+| RSS після завантаження | 2611 MB |
+| RSS peak під навантаженням | 3689 MB |
+| latency p50 | 3.05 s / документ |
+| latency p95 | 8.10 s / документ |
+| latency max | 10.02 s / документ |
+| пропускна здатність | 871 символів/с |
+| 5000 документів/добу (17.3) | **4.9 год одного ядра** |
+
+**Що це вирішує.**
+
+- **ARM-питання закрите.** `torch 2.14.0` має нативне `manylinux_2_28_aarch64`
+  колесо. Ні QEMU, ні збірки з джерел, ні x86-only kernels — попередження в
+  попередній редакції цього розділу знімається.
+- **Гейт 3.5.2 умова 3 прохідний за ресурсами.** 4.9 год одного ядра на добу —
+  це ~5% чотириядерної машини за один прохід. Екстракція на цій VM реальна.
+- **Але 8.2 просить 2–4 bounded passes.** Лінійно це 10–20 год ядра на добу,
+  тобто вже помітна частка машини, що конкурує з Postgres. Кількість проходів
+  стає не питанням якості, а питанням бюджету — і має вимірюватись разом із
+  recall, а не обиратись наперед.
+- **9.5 перестає бути теоретичним.** Якщо один прохід GLiNER2 коштує 3 с, то
+  600 cross-encoder пар на документ для лінкування (9.5) домінуватиме над
+  екстракцією на порядок. Кешування за mention text, пропуск reranker-а на
+  впевнених кандидатах і асинхронне лінкування з 9.5 — тепер обов'язкові
+  практики, а не рекомендації.
+
+**Два висновки для збирання образу, які коштують 8 GB диска.**
+
+1. Стандартне колесо `torch` із PyPI для aarch64 — 454 MB і тягне за собою
+   повний CUDA-стек (`nvidia-*`, `triton`, `cuda-toolkit`) на машину без GPU:
+   ~8 GB диска намарно, і образ роздувається до 9.3 GB. Колесо з
+   `--index-url https://download.pytorch.org/whl/cpu` — **159 MB, без жодного
+   CUDA-пакета**. `ml-service` мусить збиратися саме з нього.
+2. `pip install gliner2` не тягне `transformers`, `peft` і `accelerate` — їх
+   треба перелічити явно, інакше модель падає на завантаженні, а не на імпорті.
 
 ### 17.3. Throughput target
 
