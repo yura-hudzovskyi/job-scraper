@@ -20,12 +20,14 @@ from app.repositories.match_repository import MatchRepository
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.pipeline_config_repository import PipelineConfigRepository
 from app.repositories.pipeline_run_repository import PipelineRunRepository
+from app.repositories.profile_repository import ProfileRepository
 from app.repositories.user_repository import UserRepository
 from app.security.tokens import InvalidToken, decode_access_token
 from app.services.auth_service import AuthService
 from app.services.cv_service import CvService
 from app.services.job_ingestion_service import JobIngestionService
 from app.services.job_service import JobService
+from app.services.profile_review_service import ProfileReviewService
 from app.services.system_service import SystemService
 
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -101,6 +103,18 @@ def get_cv_service(
     document_repository: DocumentRepository = Depends(get_document_repository),
 ) -> CvService:
     return CvService(candidate_repository, document_repository)
+
+
+def get_profile_repository(session: AsyncSession = Depends(get_session)) -> ProfileRepository:
+    return ProfileRepository(session)
+
+
+def get_profile_review_service(
+    candidate_repository: CandidateRepository = Depends(get_candidate_repository),
+    document_repository: DocumentRepository = Depends(get_document_repository),
+    profile_repository: ProfileRepository = Depends(get_profile_repository),
+) -> ProfileReviewService:
+    return ProfileReviewService(candidate_repository, document_repository, profile_repository)
 
 
 def get_job_service(
