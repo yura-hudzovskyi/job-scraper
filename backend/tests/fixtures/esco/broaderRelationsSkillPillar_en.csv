@@ -1,0 +1,3 @@
+conceptType,conceptUri,conceptLabel,broaderType,broaderUri,broaderLabel
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/aaa,manage musical staff,SkillGroup,http://data.europa.eu/esco/isced-f/00,generic
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/bbb,Python,SkillGroup,http://data.europa.eu/esco/nowhere,missing target

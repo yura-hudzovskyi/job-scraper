@@ -1,0 +1,2 @@
+conceptType,conceptUri,conceptLabel,broaderType,broaderUri,broaderLabel
+Occupation,http://data.europa.eu/esco/occupation/xyz,technical director,ISCOGroup,http://data.europa.eu/esco/isco/C2,Professionals

@@ -1,0 +1,2 @@
+conceptType,conceptUri,iscoGroup,preferredLabel,altLabels,hiddenLabels,status,modifiedDate,regulatedProfessionNote,scopeNote,definition,inScheme,description,code,naceCode
+Occupation,http://data.europa.eu/esco/occupation/xyz,2166,technical director,"technical manager",,released,2025-12-16,,,,,Oversees production.,2166.1,

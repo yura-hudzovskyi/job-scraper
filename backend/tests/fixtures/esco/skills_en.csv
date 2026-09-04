@@ -1,0 +1,12 @@
+conceptType,conceptUri,skillType,reuseLevel,preferredLabel,altLabels,hiddenLabels,status,modifiedDate,scopeNote,definition,inScheme,description
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/aaa,skill/competence,sector-specific,manage musical staff,"manage music staff
+direct musical staff",,released,2025-12-16,,,,"Assign and manage staff tasks.
+Spans several lines, which is why wc -l lies about this file."
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/bbb,knowledge,cross-sector,Python (computer programming),"Python
+python programming",,released,2025-12-16,,,,A programming language.
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/aaa,skill/competence,sector-specific,manage musical staff,"manage music staff
+direct musical staff",,released,2025-12-16,,,,"Assign and manage staff tasks.
+Spans several lines, which is why wc -l lies about this file."
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/ccc,,cross-sector,work in an organised manner,,,released,2025-12-16,,,,No skillType at all.
+KnowledgeSkillCompetence,,skill/competence,,orphan with no uri,,,released,2025-12-16,,,,Cannot be referenced.
+KnowledgeSkillCompetence,http://data.europa.eu/esco/skill/ddd,skill/competence,,,,,released,2025-12-16,,,,No preferred label.

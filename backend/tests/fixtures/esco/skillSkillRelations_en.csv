@@ -1,0 +1,3 @@
+originalSkillUri,originalSkillType,relationType,relatedSkillType,relatedSkillUri
+http://data.europa.eu/esco/skill/aaa,skill/competence,essential,knowledge,http://data.europa.eu/esco/skill/bbb
+http://data.europa.eu/esco/skill/bbb,knowledge,optional,skill/competence,http://data.europa.eu/esco/skill/ccc
