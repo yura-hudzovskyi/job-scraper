@@ -2209,7 +2209,7 @@ functionality does not exist yet and is genuinely new: `evaluation/` and
 | **1** — Storage foundation | **завершено** | — міграції прогнані на копії продакшн-даних, backfill і всі констрейнти перевірені |
 | **2** — Parsing and immutable ingestion | **завершено** | — |
 | **3** — Universal extraction | **завершено, крім нейромережевої частини** | `ml-service` + GLiNER2 не збудовані; гейт на ресурси пройдено (17.5), реалізація — наступний крок |
-| **4** — Taxonomy import and concept linker | не почато | — |
+| **4** — Taxonomy import and concept linker | **лексична частина завершена** | concept embeddings і cross-encoder rerank (9.3 кроки 1 і 4) чекають на `ml-service`; review-екран для `unmapped_mentions` не написаний — черга наповнюється, але переглядається лише через SQL |
 | **5–10** | не почато | — |
 
 **Що вже працює в проді:** ingestion пише immutable revisions з блоками й
@@ -2218,10 +2218,16 @@ offset-ами, екстракція йде через outbox і дає evidence-
 Матчинг досі працює на старому шляху (Voyage embed + rerank) — профілі поки
 нічого не оцінюють, і за 3.5.2 умова 3 не мають, доки не буде eval-набору.
 
-**Найближчий блокер:** Phase 4 упреться в число з 17.5 — якщо один прохід
-GLiNER2 коштує 3 с, то 600 cross-encoder пар на документ для лінкування
-переважать екстракцію на порядок. Це вирішується в 9.5 (кеш, abstention,
-async), і вимірюється до того, як писати linker, а не після.
+**ESCO v1.2.1 (en) імпортовано в прод:** 18 237 концептів, 30 285 звʼязків,
+133 051 індексована форма. Імпорт — 3.5 с, лексичне лінкування — 0.5 мс на
+вакансію. На реальних вакансіях воно коректно звʼязує PostgreSQL, TypeScript,
+Git → "tools for software configuration management", ETL, Scrum, IAM, і так
+само добре працює поза IT (`customs broker`, `warehouse operations`).
+
+**Найближчий блокер лишається той самий (17.5):** якщо один прохід GLiNER2
+коштує 3 с, то 600 cross-encoder пар на документ переважать екстракцію на
+порядок. Лексична стадія цього не торкається — вона безкоштовна — але
+embedding-стадія 9.3 упреться саме в це.
 
 ### 24.0. Invariants that survive every phase
 
