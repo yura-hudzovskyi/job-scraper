@@ -38,19 +38,21 @@ match time, from its text, by the embedding and rerank models.
 
 ## Document revisions
 
-Added by Phase 1 of
-[the matching-engine spec](universal-job-matching-system-spec-v1.md). **Nothing
-writes these yet** — ingestion still works exactly as described above. They exist
+Added by Phases 1 and 2 of
+[the matching-engine spec](universal-job-matching-system-spec-v1.md). Scraping a
+vacancy and uploading a CV now write a revision with its parsed blocks; nothing
+*reads* them yet, and matching still works exactly as described above. They exist
 so that the extractor arriving in Phase 3 has a versioned, immutable place to
-read from and write to, rather than that being retrofitted around live data.
+read from, rather than that being retrofitted around live data.
 
 ```text
 JobSourceRecord ─┐
                  ├── DocumentRevision ── DocumentBlock
 CvDocument ──────┘         │              (parsed spans, offsets into parsed_text)
                            ├── DocumentRevisionTransition   (status audit trail)
-                           └── ProfileRevision              (extraction output)
+                           └── ProfileRevision              (extraction output, Phase 3)
 ModelRegistry              which model produced what, and when
+OutboxEvent                events published in the same transaction as the change
 ```
 
 - **`DocumentRevision`** — one immutable version of a source document. A vacancy
@@ -74,6 +76,37 @@ ModelRegistry              which model produced what, and when
   models called over an API (Voyage), and self-hosted understanding models
   (the Phase 3 extractor). Self-hosted rows must pin a revision; API rows need
   not, because the provider's model name already is the version.
+
+- **`OutboxEvent`** closes the gap between committing a change and publishing an
+  event about it: both happen in one transaction, and a relay (`outbox.relay`,
+  every minute) moves the event onto the queue afterwards. Delivery is
+  at-least-once, so handlers must tolerate a repeat. Nothing consumes
+  `document_revision_created` yet — Phase 3's extractor is its first handler.
+
+## What gets parsed, and from what
+
+A vacancy is parsed from its **original markup**, not from
+`NormalizedJob.description`. `html_to_text` drops the blank lines that separate
+one section from the next, so the flattened form collapses into a single
+paragraph and the headings and list items — the structure Phase 3 reads
+necessity from — are gone. `NormalizedJob.description_html` carries the markup
+through for that reason; `description` remains the field everything else reads.
+
+A CV is parsed as plain text whatever it arrived as, because `extract_text` has
+already turned PDF and DOCX into text and there is no markup left. Its section
+headings survive only as typography, and
+[parsing.py](../backend/app/domain/documents/parsing.py) deliberately declines to
+guess headings from typography.
+
+`content_hash` is taken over the **raw** text, never the parsed text.
+`parsed_text` is a function of `(raw_text, parser_version)` and both are stored,
+so hashing the raw text means improving the parser re-parses existing revisions
+instead of manufacturing a new revision for every document in the corpus.
+
+The invariant that makes any of this useful: for every block,
+`parsed_text[start_char:end_char] == block.text`. Offsets are built alongside the
+canonical text rather than searched for afterwards, and the builder asserts it
+before returning.
 
 Nothing cascades in the schema, here as everywhere else: revisions are deleted
 explicitly before the rows they point at, by `JobRetentionService`,
