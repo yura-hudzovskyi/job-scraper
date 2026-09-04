@@ -24,15 +24,29 @@ class ProfileKind(StrEnum):
 class ProfileOrigin(StrEnum):
     """Where a profile revision came from, which is also its trust order.
 
-    A `USER_OVERRIDE` outranks a `NEURAL_EXTRACTION` for the same field: the
+    A `USER_OVERRIDE` outranks any automated origin for the same field: the
     candidate correcting their own CV is better evidence than a model reading it.
     `MIGRATION` marks rows backfilled from an older schema, so they can be told
     apart from anything a model or a person actually produced.
+
+    `STRUCTURAL_EXTRACTION` and `NEURAL_EXTRACTION` are kept apart rather than
+    collapsed into one "automatic": they fail differently. A structural value was
+    parsed deterministically by a source adapter and is wrong only if the parser
+    is wrong; a neural one was read out of prose and can be wrong about text that
+    is perfectly clear to a human. A reader deciding how much to trust a field
+    needs to know which.
     """
 
+    STRUCTURAL_EXTRACTION = "structural_extraction"
     NEURAL_EXTRACTION = "neural_extraction"
     USER_OVERRIDE = "user_override"
     MIGRATION = "migration"
+
+    @property
+    def is_automated(self) -> bool:
+        """Whether a machine produced this. Automated origins must name what
+        produced them — see the check constraint on `profile_revisions`."""
+        return self in (ProfileOrigin.STRUCTURAL_EXTRACTION, ProfileOrigin.NEURAL_EXTRACTION)
 
 
 @dataclass(frozen=True)

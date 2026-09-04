@@ -1,36 +1,66 @@
 """The relay that moves outbox events onto the queue, and purges delivered ones.
 
-What is deliberately *not* here yet: a handler for `document_revision_created`.
-The extractor that consumes it arrives in Phase 3, and inventing a handler now
-would be a placeholder in a path claimed complete.
+The guarantee it provides is about delivery: an event written in a committed
+transaction is picked up, handed to whatever is registered, and marked published
+exactly once per success, with failures counted on their own row rather than
+blocking the events behind them.
 
-That does not make this relay a no-op. The guarantee it exists to provide is
-about delivery — an event written in a committed transaction is picked up,
-handed to whatever is registered, and marked published exactly once per success,
-with failures counted rather than lost. That property is real and testable with
-an empty registry, and Phase 3 registers a handler without touching any of it.
+An event with no handler is still delivered — marked published and counted as
+unhandled. Leaving it pending would build a backlog of events nobody is ever
+going to want, and hide a genuinely stuck one among them.
 
-An event with no handler is still delivered: it is marked published and counted.
-The alternative, leaving it pending, would build a backlog of events nobody is
-ever going to want and hide a genuinely stuck one among them.
+Extraction runs from here rather than inline with ingestion because it is the
+step that will call a model once GLiNER2 lands: off the scrape path, a slow or
+failing extractor degrades throughput instead of taking scraping down with it,
+and a retry costs nothing because the revision's state machine already records
+where it got to.
 """
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.db.session import session_scope
+from app.domain.documents.events import DOCUMENT_REVISION_CREATED
+from app.domain.profiles.structural import StructuralExtractor
+from app.repositories.document_repository import DocumentRepository
 from app.repositories.outbox_repository import OutboxRepository
+from app.repositories.profile_repository import ProfileRepository
+from app.services.extraction_service import ExtractionService
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
 EventHandler = Callable[[str, dict[str, Any]], Awaitable[None]]
 
-# event_type -> handler. Phase 3 registers "document_revision_created" here.
-HANDLERS: dict[str, EventHandler] = {}
+
+async def extract_document_revision(aggregate_id: str, payload: dict[str, Any]) -> None:
+    """Extract a profile from a newly parsed revision.
+
+    Its own session, separate from the relay's: extraction is the unit of work
+    that either lands or does not, and sharing the relay's transaction would let
+    one revision's failure roll back the publication bookkeeping for every event
+    in the batch.
+    """
+    async with session_scope() as session:
+        service = ExtractionService(
+            DocumentRepository(session),
+            ProfileRepository(session),
+            StructuralExtractor(),
+        )
+        outcome = await service.extract(uuid.UUID(aggregate_id))
+    if outcome.skipped_reason:
+        logger.info("revision %s not extracted: %s", aggregate_id, outcome.skipped_reason)
+
+
+# event_type -> handler. GLiNER2 replaces the extractor inside the handler, not
+# the wiring here.
+HANDLERS: dict[str, EventHandler] = {
+    DOCUMENT_REVISION_CREATED: extract_document_revision,
+}
 
 # How long a delivered event is kept. Long enough to answer "did that ingest
 # actually emit an event" during an incident, short enough that the table does

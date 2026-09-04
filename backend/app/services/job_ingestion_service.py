@@ -15,7 +15,12 @@ isolates one source's failure from the rest of the platform.
 import logging
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
+from app.domain.documents.events import (
+    DOCUMENT_REVISION_AGGREGATE,
+    DOCUMENT_REVISION_CREATED,
+)
 from app.domain.documents.language import detect_language
 from app.domain.documents.models import EntityKind, RevisionStatus, compute_content_hash
 from app.domain.documents.parsing import ParsedDocument, parse_plain_text
@@ -29,11 +34,6 @@ from app.repositories.outbox_repository import OutboxRepository
 
 logger = logging.getLogger(__name__)
 
-# Emitted when a new version of a document's text is stored. Phase 3's extractor
-# is the consumer; nothing handles it yet, and the relay says so rather than
-# letting unhandled events pile up.
-DOCUMENT_REVISION_CREATED = "document_revision_created"
-
 
 def raw_document_text(normalized: NormalizedJob) -> str:
     """What a revision stores as its raw text, and what its hash is taken over.
@@ -45,6 +45,27 @@ def raw_document_text(normalized: NormalizedJob) -> str:
     read necessity from. The markup still has the headings and the list items.
     """
     return normalized.description_html or normalized.description
+
+
+def _normalized_fields(normalized: NormalizedJob) -> dict[str, Any]:
+    """The adapter's deterministically parsed facts, captured with the revision.
+
+    Stored rather than looked up later because `job_source_records` is upserted
+    on every re-scrape: an extractor reading it afterwards would pair this
+    revision's text with whatever the fields say today. Only the fields the
+    structural extractor consumes — the description is already the revision's
+    raw text and does not need a second copy here.
+    """
+    return {
+        "title": normalized.title,
+        "seniority": normalized.seniority,
+        "employment_type": normalized.employment_type.value,
+        "remote": normalized.location.remote,
+        "required_experience_years": normalized.required_experience_years,
+        "salary_min": normalized.salary.min if normalized.salary else None,
+        "salary_max": normalized.salary.max if normalized.salary else None,
+        "salary_currency": normalized.salary.currency if normalized.salary else None,
+    }
 
 
 def parse_description(normalized: NormalizedJob) -> tuple[str, ParsedDocument]:
@@ -165,6 +186,9 @@ class JobIngestionService:
             source_record_id,
             content_hash=compute_content_hash(raw_text),
             raw_text=raw_text,
+            raw_payload={
+                DocumentRepository.NORMALIZED_FIELDS_KEY: _normalized_fields(normalized)
+            },
         )
         if not created:
             return
@@ -189,7 +213,7 @@ class JobIngestionService:
             # separately could be lost while the revision survived, which is the
             # gap the outbox exists to close.
             self._outbox.append(
-                aggregate_type="document_revision",
+                aggregate_type=DOCUMENT_REVISION_AGGREGATE,
                 aggregate_id=revision.id,
                 event_type=DOCUMENT_REVISION_CREATED,
                 payload={

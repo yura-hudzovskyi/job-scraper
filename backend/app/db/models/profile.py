@@ -21,7 +21,8 @@ class ProfileRevisionModel(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "profile_revisions"
     __table_args__ = (
         CheckConstraint(
-            "origin <> 'neural_extraction' OR extractor_model_id IS NOT NULL",
+            "origin NOT IN ('neural_extraction', 'structural_extraction') "
+            "OR extractor_model_id IS NOT NULL",
             name="ck_profile_revisions_extraction_names_its_model",
         ),
         CheckConstraint(

@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from app.services.job_ingestion_service import DOCUMENT_REVISION_CREATED
+from app.domain.documents.events import DOCUMENT_REVISION_CREATED
 from app.workers.tasks import outbox as relay_module
 
 
@@ -95,13 +95,20 @@ async def test_an_event_with_no_handler_is_still_marked_published(
 ) -> None:
     """Leaving it pending would build a backlog of events nobody will ever want,
     and hide a genuinely stuck one among them."""
-    outbox = _FakeOutbox([_Event(id=1, event_type=DOCUMENT_REVISION_CREATED)])
+    outbox = _FakeOutbox([_Event(id=1, event_type="nobody_listens_to_this")])
 
     result = await _run_relay(outbox, monkeypatch)
 
     assert outbox.published == [1]
     assert result["unhandled"] == 1
     assert result["published"] == 0
+
+
+def test_document_revision_created_has_a_handler_registered() -> None:
+    """The wiring that makes ingestion's event actually reach extraction. Its
+    absence would be silent — the event is written, nothing handles it, and every
+    counter reports success."""
+    assert DOCUMENT_REVISION_CREATED in relay_module.HANDLERS
 
 
 @pytest.mark.asyncio

@@ -189,6 +189,20 @@ class DocumentRepository:
         await self._session.flush()
         return _to_domain(model)
 
+    # Namespaced key inside `raw_payload`. The deterministically parsed fields
+    # are stored on the revision rather than looked up from the source record at
+    # extraction time, because the source record is upserted on every re-scrape:
+    # reading it later would pair revision N's text with today's field values.
+    NORMALIZED_FIELDS_KEY = "normalized_fields"
+
+    async def normalized_fields(self, revision_id: uuid.UUID) -> dict[str, Any]:
+        """The adapter-parsed fields captured with this revision, if any."""
+        model = await self._session.get(DocumentRevisionModel, revision_id)
+        if model is None or not model.raw_payload:
+            return {}
+        fields = model.raw_payload.get(self.NORMALIZED_FIELDS_KEY, {})
+        return dict(fields) if isinstance(fields, dict) else {}
+
     async def transitions(
         self, revision_id: uuid.UUID
     ) -> list[tuple[str | None, str, str | None]]:
