@@ -2,14 +2,21 @@
 
 ## Технічна специфікація та план реалізації v1.0
 
-**Статус:** draft, узгоджений із наявним репозиторієм; готовий до реалізації після
-рішень із 3.5  
+**Статус:** implementation-ready — архітектурні рішення ухвалено 2026-09-03 (розділ 3.5),
+цей документ є основним архітектурним стержнем проєкту й скасовує попередні
+архітектурні рішення там, де вони розходяться з ним  
 **Основна мова документа:** українська  
-**Читати першими:** 3.3 (що вже є в коді), 3.4 (конфлікти), 3.5 (відкриті
-рішення), 24.0 (інваріанти), 24.1 (скорочений шлях)  
+**Читати першими:** 3.5 (ухвалені рішення), 3.6 (цільова архітектура одним
+абзацом), 24.0 (інваріанти)  
 **Ціль:** універсальний матчинг CV ↔ вакансія для IT, продажів, фінансів, медицини, логістики, виробництва, сервісу та інших професій без генеративної LLM у core pipeline.  
-**Базовий стек:** FastAPI, PostgreSQL + pgvector, Redis, Celery, React + TypeScript.  
-**Початкова інфраструктура:** одна Oracle Always Free VM, орієнтовно 4 OCPU / 24 GB RAM.  
+**Базовий стек (без змін):** FastAPI, PostgreSQL + pgvector, Redis, Celery, React + TypeScript, Docker Compose, Caddy — плюс один окремий ML inference process (`ml-service`) для self-hosted моделей, як і в оригінальному дизайні документа (2.7).  
+**Моделі — дві різні задачі, дві різні відповіді:**
+- **Retrieval (embedding + reranking для пошуку CV ↔ вакансія):** платний API-провайдер — Voyage базовий; інший платний провайдер, якщо вимірювання показує суттєвий приріст якості. Жодної генеративної LLM.
+- **Extraction (структуровані факти, evidence spans, skill/competency mentions) і concept linking (ESCO):** self-hosted моделі — GLiNER2 для екстракції, локальний embedder + cross-encoder для concept linking. Інша задача, ніж у Voyage — не "розуміти й порівняти два документи", а "знайти й підтвердити конкретний факт у тексті", тому інший клас моделі.  
+**Початкова інфраструктура:** та сама одна Oracle VM, що вже використовується.
+RAM-бюджет 17.2 перерахований під один self-hosted процес (extractor + linking),
+не під три моделі одразу — суттєво легше, ніж 8–11 GB оригінальної версії
+документа, але не нуль.  
 
 ---
 
@@ -22,9 +29,9 @@
 3. Витягувати лише факти, присутні в тексті, разом із доказовими фрагментами та confidence.
 4. Працювати з універсальними поняттями: occupation, competency, knowledge, tool, qualification, license, language, responsibility, work condition, compensation, location constraint.
 5. Не залежати від словника лише IT-технологій.
-6. Нормалізувати професії та компетенції через зовнішню ontology/taxonomy, але не змушувати кожну згадку мати canonical concept.
+6. Нормалізувати професії та компетенції через ESCO (3.5.4), але не змушувати кожну згадку мати canonical concept.
 7. Знаходити кандидатів або вакансії через hybrid retrieval: dense semantic search + lexical search + structured concept signals.
-8. Переранжовувати обмежену множину результатів cross-encoder reranker’ом.
+8. Переранжовувати обмежену множину результатів reranker-ом через платний API (3.5.1).
 9. Показувати не тільки score, а й перевірювані причини: що збіглося, що частково збіглося, де інформації немає, а де є реальний конфлікт.
 10. Збирати feedback і пізніше навчити власний reranker/ranking model без переписування системи.
 
@@ -64,7 +71,12 @@ Domain adapter не створює окремий pipeline і не змінює 
 }
 ```
 
-Якщо модель не може дати span, результат зберігається як low-trust inferred field і не може стати hard filter.
+`confidence` тут — реальна оцінка GLiNER2 (3.5.2), не заглушка. Для полів, що й
+далі парсяться deterministic-кодом (title, salary, dates — 8.5), `confidence`
+типово `1.0`, бо це факт «рядок знайдено за офсетом», не оцінка моделі — обидва
+джерела легітимні, і документ явно розрізняє їх, а не приховує різницю. Якщо
+модель не може дати span, результат зберігається як low-trust inferred field і
+не може стати hard filter.
 
 ### 2.3. `unknown` не дорівнює `false`
 
@@ -94,25 +106,37 @@ Hard filter дозволений лише коли одночасно:
 
 ### 2.5. Taxonomy допомагає, але не вирішує
 
-ESCO/O*NET потрібні для normalization, aliases, related concepts, filters, analytics і explanations. Остаточна релевантність не визначається лише збігом taxonomy IDs. Semantic embeddings і reranker залишаються основним механізмом.
+ESCO/O*NET (3.5.4, self-hosted import + linking) потрібні для normalization,
+aliases, related concepts, filters, analytics і explanations. Остаточна
+релевантність не визначається лише збігом taxonomy IDs. Semantic embeddings і
+reranker для retrieval (обидва — платний API, 3.5.1) залишаються основним
+механізмом ранжування; ESCO відповідає за explainability й normalization
+mentions, не за сам ranking score.
 
-### 2.6. Версіонування всього ML-контексту
+### 2.6. Версіонування всього контексту
 
 Кожен результат повинен містити:
 
 - `schema_version`;
-- `extractor_model_id`;
-- `embedding_model_id`;
-- `reranker_model_id`;
-- `taxonomy_version`;
+- `extractor_model_id` (GLiNER2 revision, 3.5.2 — self-hosted, тому pinned commit);
+- `embedding_model_id` (Voyage чи інший платний API, 3.5.1);
+- `reranker_model_id` (той самий провайдер, що й embedding, або окремий — 3.5.1);
+- `taxonomy_version` (версія імпортованого ESCO-релізу, 3.5.4);
+- `concept_linker_model_id` (self-hosted embedder + cross-encoder для linking, 3.5.4 — версіонується окремо від retrieval-моделей, бо це інша пара моделей з іншою задачею);
 - `match_policy_version`;
 - `created_at`.
 
-Без цього неможливо відтворити score, порівняти моделі або безпечно переіндексувати дані.
+Без цього неможливо відтворити score, порівняти моделі/провайдерів або безпечно переіндексувати дані.
 
 ### 2.7. No big-bang microservices
 
-На старті потрібен modular monolith плюс один окремий ML inference process, а не зоопарк із десяти сервісів. FastAPI, Celery, PostgreSQL, Redis і ML process можуть працювати на одній VM. Внутрішні interfaces повинні дозволяти винести inference на іншу машину пізніше.
+На старті потрібен modular monolith плюс **один** окремий ML inference process
+(`ml-service`) — не зоопарк із десяти сервісів, і не нуль сервісів. За
+рішеннями 3.5.1/3.5.2/3.5.4: retrieval-embedding і reranking йдуть через
+зовнішній платний API (без локального процесу для них), а extraction і concept
+linking — self-hosted, тому їм потрібен один спільний inference process. FastAPI,
+Celery, PostgreSQL, Redis і цей один ML process можуть працювати на одній VM.
+Внутрішні interfaces повинні дозволяти винести inference на іншу машину пізніше.
 
 ---
 
@@ -120,18 +144,19 @@ ESCO/O*NET потрібні для normalization, aliases, related concepts, fil
 
 ### 3.1. У v1 входить
 
-- ingestion вакансій із JSON/API/HTML/plain text;
-- ingestion CV із PDF/DOCX/plain text;
+- ingestion вакансій із JSON/API/HTML/plain text (уже є через `JobSourceAdapter`);
+- ingestion CV із PDF/DOCX/plain text (уже є);
 - language detection;
-- universal extraction;
-- evidence spans;
-- deterministic normalization одиниць і форматів;
-- ESCO import і concept linking;
-- dense embeddings;
+- universal extraction через self-hosted GLiNER2 (3.5.2) — структуровані поля,
+  requirements, skill/competency mentions з evidence spans;
+- evidence spans з реальним model confidence;
+- deterministic normalization одиниць і форматів (арифметика/парсинг, не заміна екстракції);
+- ESCO import і concept linking, self-hosted (3.5.4);
+- dense embeddings для retrieval через платний API-провайдер (Voyage);
 - PostgreSQL lexical retrieval;
-- structured retrieval signals;
+- structured retrieval signals (extracted requirements + concept overlap);
 - reciprocal rank fusion;
-- cross-encoder reranking;
+- reranking для retrieval через платний API-провайдер (Voyage);
 - versioned match results та explanations;
 - ручне виправлення candidate profile;
 - feedback events;
@@ -147,7 +172,12 @@ ESCO/O*NET потрібні для normalization, aliases, related concepts, fil
 - повноцінний learning-to-rank у production;
 - окремі fine-tuned models для кожної галузі;
 - real-time streaming architecture;
-- Kubernetes.
+- Kubernetes;
+- **будь-яка генеративна LLM** (без змін від початкового принципу) — GLiNER2 не
+  генеративна модель (non-generative, schema-conditioned extraction), тому не
+  підпадає під цю заборону;
+- заміна retrieval-embedding/reranking (Voyage) на self-hosted модель без
+  окремого benchmark-обґрунтування — 3.5.1.
 
 ### 3.3. Що вже є в репозиторії (baseline, станом на 2026-09-02)
 
@@ -155,22 +185,24 @@ ESCO/O*NET потрібні для normalization, aliases, related concepts, fil
 працюючий pipeline. Комміт `b5569d7` цілеспрямовано **видалив** попередній
 LLM-шар (skill extraction, `candidate_profiles`, `ai_invocations`,
 `document_versions`) і залишив вузьку систему на двох викликах Voyage. Робота за
-цим документом починається не з нуля, а з наступного стану.
+цим документом починається не з нуля, а з наступного стану — і, за рішенням
+3.5, повертає екстракцію, але іншим способом і з іншими гарантіями, ніж
+видалена версія (3.4.2).
 
 | Область специфікації | Що є в коді | Висновок |
 |---|---|---|
-| Modular monolith (4) | FastAPI + Celery + PostgreSQL/pgvector + Redis + React, Docker Compose, Caddy | є; окремого `ml-service` немає |
+| Modular monolith + один ML process (4, 2.7) | FastAPI + Celery **worker + окремий `beat`** + PostgreSQL/pgvector + Redis + React, Docker Compose, Caddy | є; `ml-service` — нове, для GLiNER2 + concept linker, 3.5.2/3.5.4. Увага: `beat` — окремий контейнер, якого таблиця runtime-компонентів у 4 не перелічує; prod-compose не має `web` (фронтенд на Cloudflare Pages) і має `caddy` |
 | Source adapters (Phase 2) | `JobSourceAdapter` + registry, DOU і Djinni, ротація категорій | є; цей контракт треба визнати джерелом істини, а не писати другий |
-| Raw → Normalized → Canonical (14.1) | `raw_jobs`, `job_source_records`, `canonical_jobs`, `DeduplicationService` (company + title + description similarity) | конфлікт із `source_items`/`document_revisions`, див. 3.4 |
+| Raw → Normalized → Canonical (14.1) | `raw_jobs`, `job_source_records`, `canonical_jobs`, `DeduplicationService` (company + title + description similarity) | лишається джерелом істини; `document_revisions` надбудовується над ним, див. 3.4.3 |
 | Immutable revisions, blocks, offsets (7.1) | немає | будувати з нуля |
 | Language detection (5.1) | немає | будувати з нуля |
-| Neural extraction, evidence spans, profile revisions (8) | немає; було і свідомо видалено | див. 3.4 |
-| Taxonomy / ESCO / concept linking (9) | немає | будувати з нуля |
-| Embeddings (10) | Voyage `voyage-4-large` через REST; **один вектор на весь документ**, `unique(document_type, document_id, model)`, `content_hash` для пропуску повторного embedding, точний cosine scan без ANN | інша архітектура: зовнішній провайдер, немає field-level векторів і model registry |
+| Extraction, evidence spans, profile revisions (8) | немає; попередня neural-версія була видалена через ненадійність | повертаємо, з self-hosted GLiNER2 (3.5.2) — з умовами, які закривають попередній ризик, див. 3.4.2 |
+| Taxonomy / concept linking (9) | немає | ESCO import + self-hosted linking, 3.5.4 |
+| Embeddings для retrieval (10) | Voyage `voyage-4-large` через REST; **один вектор на весь документ**, `unique(document_type, document_id, model)`, `content_hash` для пропуску повторного embedding, точний cosine scan без ANN | лишається базовим провайдером, див. 3.5.1; додається field-level розбиття |
 | Lexical retrieval, `tsvector` (11.2) | немає | будувати з нуля |
-| Hybrid retrieval + RRF (11) | один dense-канал | будувати з нуля |
-| Reranker (12) | Voyage `rerank-3` через REST, top-`rerank_top_k` (60) | зовнішній провайдер замість локального cross-encoder |
-| Requirement evaluation, чотири статуси, explanations (13) | немає | будувати з нуля |
+| Hybrid retrieval + RRF (11) | один dense-канал | додаємо lexical + concept канали, той самий Voyage dense-канал лишається |
+| Reranker для retrieval (12) | Voyage `rerank-3` через REST, top-`rerank_top_k` (60) | лишається базовим провайдером, див. 3.5.1 |
+| Requirement evaluation, чотири статуси, explanations (13) | немає | будувати з нуля, на основі extracted requirements + evidence |
 | Score | `similarity × (1−w) + relevance × w`; усі три числа зберігаються на рядку матчу і показуються в UI | принцип «score — це арифметика, а не вирок» уже виконано |
 | Hard filters (2.4) | `HardFilterService`: blocked stack, salary floor, локації, blacklist компаній, стеля досвіду; кожна відмова зберігає причину, а відхилена вакансія все одно записується | збігається за духом, але фільтри керуються **преференціями кандидата**, а не вимогами вакансії |
 | `match_runs` / `match_results` (7.5) | `job_matches` з `unique(user_id, canonical_job_id)` — upsert, не append-only | пряма суперечність, див. 3.4 |
@@ -179,7 +211,8 @@ LLM-шар (skill extraction, `candidate_profiles`, `ai_invocations`,
 | Idempotency (15, 16) | через unique-констрейнти; немає `Idempotency-Key` і немає outbox | частково |
 | Evaluation harness (20) | немає | будувати з нуля |
 | Observability (19) | структуровані логи, `pipeline_runs` з лічильниками кожного кроку, System page | немає метрик і дашбордів |
-| Тести | 23 unit-файли, `ruff`, `mypy --strict`; немає integration/contract/evaluation каталогів | частково |
+| Тести | 24 unit-файли / 133 тести, усі зелені; `ruff check` чисто; `mypy --strict` чисто на 98 файлах; є `tests/fixtures/{dou,djinni}`; немає integration/contract/evaluation каталогів | частково — це і є baseline, від якого Phase 0 міряє регресію |
+| Міграції | 21 міграція, один лінійний head `f4c81a2e5b90` (`embedding_rerank_pipeline`) — він і видалив LLM-шар (`ai_invocations`, `candidate_profiles`, `candidate_skill_overrides`, `applications`, `embedding_lanes`) і схлопнув `document_embeddings` до одного вектора на документ | чисто: осиротілих колонок від видаленого шару не лишилось (`canonical_jobs.content_hash`/`content_version` теж прибрані) |
 
 Крім того, у репозиторії є функціональність, якої **немає в цій специфікації** і
 яку не можна зламати. Вона не «поза scope» — вона вже в продакшені:
@@ -198,55 +231,173 @@ LLM-шар (skill extraction, `candidate_profiles`, `ai_invocations`,
 - **Category rotation.** Один категорійний скрейп на джерело за запуск,
   найдавніший першим.
 
-### 3.4. Конфлікти, які специфікація зараз не вирішує
+### 3.4. Конфлікти з попередньої версії документа — вирішено
 
-1. **Voyage проти локальних моделей.** Уся AI-частина застосунку — два REST-виклики
-   до платного провайдера. Специфікація припускає self-hosted GLiNER2 + E5/BGE-M3 +
-   cross-encoder, які резервують 8–11 GB RAM на Oracle VM. Документ ніде не каже,
-   чи Voyage лишається, замінюється, чи співіснує — а це визначає 10, 12, 17 і
-   майже весь план фаз. Додатково 25.1 забороняє агенту додавати платний
-   зовнішній сервіс, хоча він уже в системі.
-2. **Екстракція вже була, і її видалили.** Специфікація повертає структуровану
-   екстракцію як фундамент. Це саме те, що команда свідомо прибрала, бо екстракція
-   виявилася найненадійнішою частиною системи, а впевнений вердикт на поганому
-   списку скілів гірший за відсутність вердикту. Документ мусить явно сказати,
-   **що цього разу інакше** — інакше він читається як пропозиція повторити те, що
-   вже відкотили. Три відмінності, які варто зафіксувати як умову: кожен факт має
-   evidence span у вихідному тексті, кандидат бачить і виправляє видобуте до того,
-   як воно впливає на ranking, і жодна екстракція не потрапляє в score, поки
-   eval-набір не покаже, що вона краща за поточний baseline.
-3. **Дві моделі дедуплікації.** `source_items` + `document_revisions` (7.1) дають
-   одну вакансію на одне джерело, а 14.2 окремо описує кластери крос-джерельних
-   дублікатів — але таблиці кластерів у 7 немає. У репозиторії ж `canonical_jobs`
-   уже виконує роль «одна реальна вакансія, кілька джерел». Треба обрати одну
-   модель і описати міграцію, а не тримати обидві.
-4. **Upsert проти append-only.** `job_matches` тримає один рядок на (user, job) і
-   зберігає рішення користувача між запусками. `match_runs`/`match_results` —
-   незмінні per-run. За `retrieval_limit = 400` і щоденними запусками це дає
-   ~146 000 рядків результатів на користувача за рік без політики retention, якої
-   в 7.5 немає. Потрібен також шлях міграції наявного `job_matches.decision` у
-   `feedback_events`, інакше історія рішень користувача зникне.
-5. **Напрям продукту.** 7 містить `tenant_id`, RLS і права рекрутера, а 18.4
-   класифікує систему як high-risk employment за AI Act. Наявний застосунок шукає
-   **вакансії для кандидата**, а не кандидатів для роботодавця. Це різні продукти
-   з різним регуляторним навантаженням, і специфікація зараз змішує їх у одному
-   наборі таблиць.
+Попередня версія цього розділу перелічувала п'ять невирішених конфліктів.
+Рішення 3.5 закривають чотири з них прямо; п'ятий (upsert проти append-only)
+залишається технічним питанням міграції схеми, не архітектурним рішенням — його
+розв'язок тепер у 7.5 і 24.
 
-### 3.5. Рішення, які треба ухвалити до Phase 1
+1. ~~Voyage проти локальних моделей~~ → вирішено: **не або/або.** Voyage (або
+   інший платний API) — для retrieval embedding/reranking. Self-hosted GLiNER2 —
+   для екстракції. Self-hosted embedder + cross-encoder — для concept linking.
+   Це різні задачі з різними вимогами до якості й вартості за виклик, тому різні
+   рішення для кожної. Див. 3.5.1.
+2. ~~Екстракція вже була, і її видалили~~ → вирішено: екстракція повертається, з
+   self-hosted GLiNER2, але з трьома умовами, які прямо адресують причину
+   попереднього провалу (не невпевненість моделі як така, а відсутність evidence
+   spans, review-циклу й eval-гейта). Див. 3.5.2.
+3. ~~Дві моделі дедуплікації~~ → вирішено: `canonical_jobs` лишається джерелом
+   істини для «одна вакансія, кілька джерел». Секція 7 і 14 приведені у
+   відповідність — `document_revisions` тепер надбудовується **над**
+   `job_source_records`, а не замінює `canonical_jobs`. Кластери
+   крос-джерельних дублікатів (7.6) лишаються потрібними лише якщо
+   `DeduplicationService` колись перестане справлятися — не бланкетна вимога.
+4. **Upsert проти append-only — усе ще технічне рішення, не архітектурне.**
+   `job_matches` (upsert, зберігає `decision`) і `match_runs`/`match_results`
+   (append-only, версійовані) розв'язуються не вибором одного з двох, а шаром:
+   `job_matches` лишається «поточний стан», `match_runs` додається як історія
+   під ним, з retention (7.6) і backfill `decision` → `feedback_events`.
+5. ~~Напрям продукту~~ → вирішено: candidate-side, як зараз. `tenant_id`/RLS/
+   recruiter-права не будуються, поки продукт не зміниться. AI Act-розділ (18.4)
+   лишається як застереження на майбутнє, не як вимога зараз.
 
-Кожна відповідь тут змінює схему, бюджет RAM і план фаз. Жодну фазу після
-Phase 0 не можна починати, поки вони відкриті.
+**Новий конфлікт, виявлений під час Phase 0 audit (не вирішений):** розділ 15
+описує весь API під префіксом `/api/v1/...`, а наявний застосунок віддає все
+під `/api/...` без версії (`docs/api.md`, `app/api/router.py`) — і фронтенд у
+`frontend/src/api/endpoints.ts` викликає саме ці шляхи. Три варіанти, і жоден
+не є очевидно правильним: (a) нові ендпойнти під `/api/v1/`, наявні лишаються
+де є — двоє префіксів назавжди; (b) перенести все під `/api/v1/` з redirect на
+старих — одна міграція фронтенду; (c) відмовитись від версійного префікса в
+цьому документі й лишити `/api/`. Рішення потрібне до Phase 8, не раніше, але
+записати його треба зараз, поки видно причину.
 
-| Рішення | Варіанти | Що воно змінює |
-|---|---|---|
-| **Провайдер моделей** | (a) лишити Voyage, додати лише локальний extractor; (b) повністю self-hosted; (c) гібрид — локальні embeddings, Voyage rerank | 10, 12, 17.2, `model_registry`, вартість одного запуску |
-| **Напрям продукту** | (a) candidate-side, як зараз; (b) recruiter-side; (c) обидва | 7 (tenant/RLS), 18.4 (AI Act), пріоритет UI |
-| **Ambition ranking** | (a) hybrid retrieval без ESCO; (b) повний стек із taxonomy | 9 і Phase 4 — найдорожча фаза документа |
-| **Обсяг eval-набору** | (a) 200–300 пар, дві мови, три домени; (b) 3 000+ пар, як у 20.1 | реалістичність усього плану для одного оператора |
-| **Форма VM** | Oracle A1.Flex (ARM Ampere) чи x86 | доступність wheels, латентність CPU-інференсу, 17.2 |
+### 3.5. Ухвалені архітектурні рішення (2026-09-03)
 
-Поки ці рішення не зафіксовані як ADR, документ описує щонайменше два різні
-продукти на двох різних стеках.
+Ці рішення скасовують попередній розділ 3.5 і будь-яку суперечну частину решти
+документа. Де написане нижче розходиться з якимось іншим розділом — чинним є
+це.
+
+#### 3.5.1. Провайдер моделей: дві задачі, дві відповіді
+
+Ключова відмінність, яку ця версія рішень фіксує явно: **retrieval**
+(порівняти CV з вакансією і повернути relevance) і **understanding**
+(розпізнати конкретні факти й терміни в тексті одного документа) — це різні
+задачі, і документ більше не намагається розв'язати їх однією політикою
+"self-hosted чи API".
+
+- **Retrieval — платний API, без self-hosted.** Embedding для dense-каналу й
+  reranking фінального top-K лишаються тим, чим є зараз: REST-виклики до
+  Voyage. Дозволено платити за **інший** embedding/rerank API-провайдер, якщо
+  benchmark на evaluation-наборі (20) показує **суттєвий** приріст якості —
+  «трохи краще nDCG» не підстава міняти провайдера, помітний відтворюваний
+  виграш — підстава. Це той самий рівень задачі, що вже вирішує `VoyageClient`
+  сьогодні: порівняти два документи. Генеративні LLM виключені з цього правила
+  повністю, навіть за «сильний буст» — ціль документа (розділ 1) — ranking без
+  генеративної моделі в ядрі.
+- **Understanding (extraction + concept linking) — self-hosted.** GLiNER2 для
+  екстракції (8), локальний embedder + cross-encoder для concept linking (9) —
+  інша задача, ніж retrieval: знайти й підтвердити конкретний факт у тексті
+  одного документа, не порівняти два документи. Ці моделі живуть в одному
+  `ml-service` процесі (2.7), окремому від Voyage-викликів `worker`/`api`.
+- `EmbeddingProvider`/`Reranker` (10.1, 12.1) лишаються інтерфейсами для
+  retrieval-провайдера — по суті вже є в коді як `VoyageClient` — саме для
+  того, щоб зміна провайдера була зміною конфігурації. `ProfileExtractor`
+  (8.1) — окремий інтерфейс для GLiNER2, не той самий.
+- Наслідок для 17: RAM-бюджет переписаний у 17.2 під один self-hosted процес
+  (extractor + linking), не під три моделі одразу — легше за 8–11 GB
+  оригінальної версії документа, важче за нуль.
+
+#### 3.5.2. Екстракція: self-hosted GLiNER2, з умовами
+
+Екстракція повертається — вона і є головна причина, чому цей документ існує:
+дати системі змогу пояснити «вимогу 3 виконано», чого сьогоднішній Voyage-only
+pipeline не може. Але вона повертається з трьома умовами, які прямо
+адресують причину, з якої попередню версію видалили (3.4.2), а не просто
+повторюють її:
+
+1. **Кожен факт має evidence span у вихідному тексті** (2.2) — жодного
+   витягнутого значення без точного офсету в `document_revision`. Модель, що
+   не може дати span, зберігається як low-trust inferred field і не бере
+   участі в hard filters.
+2. **Кандидат бачить і виправляє видобуте до того, як воно впливає на
+   ranking** — review-екран (5.2, Phase 8), user-confirmed факти мають вищий
+   пріоритет за модельні (2.3).
+3. **Жодна екстракція не потрапляє в score, поки eval-набір (20) не покаже, що
+   вона краща за поточний baseline** (retrieval-only). Це gate, не формальність
+   — розділ 20.6 "Release gates" застосовується до самої появи екстракції в
+   ranking, не лише до її подальших змін.
+
+Чому це не той самий провал ще раз: попередня версія не мала жодної з цих
+трьох гарантій — не було evidence spans, не було review-циклу до впливу на
+ranking, і не було eval-гейта перед тим, як skill list почав визначати
+рекомендації. Технічно модель та сама (GLiNER2 замість того, що було раніше),
+але контракт навколо неї — інший.
+
+`extractor_model_id` (2.6) — pinned GLiNER2 revision, версіонується як будь-яка
+self-hosted модель.
+
+#### 3.5.3. Стек: без змін, плюс один ML process, як і планувалося
+
+FastAPI, PostgreSQL + pgvector, Redis, Celery, React + TypeScript, Docker
+Compose, Caddy — той самий склад компонентів, що й сьогодні. "Без змін" не
+означає "без `ml-service`": розділ 2.7 з першої версії документа завжди
+описував "modular monolith плюс один окремий ML inference process" — саме це
+й будується, не зоопарк мікросервісів і не нуль додаткових процесів. Явно:
+
+- один новий Docker-сервіс — `ml-service`, що хостить GLiNER2 + concept-linking
+  моделі (embedder + cross-encoder); не хостить retrieval embedding/reranking
+  (це лишається зовнішнім Voyage API call з `worker`/`api`, як сьогодні);
+- нових черг/воркерів понад те, що вже є в 16, поки конкретна проблема не
+  покаже потребу;
+- ARM/x86 (17.2) — реальне питання знову, бо `ml-service` вантажить GLiNER2 та
+  linking-моделі локально: перевірити доступність wheels і CPU-latency на
+  цільовій VM у Phase 0, не в Phase 7.
+
+#### 3.5.4. Taxonomy: ESCO import, self-hosted linking
+
+ESCO лишається основним джерелом — розділ 9 (Taxonomy and concept linking)
+будується як в оригінальній версії документа: pinned import, staging tables,
+concept embeddings, retrieval + rerank + abstention linker (9.1–9.3), internal
+concepts як supplement (9.4), не як заміна. Linking-моделі (embedder для
+top-20 кандидатів, cross-encoder для reranking пари mention↔concept) — той
+самий self-hosted `ml-service`, що й GLiNER2, бо задача та сама: розпізнати й
+підтвердити конкретний факт, не порівняти два документи (3.5.1).
+
+Секція 9.5 ("Linking cost budget") лишається чинною й важливою незалежно від
+рішення "self-hosted чи API" — вона про об'єм (30 mentions × 20 candidates ×
+5000 документів/день), а не про провайдера. Кешування за mention text,
+пропуск reranker-а на впевнених кандидатах і асинхронне лінкування лишаються
+обов'язковими практиками саме тому, що linking self-hosted: це не рахунок за
+API-виклик, а CPU/RAM-бюджет одного процесу на тій самій VM, де крутиться
+Postgres.
+
+#### 3.5.5. Напрям продукту: candidate-side
+
+Без змін від того, що вже є: користувач шукає вакансії для себе. Recruiter-side,
+`tenant_id`, RLS — не будуються в v1.
+
+---
+
+### 3.6. Цільова архітектура одним абзацом
+
+Що реально змінюється порівняно з сьогоднішнім pipeline (`scrape → embed →
+match → notify`, один Voyage dense-канал, upsert-матчі): вакансії та CV
+отримують **immutable revisions** замість перезапису; кожна вакансія і кожне
+CV проходять через **self-hosted GLiNER2** (новий `ml-service`), яка видобуває
+requirements, competencies й responsibilities з evidence spans; ці mentions
+**лінкуються проти ESCO** (той самий `ml-service`, embedder + cross-encoder,
+self-hosted); пошук стає **гібридним** — той самий Voyage dense-канал, плюс
+новий lexical (`tsvector`) канал, плюс concept-overlap канал (з ESCO-лінків),
+зведені **RRF**; Voyage rerank лишається над fused-результатом як і сьогодні;
+додається **requirement-level evaluation**
+(`satisfied`/`partial`/`unknown`/`conflicting`) на основі extracted evidence з
+обох сторін, що виводиться в **explanation JSON** замість голого числа. Одна
+нова інфраструктурна одиниця (`ml-service`), дві задачі моделей замість однієї
+(retrieval лишається Voyage, understanding стає self-hosted). Це те, що робить
+документ «простим і прозорим»: кожен рядок explanation можна простежити до
+конкретного evidence span, з відомою моделлю й версією, що його видобула —
+ніколи до непрозорого "AI сказав так" без джерела.
 
 ---
 
@@ -254,16 +405,16 @@ Phase 0 не можна починати, поки вони відкриті.
 
 ```mermaid
 flowchart TD
-    A["Job/CV sources"] --> B["Ingestion + immutable raw revision"]
+    A["Job/CV sources"] --> B["Ingestion + immutable revision"]
     B --> C["Text and layout extraction"]
-    C --> D["Universal neural extractor"]
+    C --> D["GLiNER2 extractor (ml-service)"]
     D --> E["Evidence-backed canonical profile"]
-    E --> F["Taxonomy concept linker"]
-    E --> G["Field embeddings"]
+    E --> F["ESCO concept linker (ml-service)"]
+    E --> G["Field embeddings (Voyage API)"]
     F --> H["PostgreSQL + pgvector"]
     G --> H
     H --> I["Hybrid retrieval + RRF"]
-    I --> J["Cross-encoder reranker"]
+    I --> J["Reranker (Voyage API)"]
     J --> K["Policy scoring + explanation"]
     K --> L["Ranked matches + feedback"]
 ```
@@ -274,12 +425,18 @@ flowchart TD
 |---|---|
 | `web` | React/TypeScript UI |
 | `api` | FastAPI, auth, CRUD, orchestration, match endpoints |
-| `worker` | Celery I/O tasks, parsing, indexing, maintenance |
-| `ml-service` | завантажує extractor/embedding/reranker один раз і виконує batched inference |
-| `postgres` | canonical data, revisions, taxonomy, lexical index, pgvector |
+| `worker` | Celery I/O tasks, parsing, indexing, maintenance, виклики до Voyage API |
+| `ml-service` | завантажує GLiNER2 (extraction) і concept-linking embedder/cross-encoder **один раз** і виконує batched inference; **не** хостить retrieval embedding/reranking — те лишається Voyage API call |
+| `postgres` | canonical data, revisions, taxonomy (ESCO), lexical index, pgvector |
 | `redis` | Celery broker/result backend, short-lived cache, distributed locks |
 
-ML models не можна завантажувати в кожен Celery worker. Інакше кілька worker processes продублюють модель у RAM і задушать VM.
+ML models (GLiNER2, concept-linking) не можна завантажувати в кожен Celery
+worker — інакше кілька worker processes продублюють модель у RAM і задушать
+VM. Це причина, з якої `ml-service` — окремий, один процес, а не бібліотека,
+імпортована в кожен worker. Voyage-виклики (embedding/rerank для retrieval)
+лишаються звичайними HTTP-запитами з `worker`/`api`, точно як
+`app/integrations/voyage.py` уже робить сьогодні — вони не проходять через
+`ml-service`.
 
 ---
 
@@ -292,34 +449,38 @@ sequenceDiagram
     participant S as Source adapter
     participant A as API/Worker
     participant D as Database
-    participant M as ML service
+    participant M as ml-service (GLiNER2 + linker)
+    participant V as Voyage API
     S->>A: Raw vacancy + source identity
-    A->>D: Upsert source item and raw revision
+    A->>D: Upsert job_source_record and raw revision
     A->>A: Parse text, language, content hash
     A->>M: Extract universal schema
     M-->>A: Fields + spans + confidence
     A->>D: Save profile revision
-    A->>M: Link concepts and create embeddings
-    M-->>A: Candidates/scores/vectors
+    A->>M: Link concepts against ESCO
+    M-->>A: Concept mentions + link status
+    A->>V: Generate field embeddings
+    V-->>A: Vectors
     A->>D: Save links, projections, embeddings
     A->>D: Mark revision searchable
 ```
 
-Detailed steps:
+Detailed steps (за рішенням 3.4.3 `document_revisions` надбудовується над
+наявним `job_source_records`, не замінює його):
 
-1. Source adapter sends `source`, `external_id`, URL, raw payload, observed timestamps.
-2. Compute stable `source_key = source + external_id` where possible.
+1. Source adapter sends `source`, `external_id`, URL, raw payload, observed timestamps — as today, into `job_source_records`.
+2. `unique(source, external_id)` already makes this idempotent.
 3. Compute `content_hash` from normalized-but-not-semantically-modified text.
-4. If `source_key` and hash already exist, return idempotent success and do nothing.
-5. If source item exists but hash changed, create a new immutable `document_revision`.
+4. If the hash already exists on the current revision, return idempotent success and do nothing.
+5. If the record exists but the hash changed, create a new immutable `document_revision`.
 6. Parse HTML/PDF/DOCX into ordered blocks with character offsets.
 7. Detect document language; preserve original text.
-8. Run extraction in bounded passes.
+8. Run extraction via `ml-service` (GLiNER2, 3.5.2): structural fields (formalizing today's `NormalizedJob` parsing into evidence-backed `Requirement`s), plus competency/skill mentions with real model confidence.
 9. Validate output against versioned Pydantic/JSON Schema.
 10. Store both accepted and rejected/low-confidence fields for audit, but expose only accepted fields to search projections.
-11. Link mentions to taxonomy with abstention support.
-12. Build deterministic textual representations for embedding.
-13. Generate field embeddings.
+11. Link mentions to ESCO via `ml-service` (embedder + cross-encoder, 3.5.4), with abstention (`unmapped` when below threshold).
+12. Build deterministic textual representations for embedding (same shape as today's `job_document`/`profile_document`).
+13. Call the Voyage API to generate field embeddings for retrieval.
 14. Update relational projections and lexical `tsvector`.
 15. Mark job revision `SEARCHABLE` in the same final transaction.
 16. Trigger match refresh only for active candidates affected by the source/user policy; do not synchronously rerank every candidate.
@@ -348,7 +509,7 @@ CV follows the same flow, with two differences:
 - PII is stored separately from the matching profile.
 - The user receives a review screen where extracted facts can be confirmed, corrected or hidden.
 
-Candidate edits create a new `profile_revision` with `origin = user_override`; they never overwrite extracted history. User-confirmed facts have higher trust than neural extraction.
+Candidate edits create a new `profile_revision` with `origin = user_override`; they never overwrite extracted history. User-confirmed facts have higher trust than neural extraction — 3.5.2, condition 2.
 
 ### 5.3. Match request
 
@@ -568,6 +729,12 @@ confidence.
 }
 ```
 
+Фразові компетенції на кшталт "manage enterprise accounts" — саме те, для чого
+GLiNER2 і ESCO-linking переважають literal keyword matching (3.5.2): точний
+рядковий пошук їх майже ніколи не знайде через варіативність формулювання, а
+schema-conditioned extraction розпізнає такий фрагмент як `professional_skill`
+mention і передає на linking навіть без дослівного збігу з ESCO label.
+
 Allowed competency categories:
 
 - `professional_skill`;
@@ -590,22 +757,18 @@ Certification, formal language level and license remain separate first-class obj
 
 ### 7.1. Core document tables
 
-#### `source_items`
-
-- `id uuid pk`
-- `tenant_id uuid nullable/indexed`
-- `source varchar(64) not null`
-- `external_id text nullable`
-- `canonical_url text nullable`
-- `entity_kind enum(job, candidate)`
-- `first_seen_at timestamptz`
-- `last_seen_at timestamptz`
-- unique `(tenant_id, source, external_id)` when `external_id is not null`
+За рішенням 3.4.3 немає окремої `source_items`: вона дублювала б
+`job_source_records`/`cv_documents`, які вже є unique-ідентифікованими джерелом
+істини. `document_revisions` FK-иться напряму на них. Немає `tenant_id` (3.5.5 —
+candidate-side, без multi-tenant).
 
 #### `document_revisions`
 
 - `id uuid pk`
-- `source_item_id uuid fk`
+- `entity_kind enum(job, candidate)`
+- `job_source_record_id uuid fk nullable` — заповнено коли `entity_kind = job`
+- `cv_document_id uuid fk nullable` — заповнено коли `entity_kind = candidate`
+- check: рівно одне з двох FK не-null
 - `revision_no int`
 - `content_hash char(64)`
 - `mime_type text`
@@ -617,8 +780,13 @@ Certification, formal language level and license remain separate first-class obj
 - `status enum(received, parsed, extracting, extracted, indexing, searchable, failed)`
 - `failure_code`, `failure_detail`
 - `created_at timestamptz`
-- unique `(source_item_id, revision_no)`
-- unique `(source_item_id, content_hash)`
+- unique `(job_source_record_id, revision_no)`, unique `(cv_document_id, revision_no)`
+- unique `(job_source_record_id, content_hash)`, unique `(cv_document_id, content_hash)`
+
+Міграція: `job_source_records`/`cv_documents` лишаються як є; це нова таблиця
+поруч, не заміна. Перший запуск міграції створює `revision_no = 1` для кожного
+наявного запису з `raw_text`/`description`, яке вже є, і `status = searchable`,
+щоб не було періоду, коли наявні вакансії/CV випадають з пошуку.
 
 #### `document_blocks`
 
@@ -736,6 +904,14 @@ PII such as email, phone and full name should be stored in a separate encrypted/
 
 Do not add five vector columns to `jobs`; a row-per-field table makes model migrations and multiple model versions manageable.
 
+Migration from today's `document_embeddings` (one vector per whole document,
+`unique(document_type, document_id, model)`): this table becomes
+`field_type = full_profile` for every existing row, with `profile_revision_id`
+pointing at the revision created for that job/CV in the 7.1 backfill. Splitting
+into `occupation`/`competencies`/`experience`/`responsibilities` is additive —
+existing single-vector search keeps working on `full_profile` while the other
+field types are populated incrementally.
+
 #### `profile_search_documents`
 
 - `profile_revision_id uuid pk`
@@ -746,7 +922,28 @@ Do not add five vector columns to `jobs`; a row-per-field table makes model migr
 
 #### `model_registry`
 
-- model purpose, provider/repository, pinned revision/commit, license, dimensions, max tokens, runtime backend, status, created time, benchmark metadata.
+Дві категорії рядків, за 3.5.1: retrieval-моделі (API, легкі поля) і
+understanding-моделі (self-hosted, pinned commit).
+
+- `id uuid pk`
+- `purpose enum(embedding, rerank, extraction, concept_linking)`
+- `deployment enum(api, self_hosted)`
+- `provider text` (`voyage` для API-рядків; `gliner2`/внутрішня назва для self-hosted)
+- `model_id text` (напр. `voyage-4-large`, `rerank-3`, `fastino/gliner2.5-multi-v1`)
+- `revision text nullable` — pinned commit/tag; **обов'язково** для `deployment = self_hosted`, необов'язково для `api` (там версію задає провайдер)
+- `license text nullable` — застосовно лише до self-hosted моделей
+- `runtime_backend text nullable` (напр. `pytorch_cpu`) — лише self-hosted
+- `dimensions int nullable`, `max_tokens int nullable`
+- `status enum(active, deprecated)`
+- `activated_at timestamptz`
+- `benchmark_report_id uuid nullable` — посилання на звіт з 20 (evaluation)
+
+Активний retrieval-провайдер (embedding/rerank) лишається редагованим з System
+page, за наявною конвенцією (3.3) — `model_registry` документує історію й
+benchmark-обґрунтування. Активна self-hosted модель (`extraction`,
+`concept_linking`) активується через `POST /api/v1/admin/models/{id}:activate`
+(15) — зміна тут вимагає перезапуску `ml-service`, тому це адмінська дія, не
+поле System page.
 
 ### 7.5. Matching and feedback tables
 
@@ -852,6 +1049,10 @@ alongside the existing `job_retention_days`:
 
 ## 8. Extraction design
 
+Self-hosted GLiNER2, за рішенням 3.5.2. Задача — розпізнати конкретні факти в
+одному документі; інша задача, ніж retrieval (порівняти два документи), яку
+покриває Voyage. Живе в `ml-service` (2.7, 4).
+
 ### 8.1. Model adapter
 
 Define an interface independent of GLiNER:
@@ -866,6 +1067,15 @@ class ProfileExtractor(Protocol):
 
 Initial candidate: multilingual GLiNER2.5. The official project currently exposes multilingual schema-driven extraction, classification, records, relations, span attributes and long-document chunking. Pin the exact model revision rather than using an unpinned `main` branch.
 
+Deterministic parsing (8.5) doesn't disappear — the repository already parses
+title, company, employment_type, salary, seniority, required_experience_years
+this way, and that continues unchanged for the fields it already handles well.
+GLiNER2 is additive: it covers what deterministic parsing structurally cannot
+— free-text competency/skill mentions, responsibility statements, necessity
+inferred from natural phrasing rather than a recognized heading. `Requirement`
+objects populated by either method carry the same shape; only their
+`evidence`/`confidence` provenance differs (2.2, 2.6).
+
 ### 8.2. Do not request the whole profile in one giant schema
 
 Use 2–4 bounded passes:
@@ -876,6 +1086,15 @@ Use 2–4 bounded passes:
 4. `experience_blocks`: CV roles, dates, achievements and responsibilities.
 
 Why: too many competing labels in one forward pass usually lower recall and make debugging impossible. The optimal number of passes must be confirmed by benchmark.
+
+`experience_blocks` (CV occupation history, segmented into roles with dates,
+achievements and responsibilities) is the highest-variance pass — free-form CVs
+are inconsistently structured, and GLiNER2 will do better on some than others.
+Treat its output as a genuine extraction subject to the same review/confidence
+rules as everything else (2.2, 2.3), not as ground truth; a low-confidence or
+missing segmentation falls back to the CV being embedded/reranked as one whole
+document, exactly as it is today — extraction augments retrieval, it never
+gates it.
 
 ### 8.3. Chunking
 
@@ -918,6 +1137,10 @@ This is serialization and arithmetic, not a hand-written understanding engine. D
 
 ## 9. Taxonomy and concept linking
 
+Self-hosted, за рішенням 3.5.4 — та сама причина, що й для GLiNER2 (8): це
+задача розпізнавання/підтвердження факту в тексті, не порівняння двох
+документів, тому інший клас моделі, ніж Voyage.
+
 ### 9.1. Sources
 
 Use ESCO as the primary European universal ontology. ESCO v1.2.1 exposes 13,939 skill/knowledge concepts, preferred and non-preferred labels, descriptions and occupation relationships in 28 languages. Import a pinned downloadable release rather than depending on a live API during matching.
@@ -948,6 +1171,14 @@ For every extracted mention:
 
 Forced linking is forbidden. A correct NIL/unmapped decision is better than a wrong taxonomy ID.
 
+Both the candidate-embedder (step 1) and the reranker (step 4) are self-hosted,
+co-located with GLiNER2 in `ml-service` (3.5.4) — a lightweight multilingual
+embedding model for candidate retrieval, and a small cross-encoder for the
+final rerank. Neither is Voyage: this is the same "understanding, not
+retrieval" task family as extraction, and running it locally avoids turning
+every one of the ~600 mention-candidate pairs per document (9.5) into a paid
+API call.
+
 ### 9.4. Internal concepts
 
 New tools and market-specific terms will appear before ESCO updates. Allow `internal` concepts with:
@@ -962,14 +1193,17 @@ Do not automatically create a new concept for every unknown mention. Cluster unk
 
 ### 9.5. Linking cost budget
 
-Step 4 of 9.3 reranks each mention against ~20 concept candidates. That is the
-most expensive thing in the whole ingestion path and the throughput target in
-17.3 does not account for it.
+Step 4 of 9.3 reranks each mention against ~20 concept candidates. Because this
+runs self-hosted (9.3), the cost is CPU/RAM on the same VM, not a per-call API
+bill — but the volume is still the most expensive part of the whole ingestion
+path, and the throughput target in 17.3 does not account for it by default.
 
 Order of magnitude: 30 linkable mentions per document × 20 candidates = 600
 cross-encoder pairs per document. At 5 000 documents/day that is 3 000 000 pairs
-per day on the same CPU that also has to serve interactive reranking. It does not
-fit, and no amount of batching makes it fit.
+per day, competing for CPU with GLiNER2 extraction and, on the retrieval side,
+with the (separate, API-based) Voyage reranking that also needs to stay
+responsive for interactive matches. It does not fit on a 4-core VM without
+deliberate budgeting.
 
 So the linker must be budgeted explicitly, and every one of these is a benchmark
 input rather than a fixed value:
@@ -1042,25 +1276,29 @@ coordinate external audit
 
 Do not include name, email, photo, age, address or other irrelevant PII.
 
-### 10.3. Initial model benchmark set
+### 10.3. Model benchmark set
 
-Do not hard-code a winner before measuring on Ukrainian/English/Polish job data.
+За рішенням 3.5.1: retrieval embedding — лише платні API-провайдери, без
+self-hosted (self-hosted моделі в цьому документі обслуговують іншу задачу —
+extraction і concept linking, 8/9). Список нижче — кандидати на **заміну**
+Voyage для retrieval, не на self-hosting.
 
-The list below is the **self-hosted** shortlist and only applies if 3.5 answers
-(b) or (c). If Voyage stays, the incumbent is `voyage-4-large` and the benchmark
-question is different: does a self-hosted model close enough of the quality gap
-to be worth 2–4 GB of RAM and the operational burden, given that the current
-provider costs nothing to run and the corpus is small? Measure the incumbent as a
-baseline row in the same table either way — a benchmark that omits what is
-already deployed cannot tell you whether to change anything.
+Поточний baseline — `voyage-4-large` — завжди перший рядок benchmark-таблиці:
+benchmark, який не включає те, що вже задеплоєно, не може сказати, чи варто
+щось міняти. Заміна відбувається лише якщо альтернатива дає **суттєвий**
+приріст на evaluation-наборі (20), не «трохи краще» — правило з 3.5.1.
 
-Candidates:
+Платні API-кандидати для порівняння, коли/якщо buy-in знадобиться:
 
-- fast baseline: `intfloat/multilingual-e5-small`;
-- balanced baseline: `intfloat/multilingual-e5-base` (768 dimensions, 512-token limit);
-- quality/long-context contender: `BAAI/bge-m3` (1024 dimensions, multilingual, up to 8192 tokens, dense + sparse modes).
+- Cohere Embed v4 (multilingual, offers `search_query`/`search_document` input
+  types — той самий принцип, що й E5's `query:`/`passage:` prefixes, вартий
+  перевірки при інтеграції);
+- Jina Embeddings v4 API (multilingual, довгий контекст);
+- будь-який інший платний embedding API з задокументованою multilingual
+  якістю — критерій відбору для benchmark-таблиці, не фіксований список.
 
-E5 requires the correct `query:` and `passage:` prefixes; omitting them degrades quality. Long profiles must be represented by fields/chunks instead of silent truncation.
+Self-hosted моделі (E5, BGE-M3) з попередньої версії цього розділу видалені з
+активного плану — вони застосовні лише якщо рішення 3.5.1 колись переглянуть.
 
 ### 10.4. Storage/index strategy
 
@@ -1079,13 +1317,17 @@ E5 requires the correct `query:` and `passage:` prefixes; omitting them degrades
 
 Run independently:
 
-1. occupation dense retrieval;
-2. competencies dense retrieval;
-3. experience/responsibility dense retrieval;
-4. full-profile dense retrieval;
+1. occupation dense retrieval (Voyage API);
+2. competencies dense retrieval (Voyage API);
+3. experience/responsibility dense retrieval (Voyage API);
+4. full-profile dense retrieval (Voyage API) — сьогоднішній єдиний канал, лишається;
 5. lexical retrieval over `tsvector`;
-6. canonical concept overlap/graph proximity;
-7. optional sparse retrieval if BGE-M3 sparse vectors are validated and operationally affordable.
+6. canonical concept overlap/graph proximity — ESCO `taxonomy_relations` (7.3),
+   populated by the self-hosted linker (9.3);
+7. optional sparse retrieval if BGE-M3 sparse vectors are validated and
+   operationally affordable — this would be a new self-hosted retrieval model,
+   distinct from the extraction/linking models in `ml-service`; benchmark
+   before committing (30).
 
 ### 11.2. Lexical MVP
 
@@ -1113,9 +1355,10 @@ under both their detected language and `simple`, or the English half disappears.
 
 If benchmark proves lexical quality insufficient, replace this adapter with:
 
-- ParadeDB/pg_search BM25;
-- OpenSearch/Elasticsearch;
-- BGE-M3 sparse retrieval.
+- ParadeDB/pg_search BM25 (runs inside PostgreSQL, no new service);
+- OpenSearch/Elasticsearch — a new infrastructure component, treat as a
+  decision on the scale of 3.5, not a drop-in replacement;
+- BGE-M3 sparse retrieval (self-hosted, 11.1 item 7).
 
 The rest of matching must not depend on the implementation.
 
@@ -1178,12 +1421,25 @@ Use a strict token budget and deterministic truncation priority:
 
 Never let company marketing text push requirements out of the context window.
 
-### 12.3. Initial model benchmark set
+### 12.3. Model benchmark set
+
+Той самий принцип, що й 10.3: платний API, `rerank-3` (Voyage) — базовий рядок
+benchmark-таблиці для **retrieval** reranking (фінальний CV↔вакансія рерank),
+заміна лише за суттєвий вимірюваний приріст.
 
 - CPU-oriented baseline: `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`;
-- multilingual quality contender: `BAAI/bge-reranker-v2-m3`.
+- multilingual quality contender: `BAAI/bge-reranker-v2-m3`;
+- платні API-кандидати: Cohere Rerank v3.5, Jina Reranker API, будь-який інший
+  платний rerank API з задокументованою multilingual якістю.
 
 The MiniLM model card lists 15 training languages and reports transfer to others; that is not proof of strong Ukrainian quality. BGE v2 M3 is explicitly multilingual but heavier. Choose using nDCG/latency/RAM measurements on the actual dataset.
+
+Self-hosted кандидати тут (MiniLM, BGE reranker v2 M3) конкурують за роль
+**retrieval-реранкера** з Voyage — не плутати з self-hosted cross-encoder-ом
+для concept linking (9.3), який завжди self-hosted незалежно від результату
+цього benchmark-у, бо це інша задача (3.5.1). Якщо той самий self-hosted
+cross-encoder виявиться достатньо хорошим і дешевшим за Voyage для retrieval
+теж — це підстава переглянути 3.5.1, а не мовчазна заміна.
 
 ### 12.4. Calibration
 
@@ -1204,12 +1460,25 @@ After collecting a labeled validation set:
 
 For each job requirement, compare it with candidate evidence using this order:
 
-1. exact manually confirmed concept;
-2. exact linked concept;
-3. taxonomy relation or ancestor/child relation;
-4. semantic similarity of requirement and evidence;
-5. targeted cross-encoder comparison;
+1. exact manually confirmed concept (user-reviewed candidate profile, 5.2);
+2. exact linked ESCO concept on both sides (9.3) — job requires "Kubernetes",
+   CV mentions a mention linked to the same concept → `satisfied`;
+3. taxonomy relation or ancestor/child relation (`taxonomy_relations`, 7.3) —
+   e.g. CV mentions a narrower/related concept than the one required;
+4. semantic similarity of requirement and evidence — embedding comparison
+   using the same field-level vectors already computed for retrieval (10);
+5. targeted cross-encoder comparison — only for the residual band steps 1–4
+   leave undecided, using the Voyage rerank API (12) on the short
+   requirement-text/evidence-text pair, not a new self-hosted model;
 6. no evidence → `unknown`.
+
+Steps 1–4 cost nothing beyond what extraction/linking/embedding already
+computed. Step 5 is the one place this evaluation calls a model per
+requirement rather than reusing a precomputed signal — budget it the same way
+9.5 budgets concept-linking reranking: cap how many requirements per
+job-candidate pair reach step 5 (e.g., only `required`-necessity ones without
+an earlier decision), and measure the resulting call volume in Phase 0 rather
+than assuming it is affordable.
 
 Store method and evidence for every decision.
 
@@ -1437,13 +1706,15 @@ Every match response includes:
 | Queue | Tasks | Initial concurrency |
 |---|---|---|
 | `ingest_io` | downloads, source adapters, HTML/PDF parsing | 2 |
-| `ml_extract` | calls to local ML extractor | 1 |
-| `ml_embed` | batched embedding requests | 1 |
-| `ml_rerank` | interactive reranking | 1, priority queue |
-| `maintenance` | expiry, taxonomy imports, reindexing | 1 off-peak |
+| `ml_extract` | calls to `ml-service` extractor (GLiNER2, self-hosted) | 1 |
+| `ml_embed` | batched Voyage embedding requests (retrieval, API) | 1 |
+| `ml_rerank` | interactive Voyage reranking (retrieval, API) | 1, priority queue |
+| `maintenance` | expiry, ESCO/taxonomy imports, reindexing | 1 off-peak |
 | `notifications` | user notifications | 1 |
 
-Actual concurrency must come from benchmark. `ml-service` should batch requests and prioritize interactive reranking over background embeddings.
+Actual concurrency must come from benchmark. `ml-service` should batch
+extraction/linking requests internally; Voyage calls (`ml_embed`/`ml_rerank`)
+should batch and prioritize interactive reranking over background embeddings.
 
 **This is six queues where the repository has one worker running one sequential
 task** (`scrape → embed → match → notify`), chosen so that "what is the pipeline
@@ -1453,8 +1724,10 @@ problem appears, and each queue has a different trigger:
 
 - `ml_rerank` separates first, and only when interactive match latency is hurt by
   background embedding work — that is the one genuine priority inversion here;
+- `ml_extract` separates when `ml-service` throughput needs its own backpressure,
+  distinct from the Voyage-facing queues;
 - `ingest_io` separates when a slow source blocks the rest of a run;
-- `maintenance` separates when taxonomy imports or reindexing start colliding
+- `maintenance` separates when ESCO imports or reindexing start colliding
   with normal runs;
 - `notifications` is already separate in the repository (`notify.dispatch`).
 
@@ -1483,56 +1756,49 @@ Use a transactional outbox for events that must not be lost between database com
 
 ### 17.1. Recommended topology
 
-One Docker Compose deployment:
+Той самий Docker Compose, що вже задеплоєний, плюс один новий сервіс (3.5.3):
 
-- reverse proxy;
+- reverse proxy (Caddy);
 - frontend static assets;
 - FastAPI API;
-- one general Celery worker;
-- one ML service process;
-- one ML queue worker or orchestration worker;
+- one Celery worker;
+- **`ml-service`** — один процес, GLiNER2 + concept-linking embedder/cross-encoder;
 - PostgreSQL + pgvector;
 - Redis.
 
-Do not run multiple replicas of `ml-service` until RAM and throughput benchmarks justify it.
+Do not run multiple replicas of `ml-service` until RAM and throughput
+benchmarks justify it. Voyage-виклики (retrieval embedding/rerank) лишаються
+звичайними HTTP-запитами з `api`/`worker` — вони не додають топології, лише
+мережевий виклик, точно як сьогодні.
 
 ### 17.2. Resource budget target
 
-Initial guardrails, not promises:
+За рішенням 3.5.1 `ml-service` вантажить дві моделі (extractor + concept
+linking), не три — retrieval embedding/reranking лишаються зовнішнім Voyage
+API call і не займають локальної RAM. Це суттєво легше за 8–11 GB, які
+оригінальна версія документа резервувала під extractor + embedder + reranker
+одночасно, але не нуль:
 
 | Component | RAM target |
 |---|---:|
 | OS + Docker overhead | 2–3 GB |
-| PostgreSQL + vector indexes | 4–6 GB |
-| Redis/API/frontend/workers | 2–3 GB |
-| loaded ML models/runtime | 8–11 GB |
-| safety reserve/page cache | 3–5 GB |
-| **total** | **19–28 GB** |
+| PostgreSQL + vector indexes | 2–4 GB (exact search, 10.4 — HNSW лише якщо вимір покаже потребу) |
+| Redis/API/frontend/worker | 2–3 GB |
+| `ml-service` (GLiNER2 + concept-linking embedder/cross-encoder) | 3–5 GB |
+| safety reserve/page cache | 2–3 GB |
+| **total** | **12–18 GB** |
 
-The upper bound does not fit a 24 GB machine, which is the point of writing the
-total down. Three of the rows have to give:
-
-- **Models are the swing factor.** Extractor + embedder + reranker resident
-  simultaneously is the 11 GB case. Lazy loading with an idle eviction timer, or
-  two operating modes (ingestion mode holds extractor + embedder; interactive
-  mode holds reranker), brings it to 4–6 GB at the cost of load latency on a cold
-  path. Benchmark both.
-- **PostgreSQL 4–6 GB assumes HNSW indexes are resident.** At the corpus size
-  this system actually has, exact search may be enough (10.4 already says start
-  there), and that row drops to 2–3 GB.
-- **If decision 3.5 keeps Voyage**, the ML row is roughly zero and the whole
-  budget stops being interesting — which is exactly why that decision comes
-  first.
-
-Avoid swap-dependent normal operation, and set a hard container memory limit on
-`ml-service` so an OOM kills one process rather than the database.
+Вкладається в наявну Oracle VM (24 GB) із розумним запасом — на відміну від
+оригінальної версії документа (19–28 GB), бо `ml-service` тримає лише
+understanding-моделі, не весь трьохмодельний стек. Lazy loading чи eviction
+timer для `ml-service` лишаються опцією, якщо вимір покаже потребу, а не
+стартовою вимогою.
 
 **Architecture check.** Oracle's Always Free 4 OCPU / 24 GB shape is
-`VM.Standard.A1.Flex` — ARM (Ampere), not x86. That affects this plan in ways
-worth confirming in Phase 0, not in Phase 7: wheel availability for `torch` and
-ONNX runtimes, absence of x86-only quantized kernels, and CPU inference latency
-that does not transfer from an x86 laptop benchmark. Measure reranker latency for
-a 75-pair batch on the actual VM before committing to synchronous match UX.
+`VM.Standard.A1.Flex` — ARM (Ampere), not x86. Перевірити в Phase 0, не в
+Phase 7: доступність `torch`/ONNX wheels під ARM, відсутність x86-only
+quantized kernels, і CPU-latency GLiNER2 + concept-linking cross-encoder на
+реальній VM, не на x86-ноутбуці.
 
 ### 17.3. Throughput target
 
@@ -1548,7 +1814,9 @@ a 75-pair batch on the actual VM before committing to synchronous match UX.
 - nightly PostgreSQL logical backup plus periodic base backup;
 - retain raw document revisions and taxonomy/model configs;
 - test restore monthly;
-- model weights can be re-downloaded only if exact revision/checksum is pinned;
+- self-hosted model weights (GLiNER2, concept-linking models) can be
+  re-downloaded only if exact revision/checksum is pinned in `model_registry`
+  (7.4) — do not depend on a floating `main`/`latest` tag being reproducible;
 - do not treat Docker volumes as backups.
 
 ---
@@ -1560,8 +1828,8 @@ a 75-pair batch on the actual VM before committing to synchronous match UX.
 - Strip PII from embedding and reranker representations.
 - Do not embed full names, email, phone, photo captions, date of birth or home address.
 - Encrypt sensitive candidate data at rest where supported.
-- Separate permissions for recruiters/admins/candidates.
-- Apply tenant filters in every query; consider PostgreSQL Row-Level Security for multi-tenant deployment.
+- Separate permissions for regular users vs. admin (System page) — no recruiter role in v1 (3.5.5).
+- No `tenant_id`/RLS in v1 — single-tenant, candidate-side product (3.5.5); revisit only if the product direction changes.
 - Log access to candidate documents.
 - Define retention/deletion flow that also removes derived embeddings and match data.
 
@@ -1737,7 +2005,8 @@ A new model/policy does not ship merely because average nDCG increased. Required
 - latency/RAM within deployment budget;
 - extraction evidence validity stays above target;
 - counterfactual tests pass;
-- pinned model license and revision recorded;
+- `model_registry` (7.4) row recorded for any new provider/model, with its
+  benchmark report linked (3.5.1);
 - rollback path tested.
 
 ---
@@ -1824,7 +2093,7 @@ backend/
       db/
       queues/
       parsers/
-      ml_client/
+      model_clients/
       taxonomy_importers/
     workers/
   ml_service/
@@ -1860,6 +2129,11 @@ docs/
   architecture/
 ```
 
+`ml_service/adapters/embedder.py`/`reranker.py` тут — не Voyage-клієнт (той
+лишається `integrations/voyage.py`, викликається з `app`/`worker`); це
+self-hosted embedder + cross-encoder для concept linking (9.3), інша пара
+моделей з іншою роллю.
+
 Keep domain logic independent from FastAPI, Celery and particular model libraries. Do not create abstractions with no second implementation unless the boundary is explicitly required here for model replacement/testing.
 
 **The tree above is illustrative; the repository's existing layout wins.** It
@@ -1873,12 +2147,12 @@ do not create the left column:
 | `app/core/` | `app/config/`, `app/observability/` | `errors.py` does not exist yet — add it where the API layer already lives |
 | `app/domain/documents|profiles|taxonomy|matching|feedback/` | `app/domain/{jobs,candidates,matching,notifications}/` | add `documents/`, `profiles/`, `taxonomy/`, `feedback/` alongside; **keep `notifications/`** |
 | `app/application/ingestion|extraction|indexing|matching/` | `app/services/` | this repository calls the use-case layer `services`; do not introduce a second one |
-| `app/infrastructure/db|queues|parsers|ml_client|taxonomy_importers/` | `app/db/`, `app/workers/`, `app/integrations/` | `integrations/sources/` is the existing adapter home; `ml_client` goes beside `integrations/voyage.py` |
+| `app/infrastructure/db|queues|parsers|model_clients|taxonomy_importers/` | `app/db/`, `app/workers/`, `app/integrations/` | `integrations/sources/` is the existing adapter home; `model_clients` is where `integrations/voyage.py` (retrieval) already lives — `ml_service` calls (extraction/linking) are a separate client, not this one |
 | `app/workers/` | `app/workers/tasks/` | already exists, with `pipeline`, `notify`, `retention` |
-| `ml_service/` | new top-level, if 3.5 chooses self-hosted | otherwise it does not exist |
+| `ml_service/` | new top-level, per 3.5.1/3.5.2/3.5.4 | hosts GLiNER2 (extraction, 8) and the concept-linking embedder/cross-encoder (9.3); does not host retrieval embedding/reranking — that stays Voyage API calls from `app`/`worker` |
 | `migrations/` | `backend/alembic/versions/` | |
 | `tests/unit|integration|contract|evaluation/` | `backend/tests/unit/` + `fixtures/` | the other three directories are genuinely missing and should be added |
-| `config/extraction|match-policies|models/` | new — but see 13.2 | versioned policy files; runtime tunables stay in the database |
+| `config/extraction|match-policies|models/` | new — but see 13.2 for match-policies; `config/models/` seeds `model_registry` (7.4), the active retrieval provider stays in the database | |
 | `frontend/src/features/...` | `frontend/src/pages/` + `api/` + `components/` | page-based, not feature-folder-based; follow what is there |
 
 Two directories in the tree have no counterpart because the corresponding
@@ -1912,59 +2186,61 @@ phase's own definition of done is met:
 6. **Retention comes with the table.** Any new table that grows per run ships
    with its cleanup in the same phase, not in Phase 9.
 
-### 24.1. Cut-down path (v0.5), if this is one person's project
+### 24.1. Що рішення 3.5 змінюють у цьому плані
 
-Phases 0–10 as written are a team's roadmap: ESCO import, 3 000 judged pairs,
-counterfactual fairness suites, an LTR programme. If the answer to 3.5's
-"ambition" question is (a), the following subset delivers most of the quality
-gain and can be built alone. It is the recommended default until the evaluation
-set says otherwise.
+Phases 0–10 нижче — той самий план, що й в оригінальній версії документа,
+за одним важливим уточненням: рішення 3.5 вже закриті (провайдер моделей,
+екстракція, taxonomy, продукт), тому Phase 0 не витрачає час на вибір
+підходу — лише на вимірювання й ADR-документування вже ухваленого. Ні ESCO
+import (Phase 4), ні self-hosted extraction (Phase 3) не скорочені й не
+видалені — вони саме те, що документ будує.
 
-| Include | Skip for now |
-|---|---|
-| Phase 1 revisions and versioning (the foundation everything else needs) | Phase 4 ESCO import and concept linking entirely |
-| Phase 2 parsing, blocks, offsets, language detection | Domain adapters (22) |
-| Phase 3 extraction, but candidate-side only at first | Multi-tenant, RLS, recruiter roles |
-| Phase 5 field-level embeddings and lexical projections | Sparse retrieval / BGE-M3 multi-vector |
-| Phase 6 hybrid retrieval with dense + lexical channels and RRF | The concept channel (it needs Phase 4) |
-| Phase 7 requirement evaluation and explanations | Learned ranking (21) |
-| Seed evaluation tier (20.1) | Full 3 000-pair set |
+Що це найпомітніше змінює порівняно з версією "рішення відкриті":
 
-The single highest-value item on that list is **Phase 7's requirement evaluation
-with explanations**, because it is the one thing the current system genuinely
-cannot do: it can say "this vacancy is near your experience" but has no opinion
-on "do you meet requirement 3". Everything upstream exists to make that answer
-checkable.
+- **Phase 0 вимірює на цільовій VM**, а не вирішує self-hosted-vs-API — це
+  вже вирішено (3.5.1). Але саме тому ARM/x86 і GLiNER2-latency benchmark
+  лишаються критичними: `ml-service` self-hosted, і без вимірювання на
+  Oracle A1.Flex (ARM) неможливо знати, чи GLiNER2 взагалі прийнятно швидкий.
+- **Phase 3 несе ризик, названий у 3.4.2 явно** — не тому, що екстракція
+  повторює провал, а тому, що умови, які мають цей провал не повторити
+  (evidence spans, review-цикл, eval-гейт, 3.5.2), реалізуються саме тут.
+  Definition of done цієї фази — перевірка цих умов, не milestone.
+- **Retrieval (Voyage) і understanding (GLiNER2/ESCO) розвиваються
+  паралельно, не послідовно** — Phase 5–6 (retrieval: embeddings, hybrid
+  search) не залежать від завершення Phase 3–4 (understanding: extraction,
+  linking), крім спільної схеми revisions з Phase 1. Це можна розпаралелити
+  між двома напрямками роботи, якщо є ресурс.
 
-The single highest-*risk* item is **Phase 3 extraction**, for the reason in
-3.4.2 — it is the component that was already built once and removed. Treat its
-definition of done as a gate, not a milestone.
+Найвища цінність у плані лишається тією самою: **Phase 7's requirement
+evaluation with explanations** — це те, чого сьогоднішня система справді не
+може: сказати не лише "вакансія в сусідній ніші", а "вимогу 3 виконано,
+доказ ось тут". Вона залежить від Phase 3 (extraction) і Phase 4 (linking)
+обох.
 
-### Phase 0 — Baseline, decisions and measurement
+### Phase 0 — Repository audit and measurable baseline
 
-**Goal:** replace assumptions with measurements, and close the open decisions
-before any schema changes.
-
-The repository audit this phase used to ask for is already written up in 3.3,
-with its conflicts in 3.4 — do not redo it, verify it.
+**Goal:** verify the baseline already documented in 3.3, record decisions
+3.5.1–3.5.5 as ADRs, and benchmark what those decisions actually cost on the
+target VM before committing schema.
 
 Tasks:
 
 1. Verify 3.3 against the current tree and correct anything that has drifted.
-2. Resolve every decision in 3.5 and record each as an ADR under `docs/adr/`.
-   Until this is done, no migration in Phase 1 has a fixed shape.
-3. Add ADRs for the four boundaries this document introduces: canonical
-   revisions vs the existing `canonical_jobs`, the ML service boundary, the
-   taxonomy namespace, and score semantics.
+2. Record decisions 3.5.1–3.5.5 as ADRs under `docs/adr/` — this is
+   transcription of what is already decided, not a new discussion.
+3. Add ADRs for the two remaining boundaries this document introduces on top of
+   the repository: `document_revisions` layered over `job_source_records`/
+   `cv_documents` (3.4.3), and score semantics (13).
 4. Create a fixture set across at least five occupational domains and three
    languages, drawn from the corpus already in the database rather than invented.
-5. **Benchmark on the target VM, not a laptop** — this is the deliverable that
-   makes the rest of the plan real:
-   - extractor latency and RSS for one document, per pass count;
-   - embedding throughput per model candidate (10.3);
-   - reranker latency for a 75-pair batch (12.3), cold and warm;
-   - cost to link one document (9.5);
-   - all of it under the ARM/x86 answer from 3.5.
+5. **Benchmark on the target VM, not a laptop** — this is what makes 3.5.1's
+   RAM/latency numbers real rather than assumed:
+   - GLiNER2 extractor latency and RSS for one document, per pass count;
+   - concept-linking embedder + cross-encoder latency for the ~600-pair volume
+     from 9.5;
+   - Voyage retrieval-embedding/reranking latency (already in production —
+     confirm it stays healthy once `ml-service` shares the VM);
+   - all of it under Oracle's actual ARM (`VM.Standard.A1.Flex`) architecture.
 6. Start seed-tier annotation (20.1) in parallel — it has the longest lead time.
 7. Record current end-to-end pipeline timings and add characterization tests for
    present behavior before anything is refactored.
@@ -1972,9 +2248,9 @@ Tasks:
 Definition of done:
 
 - no production behavior changed;
-- every decision in 3.5 is closed and recorded as an ADR;
-- a benchmark report exists with numbers from the deployment VM, and 17.2's
-  budget has been rewritten against them;
+- decisions 3.5.1–3.5.5 recorded as ADRs;
+- a benchmark report exists with GLiNER2/linking/Voyage numbers from the
+  deployment VM, and 17.2's budget has been confirmed or corrected against them;
 - migration sequence is proposed and reviewed;
 - seed annotation is underway with an agreed labelling guide;
 - baseline tests run in CI and local compose.
@@ -1983,18 +2259,24 @@ Definition of done:
 
 Tasks:
 
-1. Enable pgvector extension in migration/bootstrap.
-2. Add source items, document revisions, blocks, profile revisions and model registry.
+1. pgvector is already enabled — verify, don't re-add.
+2. Add `document_revisions` (layered over the existing `job_source_records`/
+   `cv_documents`, 7.1 — no new `source_items` table), `document_blocks`,
+   `profile_revisions`, `model_registry` (7.4, no local-model fields).
 3. Add enums/check constraints/unique idempotency constraints.
 4. Implement state machine with allowed transitions.
-5. Add repository/service tests and rollback-safe migrations.
+5. Backfill: one `revision_no = 1` per existing `job_source_record`/`cv_document`,
+   `status = searchable`, so nothing drops out of matching mid-migration.
+6. Add repository/service tests and rollback-safe migrations.
 
 Definition of done:
 
 - duplicate ingest does not create a new revision;
 - changed content creates revision `n+1`;
 - failed processing preserves raw document;
-- every state transition is audited.
+- every state transition is audited;
+- today's scrape → embed → match → notify pipeline still runs unchanged against
+  the backfilled data.
 
 ### Phase 2 — Parsing and immutable ingestion
 
@@ -2018,18 +2300,27 @@ Definition of done:
 Tasks:
 
 1. Create versioned Pydantic schemas shown above.
-2. Implement `ProfileExtractor` adapter and local ML endpoint.
+2. Implement `ProfileExtractor` adapter and the `ml-service` GLiNER2 endpoint
+   (3.5.1/3.5.2, 8.1) — a new, single-purpose process; deterministic
+   `structural_fields` parsing (today's `NormalizedJob` logic) keeps running
+   unchanged for the fields it already handles, formalized into `Requirement`
+   objects with evidence spans.
 3. Add bounded passes, chunking and span remapping.
 4. Persist accepted/review/rejected results and warnings.
 5. Add extraction fixtures for all occupational slices.
-6. Add user correction revision flow for candidates.
+6. Add user correction revision flow for candidates — this is one of the three
+   conditions from 3.5.2 that must ship with this phase, not after it.
 
 Definition of done:
 
-- no semantic job-specific `if keyword` rules;
+- no semantic job-specific `if keyword` rules in application code — GLiNER2
+  handles semantic recognition, deterministic code stays limited to what 8.5
+  allows;
 - every accepted field has valid evidence or explicit low-trust marker;
 - a long document is not silently truncated;
-- extractor/model failures never corrupt current active profile.
+- extractor/model failures never corrupt current active profile;
+- the candidate review/correction flow is live before extracted facts can
+  affect any match score (3.5.2 condition 2).
 
 ### Phase 4 — Taxonomy import and concept linker
 
@@ -2037,8 +2328,11 @@ Tasks:
 
 1. Build pinned ESCO importer into staging tables.
 2. Import labels/aliases/descriptions/relations and validate counts/checksum.
-3. Generate concept representations/embeddings.
-4. Implement retrieval + rerank + abstention linker.
+3. Generate concept representations/embeddings — self-hosted, co-located with
+   GLiNER2 in `ml-service` (3.5.4).
+4. Implement retrieval + rerank + abstention linker (9.3), budgeted per 9.5
+   (caching, confident-case shortcut, async linking) from the start, not
+   retrofitted after a performance incident.
 5. Add manual mapping and unknown-mention review workflow.
 
 Definition of done:
@@ -2046,15 +2340,19 @@ Definition of done:
 - imports are repeatable and versioned;
 - current and previous taxonomy versions can coexist;
 - linker can return unmapped/ambiguous;
-- concept link always retains raw mention and evidence.
+- concept link always retains raw mention and evidence;
+- measured linking cost per document is within the Phase 0 benchmark's
+  boundaries, or the budgeting measures from 9.5 are demonstrably in place.
 
 ### Phase 5 — Embedding and indexing
 
 Tasks:
 
 1. Implement deterministic representation templates.
-2. Implement embedding adapter with batching and pinned revisions.
-3. Store field/chunk vectors and lexical projections.
+2. Extend the existing `VoyageClient` (or its interface, 10.1) to field-level
+   batching — same provider, more granular calls, not a new adapter.
+3. Store field/chunk vectors (migrating today's single `full_profile` vector,
+   7.4) and lexical projections.
 4. Add exact search baseline, then HNSW behind configuration.
 5. Implement re-embedding job and dual model version support.
 
@@ -2168,8 +2466,8 @@ Before editing:
    docs/pipeline.md, docs/domain-model.md and docs/source-adapters.md, which
    describe the behavior you are extending.
 2. Read sections 3.3, 3.4, 3.5, 23 and 24.0 of this specification. They record
-   what already exists, where this document conflicts with it, which decisions
-   are open, and which invariants hold in every phase.
+   what already exists, where this document conflicted with it, the decisions
+   that resolved those conflicts, and which invariants hold in every phase.
 3. Inspect the relevant tree, current models, migrations, services, tests and Docker configuration.
 4. Confirm or correct 3.3 against what you find; report any drift.
 5. Propose the smallest migration-compatible implementation plan for this phase.
@@ -2179,19 +2477,28 @@ Implementation rules:
 - Do not implement future phases unless a minimal interface is required now.
 - Preserve user changes and existing API behavior unless this phase explicitly changes it.
 - Use FastAPI/SQLAlchemy/Alembic/Celery conventions already present in the repository.
-- Keep model-specific libraries behind extractor/embedder/reranker adapters.
-- Do not introduce generative LLM calls into extraction, retrieval, reranking or scoring.
-- Do not add profession-specific semantic keyword rules or large regex dictionaries.
-- Deterministic parsing is allowed only for formatting, units, dates, offsets, hashing, PII removal and schema validation.
+- Two separate model boundaries, per 3.5.1 — do not blur them:
+  - **Retrieval** (embedding for search, reranking the final candidate set):
+    paid third-party API only (Voyage today), behind the
+    `EmbeddingProvider`/`Reranker` adapters (10.1, 12.1) — extend
+    `VoyageClient` or add a sibling client, never inline HTTP calls into
+    domain/service code, never a self-hosted model in this role.
+  - **Understanding** (extraction, concept linking): self-hosted, via
+    `ml-service` (3.5.2, 3.5.4) — GLiNER2 for extraction, an embedder +
+    cross-encoder for ESCO linking. This is a genuinely different task from
+    retrieval and is expected to run locally; do not "simplify" it into a
+    deterministic-only or Voyage-backed substitute without a documented
+    decision overriding 3.5.2/3.5.4.
+- Do not introduce generative LLM calls anywhere in extraction, retrieval, reranking or scoring — unconditional, and unrelated to the self-hosted-vs-API question above. GLiNER2 is non-generative and is not a generative LLM.
+- Deterministic parsing (8.5) stays deterministic for the fields it already handles (title, company, employment_type, salary, seniority, required_experience_years) — do not replace working deterministic parsing with a model call for fields that don't need one. Do not add profession-specific *semantic* keyword rules in application code (`if "senior" in title`-style inference) — that is GLiNER2's job, not a regex's.
 - Preserve raw values, evidence spans, confidence and complete version metadata.
 - Treat missing candidate information as unknown, never as false.
 - Never use protected attributes or PII in embeddings, reranker inputs or scores.
 - Add reversible migrations and idempotent tasks.
-- Pin model IDs and revisions; never depend on floating latest/main in production.
+- Pin model IDs and revisions for self-hosted models (`ml-service`); use a named, non-floating model identifier for retrieval API calls (e.g. `voyage-4-large`, not an "auto"/"latest" alias). Record both in `model_registry` (7.4).
 - No placeholder TODO implementation in a path claimed complete.
-- The repository already depends on Voyage for embeddings and reranking. Keeping,
-  replacing or supplementing it is decision 3.5, resolved by an ADR — never an
-  agent's inline choice, and never a silent second provider.
+- Extraction (GLiNER2) and concept linking (ESCO) run only in `ml-service` — never loaded into `api` or every `worker` process (4); Voyage calls for retrieval never route through `ml-service`.
+- Extracted facts do not affect any match score until the candidate review flow (5.2, Phase 3 condition 2) and the eval-gate (3.5.2 condition 3) are both in place — this is not optional scaffolding, it is the condition that makes this extraction different from the one that was removed.
 - Do not create a parallel use-case layer, adapter registry, config mechanism or
   documentation set beside the ones that exist; see the mapping in 23.
 - Leave scraping, matching, notifications and the System page working at the end
@@ -2213,7 +2520,7 @@ At the end provide:
 5. Remaining risks and intentionally deferred work.
 6. Rollback notes.
 
-Stop and ask for clarification if a required choice would cause destructive data migration, break a public API, add a paid/external service, or materially expand the phase.
+Stop and ask for clarification if a required choice would cause destructive data migration, break a public API, add a *new* self-hosted model or Docker service beyond what 3.5.2/3.5.4 already specify (GLiNER2 + concept-linking models in `ml-service`), switch/add a retrieval provider without a completed 3.5.1 benchmark, or materially expand the phase.
 ```
 
 ### 25.2. Phase request template
@@ -2243,14 +2550,24 @@ Reject the change if any of these appear:
 - one vector column overwritten when the model changes;
 - `score = 0.8` style weights scattered through code;
 - raw reranker sigmoid called a probability/percentage fit;
-- regex/keyword lists encoding occupations in application code;
-- taxonomy linking that always chooses some concept;
+- regex/keyword lists encoding occupations or professional meaning hardcoded in
+  application code — that is GLiNER2's job (3.5.2), not a Python literal;
+- taxonomy linking that always chooses some concept instead of returning
+  `unmapped`/`ambiguous`;
+- retrieval embedding or reranking (the CV↔vacancy comparison) implemented with
+  a self-hosted model instead of the approved paid API, without a completed
+  3.5.1 benchmark backing the switch;
+- extraction or concept-linking routed through a paid generative LLM, or
+  loaded into every Celery worker instead of the single `ml-service` process (4);
 - Celery tasks passing whole PDFs/JSON blobs through Redis;
-- every worker independently loading all models;
+- every worker independently loading the extraction/linking models instead of
+  the shared `ml-service` process;
 - migrations that drop/overwrite current data without a staged path;
 - embeddings containing candidate PII;
 - tests only for software-engineer vacancies;
-- “works locally” without memory/latency measurements;
+- “works locally” without memory/latency measurements from the actual
+  deployment VM (ARM, 17.2) — a self-hosted model's laptop benchmark proves
+  nothing about production;
 - a new per-run table with no retention policy in the same change;
 - a model call that repeats for input whose content hash has not changed;
 - a second use-case layer, adapter registry or config mechanism parallel to the
@@ -2258,7 +2575,10 @@ Reject the change if any of these appear:
 - a phase that leaves scraping, matching, notifications or the System page
   broken “until the next phase”;
 - a displayed percentage backed by an uncalibrated score;
-- silence in a CV read as compliance with a negated requirement.
+- silence in a CV read as compliance with a negated requirement;
+- extracted facts influencing ranking before the candidate review flow and
+  eval-gate from 3.5.2 are both live — this is the condition that makes this
+  extraction different from the one that was already tried and removed.
 
 ---
 
@@ -2285,6 +2605,15 @@ Reject the change if any of these appear:
 
 ### `config/models/active.yaml`
 
+Two different lifecycles here, per 3.5.1 — the file below seeds
+`model_registry` (7.4) for both, but they are activated differently. The
+`extractor` entry is what `ml-service` loads at boot (self-hosted, pinned
+revision required). The `embedder`/`reranker` entries describe the *retrieval*
+provider — per 3.3's existing convention, the actually-active provider/model
+name for retrieval stays a `pipeline_config` (DB) setting edited from the
+System page, exactly like `rerank_weight`; the YAML below documents what has
+been benchmarked and is available to select, not what's live right now.
+
 ```yaml
 extractor:
   adapter: gliner2
@@ -2292,21 +2621,33 @@ extractor:
   revision: PIN_EXACT_COMMIT
   runtime: pytorch_cpu
 
-embedder:
+concept_linker:
   adapter: sentence_transformers
-  model_id: intfloat/multilingual-e5-base
-  revision: PIN_EXACT_COMMIT
-  dimensions: 768
-  query_prefix: "query: "
-  document_prefix: "passage: "
+  embedder_model_id: intfloat/multilingual-e5-small
+  embedder_revision: PIN_EXACT_COMMIT
+  reranker_model_id: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+  reranker_revision: PIN_EXACT_COMMIT
+  # self-hosted, co-located with the extractor in ml-service (3.5.4) — a
+  # different pair of models than the retrieval embedder/reranker below,
+  # chosen for CPU-latency at ESCO's ~14k-concept candidate volume (9.5).
+
+embedder:
+  adapter: voyage
+  model_id: voyage-4-large
+  dimensions: 1024
+  # retrieval — paid API, activated via pipeline_config, not this file (3.3)
 
 reranker:
-  adapter: sentence_transformers_cross_encoder
-  model_id: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
-  revision: PIN_EXACT_COMMIT
+  adapter: voyage
+  model_id: rerank-3
+  # retrieval — paid API, activated via pipeline_config, not this file (3.3)
 ```
 
-This is a boot configuration, not an endorsement that these are final winners. Activate only after Phase 0 benchmark and license/revision verification.
+This is a boot configuration for `ml-service`'s self-hosted models, not an
+endorsement that these are final winners. Activate only after Phase 0
+benchmark and license/revision verification. If a different paid
+embedding/rerank provider is ever adopted under 3.5.1's rule, it gets a
+`model_registry` row and a `pipeline_config` change — not an edit to this file.
 
 ### `config/match-policies/v1.yaml`
 
@@ -2365,19 +2706,23 @@ Never couple database migration completion with immediate activation of a new mo
 
 ## 29. Concrete first sprint
 
-Do not begin by wiring all three neural models. The first sprint should produce a vertical but narrow foundation:
+Do not begin by wiring all three neural models at once. The first sprint
+should produce a vertical but narrow foundation — decisions 3.5 are already
+closed, so this sprint benchmarks and verifies them, it does not choose among
+options:
 
-1. Close the decisions in 3.5 and write them up as ADRs.
+1. Record decisions 3.5.1–3.5.5 as ADRs.
 2. `document_revisions` + `profile_revisions`, attached to the **existing**
-   `job_source_records` rather than a new `source_items` table — pgvector is
-   already enabled and ingestion is already idempotent on
+   `job_source_records`/`cv_documents` rather than a new `source_items` table —
+   pgvector is already enabled and ingestion is already idempotent on
    `unique(source, external_id)`, so neither needs rebuilding.
 3. Store `raw_text`, `parsed_text`, `content_hash` and `language_code` on each
    revision, and make a re-scrape that changed nothing create no new revision.
 4. One versioned JobProfile Pydantic schema.
 5. Fake/deterministic extractor adapter for contract tests only.
-6. One real extractor spike in a benchmark command on the target VM, not yet in
-   the production path.
+6. One real GLiNER2 spike in a benchmark command on the target VM (ARM), not
+   yet in the production path — this is what turns 3.5.1/17.2's numbers from
+   assumption into measurement.
 7. Stage duration and failure counts reported onto the existing `pipeline_runs`
    row and rendered on the System page.
 8. Seed-tier annotation started (20.1).
@@ -2388,7 +2733,9 @@ Sprint acceptance demo:
 - ingest modified text → second revision;
 - process with fake adapter → evidence-backed profile;
 - invalid span → revision fails safely and old active profile stays intact;
-- run GLiNER2 benchmark on a small multilingual fixture set and report latency/RAM/quality observations.
+- run the GLiNER2 benchmark on a small multilingual fixture set on the actual
+  Oracle VM and report latency/RAM/quality observations — this is the number
+  17.2's budget depends on.
 
 This gives a stable skeleton before expensive model integration.
 
@@ -2398,15 +2745,17 @@ This gives a stable skeleton before expensive model integration.
 
 - GLiNER2.5 multi vs alternative extractor/fine-tune;
 - one extraction pass vs several bounded passes;
-- E5 small/base vs BGE-M3;
-- MiniLM reranker vs BGE reranker;
-- exact vector search vs HNSW threshold;
-- PostgreSQL lexical search vs true BM25/sparse retrieval;
+- concept-linking embedder/cross-encoder choice for ESCO matching (9.3) —
+  distinct from the retrieval embedder/reranker below;
+- alternative paid embedding/rerank API vs. Voyage for retrieval, only when a
+  concrete candidate is proposed (10.3, 12.3) — not a standing task;
+- `unaccent`+hunspell `uk_UA` vs. `simple`+`pg_trgm` for lexical search (11.2);
+- exact vector search vs. HNSW threshold (10.4);
+- RRF channel weights and `rrf_k` (11.3);
 - rerank top 50 vs 75 vs 100;
-- confidence thresholds per field;
-- RRF channel weights;
-- final score weights and calibration;
-- lazy loading vs simultaneously resident ML models;
+- confidence thresholds per field (8.4);
+- final score weights and calibration (13.3, 12.4);
+- lazy loading vs simultaneously resident `ml-service` models (17.2);
 - synchronous vs asynchronous match UX on the Oracle VM.
 
 The implementation must make each of these choices configurable and measurable.
@@ -2416,34 +2765,42 @@ The implementation must make each of these choices configurable and measurable.
 ## 31. Official technical references
 
 - [GLiNER2 official repository](https://github.com/fastino-ai/GLiNER2) — schema-conditioned extraction, multilingual checkpoints, evidence spans, confidence, long-document APIs and model-loading options.
-- [Sentence Transformers: Retrieve & Re-Rank](https://www.sbert.net/examples/sentence_transformer/applications/retrieve_rerank/README.html) — bi-encoder retrieval followed by CrossEncoder reranking of a bounded candidate set.
+- [Sentence Transformers: Retrieve & Re-Rank](https://www.sbert.net/examples/sentence_transformer/applications/retrieve_rerank/README.html) — bi-encoder retrieval followed by CrossEncoder reranking of a bounded candidate set; applies both to concept linking (self-hosted) and to the retrieve-then-rerank pattern this document follows generally.
 - [pgvector official repository](https://github.com/pgvector/pgvector) — vector types, exact/HNSW/IVFFlat search, filtering, iterative scans and recall monitoring.
-- [Multilingual E5 base model card](https://huggingface.co/intfloat/multilingual-e5-base) — 768 dimensions, prefixes, language support and 512-token limitation.
+- [Multilingual E5 base model card](https://huggingface.co/intfloat/multilingual-e5-base) — 768 dimensions, prefixes, language support and 512-token limitation; a concept-linking embedder candidate (9.3), not a retrieval-embedding candidate (3.5.1 keeps retrieval on Voyage/paid API).
 - [BGE-M3 model card](https://huggingface.co/BAAI/bge-m3) — multilingual dense/sparse/multi-vector retrieval and long-context specifications.
-- [BGE reranker v2 M3 model card](https://huggingface.co/BAAI/bge-reranker-v2-m3) — multilingual cross-encoder reranking.
-- [Multilingual MiniLM CrossEncoder model card](https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1) — compact multilingual reranker baseline.
+- [BGE reranker v2 M3 model card](https://huggingface.co/BAAI/bge-reranker-v2-m3) — multilingual cross-encoder reranking; a concept-linking reranker candidate (9.3).
+- [Multilingual MiniLM CrossEncoder model card](https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1) — compact multilingual reranker baseline, for concept linking (9.3).
+- [PostgreSQL Full Text Search documentation](https://www.postgresql.org/docs/current/textsearch.html) — `tsvector`, text search configurations, and building a custom configuration for a language without a bundled dictionary.
 - [ESCO classification](https://esco.ec.europa.eu/en/classification) and [ESCO downloads](https://esco.ec.europa.eu/en/use-esco/download) — versioned occupational/skills data and multilingual taxonomy downloads.
 - [O*NET database](https://www.onetcenter.org/database.html) — US occupational data, skills, knowledge, tasks, tools and downloadable releases.
-- [European Commission AI Act overview](https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai) — employment/CV sorting as a high-risk use case and expected controls.
+- [Voyage AI documentation](https://docs.voyageai.com/) — the retrieval embedding/rerank provider already integrated (`app/integrations/voyage.py`).
+- [European Commission AI Act overview](https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai) — employment/CV sorting as a high-risk use case; relevant only if the product direction changes per 3.5.5.
 
 ---
 
 ## 32. Final architecture decision
 
-Recommended v1 direction:
+Recommended v1 direction, after decisions 3.5:
 
 ```text
-Immutable raw documents
-    → universal evidence-backed extraction
+Immutable raw documents (revisions over existing job_source_records / cv_documents)
+    → self-hosted GLiNER2: universal evidence-backed extraction
     → deterministic type/unit normalization
-    → ESCO-first concept linking with abstention
-    → field-level multilingual embeddings
-    → PostgreSQL lexical + dense + concept retrieval
+    → ESCO-first concept linking with abstention (self-hosted embedder + cross-encoder)
+    → field-level multilingual embeddings via paid API (Voyage)
+    → PostgreSQL lexical + dense (Voyage) + concept retrieval
     → RRF top candidates
-    → multilingual cross-encoder reranker
+    → reranker via paid API (Voyage)
     → requirement-level evidence evaluation
     → transparent versioned policy score
     → deterministic explanation + feedback
 ```
 
-The most important product rule is simple: the system ranks evidence, not people. It must remain possible to show which source fact affected every meaningful part of the result, and to say “unknown” when the CV or vacancy does not contain enough information.
+The most important product rule is simple: the system ranks evidence, not people. It must remain possible to show which source fact affected every meaningful part of the result, and to say "unknown" when the CV or vacancy does not contain enough information.
+
+Two model families, two responsibilities (2026-09-03 decision, 3.5.1): a paid
+API compares documents (retrieval), self-hosted models understand one document
+at a time (extraction, linking). Neither is a shortcut around the other — this
+is what lets the pipeline both find neighbouring vacancies *and* explain
+"requirement 3", which today's Voyage-only system cannot do.
