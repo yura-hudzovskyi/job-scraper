@@ -26,6 +26,13 @@ from app.db.models.pipeline import PipelineRunModel
 from app.db.models.profile import ProfileRevisionModel
 from app.db.models.registry import ModelRegistryModel
 from app.db.models.settings import PipelineConfigModel
+from app.db.models.taxonomy import (
+    ProfileConceptMentionModel,
+    TaxonomyConceptModel,
+    TaxonomyRelationModel,
+    TaxonomyVersionModel,
+    UnmappedMentionModel,
+)
 from app.db.models.user import UserModel
 
 __all__ = [
@@ -44,10 +51,15 @@ __all__ = [
     "OutboxEventModel",
     "PipelineConfigModel",
     "PipelineRunModel",
+    "ProfileConceptMentionModel",
     "ProfileRevisionModel",
     "RawJobModel",
     "ScrapeRunModel",
+    "TaxonomyConceptModel",
+    "TaxonomyRelationModel",
+    "TaxonomyVersionModel",
     "TelegramIntegrationModel",
+    "UnmappedMentionModel",
     "UserModel",
     "UserPreferenceModel",
 ]
