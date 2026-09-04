@@ -31,6 +31,7 @@ from app.integrations.sources.categories import CATEGORIES_BY_SOURCE
 from app.integrations.sources.registry import build_default_registry
 from app.integrations.voyage import VoyageClient
 from app.repositories.candidate_repository import CandidateRepository
+from app.repositories.document_repository import DocumentRepository
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
@@ -99,7 +100,10 @@ async def _scrape_all() -> dict[str, Any]:
         seen, new, errors, error_text = 0, 0, 0, None
         try:
             async with session_scope() as session:
-                result = await JobIngestionService(JobRepository(session)).ingest_source(
+                result = await JobIngestionService(
+                    JobRepository(session),
+                    document_repository=DocumentRepository(session),
+                ).ingest_source(
                     adapter,
                     JobSearchCriteria(keywords=[category]),
                     max_jobs=config.scrape_max_jobs_per_run,

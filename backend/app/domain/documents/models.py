@@ -11,10 +11,27 @@ table are the two decisions worth testing on their own, so they are pure
 functions over plain data and the repository does the persisting.
 """
 
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+
+
+def compute_content_hash(raw_text: str) -> str:
+    """The identity of one version of a document.
+
+    Taken over the *raw* text a source gave us, never over the parsed text.
+    `parsed_text` is a function of (raw_text, parser_version), and both of those
+    are stored separately — so hashing the raw text means a parser improvement
+    re-parses existing revisions instead of manufacturing a new one for every
+    document in the corpus on the day it ships.
+
+    Full sha256 hex, matching `encode(sha256(...), 'hex')` in the Phase 1
+    backfill migration. The two must agree or every backfilled document looks
+    changed on its next scrape.
+    """
+    return hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
 
 
 class EntityKind(StrEnum):

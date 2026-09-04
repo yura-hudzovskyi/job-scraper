@@ -58,6 +58,13 @@ class NormalizedJob:
     salary: SalaryRange | None = None
     seniority: str | None = None
     required_experience_years: float | None = None
+    # The description's original markup, when the source had any. `description`
+    # above is this flattened to text and stays the field everything existing
+    # reads; this one exists because flattening throws away which lines were
+    # headings and which were list items, and block parsing (Phase 2) needs that
+    # structure. Markup is a format, not a source quirk, so carrying it here does
+    # not leak DOU's or Djinni's payload shape into the normalized model.
+    description_html: str | None = None
 
 
 @dataclass(frozen=True)

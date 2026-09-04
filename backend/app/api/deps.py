@@ -112,8 +112,9 @@ def get_job_service(
 
 def get_job_ingestion_service(
     job_repository: JobRepository = Depends(get_job_repository),
+    document_repository: DocumentRepository = Depends(get_document_repository),
 ) -> JobIngestionService:
-    return JobIngestionService(job_repository)
+    return JobIngestionService(job_repository, document_repository=document_repository)
 
 
 def get_system_service(

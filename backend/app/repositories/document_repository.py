@@ -205,17 +205,39 @@ class DocumentRepository:
         )
         return [(row[0], row[1], row[2]) for row in result.all()]
 
-    async def replace_blocks(
+    async def store_parse(
         self,
         revision_id: uuid.UUID,
+        parsed_text: str,
         blocks: list[tuple[int, BlockType, str, int, int]],
+        parser_name: str,
+        parser_version: str,
+        language_code: str | None = None,
     ) -> int:
-        """Parsed blocks for a revision, as (ordinal, type, text, start, end).
+        """The parsed text and the blocks whose offsets index into it, together.
 
-        Replaces rather than appends: re-parsing a revision under a new parser
-        version must not leave the previous parse's blocks behind, or offsets from
-        two different parses would coexist under one document.
+        One method rather than two because they are one fact. Blocks written
+        against a `parsed_text` that was not updated in the same breath have
+        offsets pointing into the previous parse, and every evidence span built
+        on them would quote the wrong substring — silently, since the offsets
+        would still be in range.
+
+        `language_code` belongs here rather than on `record` because it is
+        detected from the parsed text: raw markup carries Latin tag names that
+        outvote the body of a short Ukrainian vacancy.
+
+        Replaces rather than appends, for the same reason as above: re-parsing
+        under a new parser version must not leave the old parse's blocks behind.
         """
+        revision = await self._session.get(DocumentRevisionModel, revision_id)
+        if revision is None:
+            raise LookupError(f"no document revision {revision_id}")
+        revision.parsed_text = parsed_text
+        revision.parser_name = parser_name
+        revision.parser_version = parser_version
+        if language_code is not None:
+            revision.language_code = language_code
+
         await self._session.execute(
             delete(DocumentBlockModel).where(
                 DocumentBlockModel.document_revision_id == revision_id

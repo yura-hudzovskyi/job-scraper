@@ -28,6 +28,7 @@ def to_normalized_job(raw_job: RawJob) -> NormalizedJob:
         title=title,
         company=detail["company"],
         description=html_to_text(description_html),
+        description_html=description_html or None,
         employment_type=EmploymentType.FULL_TIME,
         location=_split_location(detail["location_text"], detail["remote"]),
         salary=parse_salary_range(detail["salary_text"]),
