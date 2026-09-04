@@ -20,6 +20,7 @@ celery_app = Celery(
         "app.workers.tasks.pipeline",
         "app.workers.tasks.notify",
         "app.workers.tasks.retention",
+        "app.workers.tasks.outbox",
     ],
 )
 
@@ -33,6 +34,18 @@ celery_app.conf.beat_schedule = {
     },
     "purge-stale-jobs": {
         "task": "retention.purge_stale_jobs",
+        "schedule": 24 * 60 * 60,
+    },
+    # Drains the transactional outbox. Frequent and cheap: the relay reads one
+    # indexed batch and does nothing when there is nothing pending, and the point
+    # of the outbox is that an event written at commit time reaches its handler
+    # soon after rather than at the next pipeline tick.
+    "relay-outbox": {
+        "task": "outbox.relay",
+        "schedule": 60,
+    },
+    "purge-published-outbox-events": {
+        "task": "outbox.purge_published",
         "schedule": 24 * 60 * 60,
     },
 }

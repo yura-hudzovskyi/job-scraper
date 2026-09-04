@@ -21,6 +21,7 @@ from app.db.models.notification import (
     NotificationSettingsModel,
     TelegramIntegrationModel,
 )
+from app.db.models.outbox import OutboxEventModel
 from app.db.models.pipeline import PipelineRunModel
 from app.db.models.profile import ProfileRevisionModel
 from app.db.models.registry import ModelRegistryModel
@@ -40,6 +41,7 @@ __all__ = [
     "NotificationDeliveryModel",
     "NotificationModel",
     "NotificationSettingsModel",
+    "OutboxEventModel",
     "PipelineConfigModel",
     "PipelineRunModel",
     "ProfileRevisionModel",

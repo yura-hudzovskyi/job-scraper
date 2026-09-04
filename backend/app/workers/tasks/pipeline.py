@@ -35,6 +35,7 @@ from app.repositories.document_repository import DocumentRepository
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
+from app.repositories.outbox_repository import OutboxRepository
 from app.repositories.pipeline_config_repository import PipelineConfigRepository
 from app.repositories.pipeline_run_repository import (
     FAILED,
@@ -103,6 +104,7 @@ async def _scrape_all() -> dict[str, Any]:
                 result = await JobIngestionService(
                     JobRepository(session),
                     document_repository=DocumentRepository(session),
+                    outbox=OutboxRepository(session),
                 ).ingest_source(
                     adapter,
                     JobSearchCriteria(keywords=[category]),

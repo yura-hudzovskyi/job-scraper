@@ -25,8 +25,14 @@ from app.integrations.parsers.html import parse_html
 from app.integrations.sources.base import JobSearchCriteria, JobSourceAdapter
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.job_repository import JobRepository
+from app.repositories.outbox_repository import OutboxRepository
 
 logger = logging.getLogger(__name__)
+
+# Emitted when a new version of a document's text is stored. Phase 3's extractor
+# is the consumer; nothing handles it yet, and the relay says so rather than
+# letting unhandled events pile up.
+DOCUMENT_REVISION_CREATED = "document_revision_created"
 
 
 def raw_document_text(normalized: NormalizedJob) -> str:
@@ -62,10 +68,12 @@ class JobIngestionService:
         job_repository: JobRepository,
         dedup_service: DeduplicationService | None = None,
         document_repository: DocumentRepository | None = None,
+        outbox: OutboxRepository | None = None,
     ):
         self._job_repository = job_repository
         self._dedup_service = dedup_service or DeduplicationService()
         self._document_repository = document_repository
+        self._outbox = outbox
 
     async def ingest_source(
         self,
@@ -176,6 +184,20 @@ class JobIngestionService:
         await self._document_repository.transition(
             uuid.UUID(revision.id), RevisionStatus.PARSED, reason="parsed on ingest"
         )
+        if self._outbox is not None:
+            # Same transaction as the revision itself. An event committed
+            # separately could be lost while the revision survived, which is the
+            # gap the outbox exists to close.
+            self._outbox.append(
+                aggregate_type="document_revision",
+                aggregate_id=revision.id,
+                event_type=DOCUMENT_REVISION_CREATED,
+                payload={
+                    "entity_kind": EntityKind.JOB.value,
+                    "revision_no": revision.revision_no,
+                    "language_code": detect_language(parsed.text),
+                },
+            )
         for warning in parsed.warnings:
             logger.warning("revision %s: %s", revision.id, warning)
 
