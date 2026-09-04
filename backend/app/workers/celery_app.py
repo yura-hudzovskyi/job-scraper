@@ -21,6 +21,7 @@ celery_app = Celery(
         "app.workers.tasks.notify",
         "app.workers.tasks.retention",
         "app.workers.tasks.outbox",
+        "app.workers.tasks.taxonomy",
     ],
 )
 
