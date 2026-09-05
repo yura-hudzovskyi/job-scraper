@@ -9,8 +9,8 @@ An event with no handler is still delivered — marked published and counted as
 unhandled. Leaving it pending would build a backlog of events nobody is ever
 going to want, and hide a genuinely stuck one among them.
 
-Extraction runs from here rather than inline with ingestion because it is the
-step that will call a model once GLiNER2 lands: off the scrape path, a slow or
+Extraction runs from here rather than inline with ingestion because it calls a
+model — about two seconds per vacancy, measured: off the scrape path, a slow or
 failing extractor degrades throughput instead of taking scraping down with it,
 and a retry costs nothing because the revision's state machine already records
 where it got to.
@@ -23,9 +23,13 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.config.settings import get_settings
 from app.db.session import session_scope
 from app.domain.documents.events import DOCUMENT_REVISION_CREATED
+from app.domain.profiles.extraction import ProfileExtractor
+from app.domain.profiles.neural import NeuralExtractor
 from app.domain.profiles.structural import StructuralExtractor
+from app.integrations.ml_service import MlServiceClient
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.mention_repository import MentionRepository
 from app.repositories.outbox_repository import OutboxRepository
@@ -40,6 +44,19 @@ logger = logging.getLogger(__name__)
 EventHandler = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
+def build_extractor() -> ProfileExtractor:
+    """The neural extractor when `ml-service` is configured, structural otherwise.
+
+    Reading the setting here rather than at import time is what lets the same
+    image run in local development with no model container: nothing fails, the
+    profiles are thinner, and each one records which extractor produced it.
+    """
+    url = get_settings().ml_service_url
+    if not url:
+        return StructuralExtractor()
+    return NeuralExtractor(MlServiceClient(url))
+
+
 async def extract_document_revision(aggregate_id: str, payload: dict[str, Any]) -> None:
     """Extract a profile from a newly parsed revision.
 
@@ -52,18 +69,16 @@ async def extract_document_revision(aggregate_id: str, payload: dict[str, Any]) 
         service = ExtractionService(
             DocumentRepository(session),
             ProfileRepository(session),
-            StructuralExtractor(),
-            ConceptLinkingService(
-                TaxonomyRepository(session), MentionRepository(session)
-            ),
+            build_extractor(),
+            ConceptLinkingService(TaxonomyRepository(session), MentionRepository(session)),
         )
         outcome = await service.extract(uuid.UUID(aggregate_id))
     if outcome.skipped_reason:
         logger.info("revision %s not extracted: %s", aggregate_id, outcome.skipped_reason)
 
 
-# event_type -> handler. GLiNER2 replaces the extractor inside the handler, not
-# the wiring here.
+# event_type -> handler. Which extractor runs is decided in `build_extractor`,
+# inside the handler — this wiring did not change when GLiNER2 arrived.
 HANDLERS: dict[str, EventHandler] = {
     DOCUMENT_REVISION_CREATED: extract_document_revision,
 }
@@ -97,7 +112,9 @@ async def _relay() -> dict[str, int]:
                 # it: the failure is counted on its own row and the relay moves on.
                 failed += 1
                 logger.warning(
-                    "outbox event %d (%s) failed to publish", event.id, event.event_type,
+                    "outbox event %d (%s) failed to publish",
+                    event.id,
+                    event.event_type,
                     exc_info=True,
                 )
                 await outbox.record_failure(event.id, str(exc))

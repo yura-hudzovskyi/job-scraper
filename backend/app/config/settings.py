@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     # rather than quietly producing nothing (see /api/system/status).
     voyage_api_key: str | None = None
 
+    # Where the self-hosted understanding models run (spec 3.5.3). Unset means
+    # no neural extraction: the pipeline falls back to the structural extractor
+    # and says so on each profile, rather than failing revisions. That is what
+    # makes this safe to leave empty in local development.
+    ml_service_url: str | None = None
+
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     # Public HTTPS hostname Caddy fronts this API on (see Caddyfile,
@@ -60,7 +66,9 @@ class Settings(BaseSettings):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
-    @field_validator("voyage_api_key", "telegram_bot_token", "api_domain", mode="before")
+    @field_validator(
+        "voyage_api_key", "telegram_bot_token", "api_domain", "ml_service_url", mode="before"
+    )
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         """`VOYAGE_API_KEY=` in a .env file arrives as an empty string, not as
