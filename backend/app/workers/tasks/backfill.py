@@ -49,10 +49,14 @@ from app.domain.documents.events import (
 from app.domain.documents.language import detect_language
 from app.domain.documents.models import EntityKind, RevisionStatus
 from app.domain.documents.parsing import ParsedDocument, parse_plain_text
+from app.domain.taxonomy.linking import ExtractedSpan
 from app.integrations.ml_service import MlServiceClient
 from app.integrations.parsers.html import parse_html
 from app.repositories.document_repository import DocumentRepository
+from app.repositories.mention_repository import MentionRepository
 from app.repositories.outbox_repository import OutboxRepository
+from app.repositories.taxonomy_repository import TaxonomyRepository
+from app.services.concept_linking_service import ConceptLinkingService
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -353,3 +357,95 @@ def reextract_revisions(limit: int = BATCH) -> dict[str, Any]:
     is what keeps a few thousand re-extractions from monopolising the worker.
     """
     return asyncio.run(_run_reextract(limit))
+
+
+# --- re-linking after the taxonomy changes -----------------------------------
+
+# The newest profile per document revision, with the text its spans index into.
+# Only the newest matters: older ones are history, and re-linking them would
+# write mentions for a profile nothing reads.
+_NEWEST_PROFILES = """
+    SELECT p.id, p.extracted_profile, r.parsed_text
+    FROM (
+        SELECT DISTINCT ON (document_revision_id) id, document_revision_id,
+               extracted_profile, created_at
+        FROM profile_revisions
+        ORDER BY document_revision_id, created_at DESC
+    ) p
+    JOIN document_revisions r ON r.id = p.document_revision_id
+    WHERE r.parsed_text IS NOT NULL
+    ORDER BY p.id
+    OFFSET :offset LIMIT :limit
+"""
+
+
+def _spans_of(profile: dict[str, Any]) -> list[ExtractedSpan]:
+    """The competencies a stored profile holds, as linker input.
+
+    Read back out of the profile rather than re-extracted: the model already
+    decided which phrases are competencies, and that decision does not change
+    because the taxonomy did. This is the whole reason re-linking is cheap
+    enough to run over the corpus — no forward pass, just a dictionary lookup
+    per mention.
+    """
+    spans: list[ExtractedSpan] = []
+    for competency in profile.get("competencies") or []:
+        evidence = competency.get("evidence")
+        if not evidence:
+            continue
+        spans.append(
+            ExtractedSpan(
+                raw_text=competency["raw_text"],
+                start_char=evidence["start_char"],
+                end_char=evidence["end_char"],
+                confidence=float(competency.get("confidence", 1.0)),
+            )
+        )
+    return spans
+
+
+async def _relink_batch(offset: int, limit: int) -> tuple[int, int, int]:
+    async with session_scope() as session:
+        rows = (
+            await session.execute(text(_NEWEST_PROFILES), {"offset": offset, "limit": limit})
+        ).all()
+        if not rows:
+            return 0, 0, 0
+
+        linker = ConceptLinkingService(TaxonomyRepository(session), MentionRepository(session))
+        linked = relinked = 0
+        for profile_id, profile, parsed_text in rows:
+            spans = _spans_of(profile or {})
+            result = await linker.link(profile_id, parsed_text, spans=spans or None)
+            linked += result.linked
+            relinked += 1
+        return len(rows), relinked, linked
+
+
+async def _run_relink(batch: int) -> dict[str, Any]:
+    offset = profiles = linked = 0
+    while True:
+        seen, relinked, batch_linked = await _relink_batch(offset, batch)
+        if not seen:
+            break
+        profiles += relinked
+        linked += batch_linked
+        offset += seen
+    return {"status": "done", "profiles": profiles, "linked": linked}
+
+
+@celery_app.task(name="backfill.relink_profiles")
+def relink_profiles(batch: int = 200) -> dict[str, Any]:
+    """Re-link every current profile against the taxonomy as it stands now.
+
+    Run after promoting terms into internal concepts (spec 9.4): a promotion
+    changes what the linker can find, but stored mentions were written by an
+    earlier lookup and do not move on their own.
+
+    Deliberately not a re-extraction. Nothing about the document or the model
+    changed — only the taxonomy — so paying five seconds a document for a
+    forward pass would be five seconds spent reproducing the answer we already
+    have. `replace_for_profile` makes it idempotent, so running it twice costs
+    time and changes nothing.
+    """
+    return asyncio.run(_run_relink(batch))
