@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -89,6 +89,45 @@ class EvaluationRepository:
         pair.annotated_at = None
         await self._session.flush()
         return True
+
+    async def next_to_judge(self, limit: int = 1) -> list[PairToJudge]:
+        """The next unjudged pairs, with the vacancy text a person has to read.
+
+        Ordered by the score the ranker gave, highest first. Judging top-down
+        means the pairs that decide nDCG@5 and MRR get labelled first, so a set
+        abandoned half-way still answers the metrics that matter most — rather
+        than holding three hundred judgements spread evenly over pairs nobody
+        will ever see.
+        """
+        result = await self._session.execute(
+            text(
+                """
+                SELECT p.id::text, p.canonical_job_id::text, c.title, c.company,
+                       coalesce(r.parsed_text, c.description), p.system_score,
+                       p.label, p.tier
+                FROM evaluation_pairs p
+                JOIN canonical_jobs c ON c.id = p.canonical_job_id
+                LEFT JOIN document_revisions r ON r.id = p.job_revision_id
+                WHERE p.label IS NULL
+                ORDER BY p.system_score DESC NULLS LAST, p.id
+                LIMIT :limit
+                """
+            ),
+            {"limit": limit},
+        )
+        return [
+            PairToJudge(
+                id=row[0],
+                canonical_job_id=row[1],
+                job_title=row[2],
+                job_company=row[3],
+                job_text=row[4] or "",
+                system_score=row[5],
+                label=row[6],
+                tier=row[7],
+            )
+            for row in result.all()
+        ]
 
     async def existing_job_ids(self, candidate_revision_id: uuid.UUID) -> set[uuid.UUID]:
         """Canonical jobs already in this candidate's set, so sampling adds only new ones."""
