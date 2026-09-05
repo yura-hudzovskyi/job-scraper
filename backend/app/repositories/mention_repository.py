@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -80,6 +80,21 @@ class MentionRepository:
             .limit(limit)
         )
         return [(row[0], row[1], row[2]) for row in result.all()]
+
+    async def count_pending_unmapped(self) -> int:
+        """How many terms are waiting, without fetching them.
+
+        Separate from `pending_unmapped` because the System page wants the size
+        of the queue and the top of the queue independently — reading a page of
+        rows to call `len` on it caps the count at the page size and then calls
+        the cap a total.
+        """
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(UnmappedMentionModel)
+            .where(UnmappedMentionModel.status == "pending")
+        )
+        return int(result.scalar_one())
 
     async def review_unmapped(self, normalized_text: str, status: str) -> bool:
         """Mark a term promoted or ignored. False when there is no such term."""

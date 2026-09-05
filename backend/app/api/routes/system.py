@@ -9,7 +9,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,17 +17,22 @@ from pydantic import BaseModel
 
 from app.api.deps import (
     get_current_user_id,
+    get_mention_repository,
     get_pipeline_config_repository,
     get_pipeline_run_repository,
     get_system_service,
+    get_taxonomy_repository,
 )
 from app.config.settings import get_settings
 from app.domain import pipeline_config as config_meta
 from app.domain.pipeline_config import PipelineConfig
 from app.integrations.sources.categories import CATEGORIES_BY_SOURCE
+from app.integrations.taxonomy import esco
 from app.integrations.voyage import VoyageClient
+from app.repositories.mention_repository import MentionRepository
 from app.repositories.pipeline_config_repository import PipelineConfigRepository
 from app.repositories.pipeline_run_repository import PipelineRun, PipelineRunRepository
+from app.repositories.taxonomy_repository import TaxonomyRepository
 from app.services.system_service import SystemService
 from app.workers.celery_app import celery_app
 from app.workers.tasks import pipeline as pipeline_tasks
@@ -397,3 +402,104 @@ async def flush_redis(
         client = redis.from_url(url)
         await client.flushdb()
     return ResetResponse(deleted={"redis_databases": len(urls)})
+
+
+# --- taxonomy ---------------------------------------------------------------
+
+
+class TaxonomyStatusResponse(BaseModel):
+    """What the linker is matching against, and how much of it there is."""
+
+    namespace: str
+    version: str
+    status: str
+    languages: list[str]
+    concepts: int
+    relations: int
+    source_checksum: str | None
+    pending_unmapped: int
+
+
+class UnmappedTermResponse(BaseModel):
+    normalized_text: str
+    sample_raw_text: str
+    occurrences: int
+
+
+class ReviewUnmappedResponse(BaseModel):
+    """The decision as recorded. Not ResetResponse: nothing was deleted, and a
+    response shaped like a deletion would say otherwise."""
+
+    normalized_text: str
+    status: str
+
+
+class ReviewUnmappedRequest(BaseModel):
+    # `ignored` for a term that is ordinary language rather than a gap;
+    # `promoted` for one worth adding to the taxonomy. Promotion records the
+    # decision — creating the internal concept is a separate, deliberate step,
+    # because spec 9.4 forbids an unknown mention becoming a concept on its own.
+    status: Literal["ignored", "promoted"]
+
+
+@router.get("/taxonomy", response_model=TaxonomyStatusResponse | None)
+async def get_taxonomy_status(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    taxonomy_repository: TaxonomyRepository = Depends(get_taxonomy_repository),
+    mention_repository: MentionRepository = Depends(get_mention_repository),
+) -> TaxonomyStatusResponse | None:
+    """The active release, or null when none has been imported.
+
+    Null rather than a 404: "no taxonomy yet" is a normal state the System page
+    should render, not an error it should handle.
+    """
+    version = await taxonomy_repository.active_version(esco.NAMESPACE)
+    if version is None:
+        return None
+    pending = await mention_repository.count_pending_unmapped()
+    return TaxonomyStatusResponse(
+        namespace=version.namespace,
+        version=version.version,
+        status=version.status,
+        languages=version.languages,
+        concepts=version.concept_count,
+        relations=version.relation_count,
+        source_checksum=version.source_checksum,
+        pending_unmapped=pending,
+    )
+
+
+@router.get("/taxonomy/unmapped", response_model=list[UnmappedTermResponse])
+async def list_unmapped_terms(
+    limit: int = 50,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    mention_repository: MentionRepository = Depends(get_mention_repository),
+) -> list[UnmappedTermResponse]:
+    """Terms the taxonomy did not cover, commonest first.
+
+    Frequency is the whole point: seen once is probably a typo, seen four
+    hundred times is a gap worth a person's attention (spec 9.4).
+    """
+    terms = await mention_repository.pending_unmapped(limit=min(limit, 500))
+    return [
+        UnmappedTermResponse(
+            normalized_text=normalized, sample_raw_text=sample, occurrences=count
+        )
+        for normalized, sample, count in terms
+    ]
+
+
+@router.post(
+    "/taxonomy/unmapped/{normalized_text}/review", response_model=ReviewUnmappedResponse
+)
+async def review_unmapped_term(
+    normalized_text: str,
+    payload: ReviewUnmappedRequest,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    mention_repository: MentionRepository = Depends(get_mention_repository),
+) -> ReviewUnmappedResponse:
+    """Record a decision about one unmapped term, taking it out of the queue."""
+    reviewed = await mention_repository.review_unmapped(normalized_text, payload.status)
+    if not reviewed:
+        raise HTTPException(status_code=404, detail=f"no unmapped term {normalized_text!r}")
+    return ReviewUnmappedResponse(normalized_text=normalized_text, status=payload.status)

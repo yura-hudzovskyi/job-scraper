@@ -17,10 +17,12 @@ from app.repositories.document_repository import DocumentRepository
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.match_repository import MatchRepository
+from app.repositories.mention_repository import MentionRepository
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.pipeline_config_repository import PipelineConfigRepository
 from app.repositories.pipeline_run_repository import PipelineRunRepository
 from app.repositories.profile_repository import ProfileRepository
+from app.repositories.taxonomy_repository import TaxonomyRepository
 from app.repositories.user_repository import UserRepository
 from app.security.tokens import InvalidToken, decode_access_token
 from app.services.auth_service import AuthService
@@ -107,6 +109,14 @@ def get_cv_service(
 
 def get_profile_repository(session: AsyncSession = Depends(get_session)) -> ProfileRepository:
     return ProfileRepository(session)
+
+
+def get_taxonomy_repository(session: AsyncSession = Depends(get_session)) -> TaxonomyRepository:
+    return TaxonomyRepository(session)
+
+
+def get_mention_repository(session: AsyncSession = Depends(get_session)) -> MentionRepository:
+    return MentionRepository(session)
 
 
 def get_profile_review_service(

@@ -5,16 +5,25 @@ import { ApiError } from "../api/client";
 import {
   flushRedis,
   getSystemStatus,
+  getTaxonomyStatus,
+  listUnmappedTerms,
   purgeQueue,
   resetData,
   resetPipelineConfig,
+  reviewUnmappedTerm,
   runPipeline,
   testVoyage,
   updatePipelineConfig,
   type ResetTarget,
   type RunSteps,
 } from "../api/endpoints";
-import type { ConfigField, PipelineRun, PipelineStep, SystemStatus } from "../api/types";
+import type {
+  ConfigField,
+  PipelineRun,
+  PipelineStep,
+  SystemStatus,
+  UnmappedDecision,
+} from "../api/types";
 import {
   Badge,
   Button,
@@ -257,6 +266,119 @@ function PipelineDiagram({ status }: { status: SystemStatus }) {
   );
 }
 
+/** The taxonomy the linker matches against, and the terms it could not cover.
+ *
+ *  Its own component with its own queries: the taxonomy is imported by a worker
+ *  task on a completely different schedule from the pipeline, so folding it into
+ *  the system status would make one screen's refresh depend on the other's.
+ */
+function TaxonomyPanel() {
+  const queryClient = useQueryClient();
+  const taxonomyQuery = useQuery({ queryKey: ["taxonomy"], queryFn: getTaxonomyStatus });
+  const unmappedQuery = useQuery({
+    queryKey: ["taxonomy-unmapped"],
+    queryFn: () => listUnmappedTerms(25),
+  });
+
+  const reviewMutation = useMutation({
+    mutationFn: ({ term, decision }: { term: string; decision: UnmappedDecision }) =>
+      reviewUnmappedTerm(term, decision),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["taxonomy-unmapped"] });
+      queryClient.invalidateQueries({ queryKey: ["taxonomy"] });
+    },
+  });
+
+  const taxonomy = taxonomyQuery.data;
+  const unmapped = unmappedQuery.data ?? [];
+
+  return (
+    <Card>
+      <SectionTitle>Taxonomy</SectionTitle>
+      {taxonomyQuery.isLoading ? (
+        <p className="text-sm text-slate-500">Loading…</p>
+      ) : !taxonomy ? (
+        <InfoBanner tone="warn">
+          No taxonomy imported. Skills in a vacancy are matched as raw text until a release is
+          imported with the <code>taxonomy.import_release</code> task.
+        </InfoBanner>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <Stat value={taxonomy.concepts} label="concepts" />
+            <Stat value={taxonomy.relations} label="relations" />
+            <Stat value={taxonomy.languages.length} label="languages" />
+            <Stat value={taxonomy.pending_unmapped} label="unreviewed terms" />
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Badge tone={taxonomy.status === "active" ? "ok" : "neutral"}>
+              {taxonomy.namespace} {taxonomy.version} · {taxonomy.status}
+            </Badge>
+            {taxonomy.languages.map((language) => (
+              <Badge key={language}>{language}</Badge>
+            ))}
+            {taxonomy.source_checksum && (
+              <Badge title="sha256 of the release archive that was imported">
+                {taxonomy.source_checksum.slice(0, 12)}
+              </Badge>
+            )}
+          </div>
+        </>
+      )}
+
+      <h3 className="mt-6 mb-1 text-sm font-medium text-slate-800">Terms the taxonomy missed</h3>
+      <p className="mb-3 text-xs text-slate-600">
+        Words the linker read as a skill but found no concept for, commonest first. Seen once is
+        usually a typo; seen hundreds of times is a real gap. Nothing here affects matching — a
+        decision is recorded for a person to act on, never applied automatically.
+      </p>
+      {unmappedQuery.isLoading ? (
+        <p className="text-sm text-slate-500">Loading…</p>
+      ) : unmapped.length === 0 ? (
+        <p className="text-sm text-slate-500">Nothing waiting for review.</p>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {unmapped.map((term) => (
+            <li
+              key={term.normalized_text}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-slate-200 px-3 py-2"
+            >
+              <span className="flex-1 text-sm" title={`seen as "${term.sample_raw_text}"`}>
+                {term.sample_raw_text}
+              </span>
+              <span className="text-xs font-medium text-slate-500 tabular-nums">
+                ×{term.occurrences}
+              </span>
+              <SecondaryButton
+                onClick={() =>
+                  reviewMutation.mutate({ term: term.normalized_text, decision: "promoted" })
+                }
+                disabled={reviewMutation.isPending}
+              >
+                Worth adding
+              </SecondaryButton>
+              <SecondaryButton
+                onClick={() =>
+                  reviewMutation.mutate({ term: term.normalized_text, decision: "ignored" })
+                }
+                disabled={reviewMutation.isPending}
+              >
+                Ignore
+              </SecondaryButton>
+            </li>
+          ))}
+        </ul>
+      )}
+      {reviewMutation.isError && (
+        <div className="mt-2">
+          <ErrorBanner message="Could not record that decision — see the server logs" />
+        </div>
+      )}
+    </Card>
+  );
+}
+
+
 export function System() {
   const queryClient = useQueryClient();
   const statusQuery = useQuery({
@@ -408,6 +530,8 @@ export function System() {
           editable here — they're deployment secrets, not settings.
         </p>
       </Card>
+
+      <TaxonomyPanel />
 
       <Card>
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">

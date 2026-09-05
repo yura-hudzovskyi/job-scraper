@@ -183,6 +183,29 @@ export interface ResetResponse {
   deleted: Record<string, number>;
 }
 
+// --- taxonomy ---------------------------------------------------------------
+
+export interface TaxonomyStatus {
+  namespace: string;
+  version: string;
+  status: string;
+  languages: string[];
+  concepts: number;
+  relations: number;
+  /** Checksum of the release archive — two installs on "1.2.1" can still differ. */
+  source_checksum: string | null;
+  pending_unmapped: number;
+}
+
+/** A term the linker found in a document and the taxonomy did not cover. */
+export interface UnmappedTerm {
+  normalized_text: string;
+  sample_raw_text: string;
+  occurrences: number;
+}
+
+export type UnmappedDecision = "ignored" | "promoted";
+
 // --- telegram & auth --------------------------------------------------------
 
 export interface ConnectTelegramResponse {

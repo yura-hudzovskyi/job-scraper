@@ -15,10 +15,13 @@ import type {
   ScrapeRun,
   SourceHealth,
   SystemStatus,
+  TaxonomyStatus,
   TelegramBotInfo,
   TelegramStatus,
   TestVoyageResponse,
   TokenResponse,
+  UnmappedDecision,
+  UnmappedTerm,
 } from "./types";
 
 // --- auth -------------------------------------------------------------------
@@ -101,3 +104,16 @@ export const resetData = (target: ResetTarget) =>
   apiClient.post<ResetResponse>(`/api/system/reset/${target}`);
 export const purgeQueue = () => apiClient.post<ResetResponse>("/api/system/queue/purge");
 export const flushRedis = () => apiClient.post<ResetResponse>("/api/system/redis/flush");
+
+// --- taxonomy ---------------------------------------------------------------
+
+/** null when no release has been imported yet — a state to render, not an error. */
+export const getTaxonomyStatus = () =>
+  apiClient.get<TaxonomyStatus | null>("/api/system/taxonomy");
+export const listUnmappedTerms = (limit = 50) =>
+  apiClient.get<UnmappedTerm[]>(`/api/system/taxonomy/unmapped?limit=${limit}`);
+export const reviewUnmappedTerm = (normalizedText: string, status: UnmappedDecision) =>
+  apiClient.post<{ normalized_text: string; status: string }>(
+    `/api/system/taxonomy/unmapped/${encodeURIComponent(normalizedText)}/review`,
+    { status },
+  );
