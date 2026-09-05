@@ -249,3 +249,48 @@ export interface MeResponse {
   user_id: string;
   email: string;
 }
+
+
+// --- evaluation set (spec 20.1) ---------------------------------------------
+
+export interface EvaluationPair {
+  id: string;
+  canonical_job_id: string;
+  job_title: string;
+  job_company: string;
+  job_text: string;
+  /** What the ranker scored it. Shown after judging, never before. */
+  system_score: number | null;
+  tier: string;
+}
+
+/** 0 irrelevant, 1 weak, 2 relevant, 3 strong. */
+export type EvaluationLabel = 0 | 1 | 2 | 3;
+
+export interface EvaluationProgress {
+  counts: Record<string, number>;
+  label_distribution: Record<string, number>;
+  labels: Record<string, string>;
+}
+
+export interface EvaluationSampleResult {
+  added: number;
+  considered: number;
+  skipped_existing: number;
+  coverage: { score_bands: Record<string, number>; languages: Record<string, number> };
+}
+
+export interface EvaluationReport {
+  candidate_revision_id: string;
+  metrics: {
+    judged: number;
+    unjudged: number;
+    relevant: number;
+    recall_at: Record<string, number | null>;
+    ndcg_at: Record<string, number | null>;
+    precision_at: Record<string, number | null>;
+    mrr_at_10: number | null;
+  };
+  label_distribution: Record<string, number>;
+  progress: Record<string, number>;
+}

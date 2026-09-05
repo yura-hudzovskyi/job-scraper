@@ -3,6 +3,7 @@ import { Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { RequireAuth } from "./components/RequireAuth";
 import { Dashboard } from "./pages/Dashboard";
+import { Evaluation } from "./pages/Evaluation";
 import { JobDetails } from "./pages/JobDetails";
 import { Jobs } from "./pages/Jobs";
 import { Login } from "./pages/Login";
@@ -31,6 +32,7 @@ export function AppRoutes() {
         <Route path="/sources" element={<Sources />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/system" element={<System />} />
+        <Route path="/evaluation" element={<Evaluation />} />
       </Route>
     </Routes>
   );

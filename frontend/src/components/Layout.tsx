@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { to: "/settings", label: "Settings" },
   { to: "/sources", label: "Sources" },
   { to: "/system", label: "System" },
+  { to: "/evaluation", label: "Evaluation" },
 ];
 
 export function Layout() {

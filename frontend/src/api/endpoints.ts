@@ -2,6 +2,11 @@ import { apiClient } from "./client";
 import type {
   ActiveCv,
   BulkReviewResult,
+  EvaluationLabel,
+  EvaluationPair,
+  EvaluationProgress,
+  EvaluationReport,
+  EvaluationSampleResult,
   ConnectTelegramResponse,
   CvDocument,
   JobDetail,
@@ -124,3 +129,20 @@ export const reviewUnmappedTerm = (normalizedText: string, status: UnmappedDecis
   );
 export const reviewUnmappedTerms = (decisions: Record<string, UnmappedDecision>) =>
   apiClient.post<BulkReviewResult>("/api/system/taxonomy/unmapped/review", { decisions });
+
+
+// --- evaluation set ---------------------------------------------------------
+
+/** null when the queue is empty — fully judged, or never sampled. */
+export const nextEvaluationPair = () =>
+  apiClient.get<EvaluationPair | null>("/api/evaluation/next");
+export const judgeEvaluationPair = (pairId: string, label: EvaluationLabel) =>
+  apiClient.post<EvaluationProgress>(`/api/evaluation/${pairId}/judge`, { label });
+export const unjudgeEvaluationPair = (pairId: string) =>
+  apiClient.post<EvaluationProgress>(`/api/evaluation/${pairId}/unjudge`);
+export const getEvaluationProgress = () =>
+  apiClient.get<EvaluationProgress>("/api/evaluation/progress");
+export const sampleEvaluationPairs = (size = 300) =>
+  apiClient.post<EvaluationSampleResult>("/api/evaluation/sample", { size, tier: "seed" });
+export const getEvaluationReport = () =>
+  apiClient.get<EvaluationReport>("/api/evaluation/report");
