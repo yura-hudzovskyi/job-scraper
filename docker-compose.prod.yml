@@ -33,6 +33,25 @@ services:
       - postgres
       - redis
 
+  # The self-hosted understanding models (spec 3.5.3): GLiNER2 extraction, and
+  # the concept-linking models that join it. Separate from `worker` because the
+  # weights are ~4 GB resident and the worker runs four prefork children, each
+  # of which would hold a copy — and because `api` shares the worker's image, so
+  # torch there would ship with every API deploy.
+  #
+  # No published port. Reachable only on this compose network, the same way
+  # postgres and redis are, which is what stands in for authentication.
+  ml-service:
+    image: ghcr.io/yura-hudzovskyi/job-scraper-ml-service:latest
+    restart: unless-stopped
+    env_file: .env
+    # Room for the model plus a batch, and a ceiling so a runaway forward pass
+    # cannot take Postgres down with it. Measured: 3.9 GB resident after load.
+    mem_limit: 7g
+    # Two of four cores. Extraction is background work; scraping and matching
+    # are not, and they share this box.
+    cpus: 2.0
+
   beat:
     image: ghcr.io/yura-hudzovskyi/job-scraper-backend:latest
     restart: unless-stopped

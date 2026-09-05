@@ -1,0 +1,56 @@
+[project]
+name = "job-scraper-ml-service"
+version = "0.1.0"
+description = "Self-hosted understanding models: extraction and concept linking"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    # gliner2's own extras pull torch/transformers/peft/safetensors. Named
+    # explicitly rather than relying on the bare `gliner2` package, which
+    # installs none of them and then fails at model load rather than at import
+    # (spec 17.5). accelerate, protobuf and sentencepiece are not in the extra
+    # but the checkpoints need them: protobuf and sentencepiece to convert the
+    # SentencePiece tokenizer, accelerate for the loading path transformers
+    # takes with a safetensors checkpoint.
+    "gliner2[local]>=2.0",
+    "accelerate>=1.0",
+    "protobuf>=5.0",
+    "sentencepiece>=0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.12",
+    "httpx>=0.27",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Body"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+
+[[tool.mypy.overrides]]
+# Neither ships a py.typed marker.
+module = ["gliner2.*", "torch.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
