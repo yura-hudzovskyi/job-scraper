@@ -8,6 +8,7 @@ from app.db.models.document import (
     DocumentRevisionTransitionModel,
 )
 from app.db.models.embedding import DocumentEmbeddingModel
+from app.db.models.evaluation import EvaluationPairModel
 from app.db.models.job import (
     CanonicalJobModel,
     JobSourceRecordModel,
@@ -42,6 +43,7 @@ __all__ = [
     "DocumentEmbeddingModel",
     "DocumentRevisionModel",
     "DocumentRevisionTransitionModel",
+    "EvaluationPairModel",
     "JobMatchModel",
     "JobSourceRecordModel",
     "ModelRegistryModel",
