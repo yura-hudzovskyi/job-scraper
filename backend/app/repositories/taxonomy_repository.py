@@ -165,9 +165,7 @@ class TaxonomyRepository:
             await self._session.execute(insert(TaxonomyRelationModel), rows[start : start + BATCH])
         await self._session.flush()
 
-    async def concept_ids_by_uri(
-        self, namespace: str, version: str
-    ) -> dict[str, uuid.UUID]:
+    async def concept_ids_by_uri(self, namespace: str, version: str) -> dict[str, uuid.UUID]:
         """The URI-to-id map a relation insert or a language merge needs."""
         result = await self._session.execute(
             select(TaxonomyConceptModel.external_id, TaxonomyConceptModel.id).where(
@@ -180,9 +178,7 @@ class TaxonomyRepository:
     async def update_labels(self, rows: list[dict[str, Any]]) -> None:
         """Bulk-update `labels` by primary key — how a second language lands."""
         for start in range(0, len(rows), BATCH):
-            await self._session.execute(
-                update(TaxonomyConceptModel), rows[start : start + BATCH]
-            )
+            await self._session.execute(update(TaxonomyConceptModel), rows[start : start + BATCH])
         await self._session.flush()
 
     async def labels_of(self, namespace: str, version: str) -> dict[str, dict[str, Any]]:
@@ -223,6 +219,121 @@ class TaxonomyRepository:
             for concept_id, labels in result.all()
         ]
 
+    # --- internal concepts (spec 9.4) ----------------------------------------
+
+    # The namespace for concepts this system created rather than imported, and
+    # the one version it ever has. ESCO ships releases; internal concepts grow
+    # one promotion at a time, so a version number would only ever be 1 and
+    # pretending otherwise would suggest a release cadence that does not exist.
+    INTERNAL_NAMESPACE = "internal"
+    INTERNAL_VERSION = "1"
+
+    async def ensure_internal_version(self) -> VersionRecord:
+        """The internal namespace's version row, created on first use.
+
+        Lazily rather than in a migration: it matters only once somebody
+        promotes a term, and a data migration inserting a row that concepts then
+        hang off is a downgrade nobody can write honestly.
+        """
+        existing = await self.find_version(self.INTERNAL_NAMESPACE, self.INTERNAL_VERSION)
+        if existing is not None:
+            return existing
+        model = TaxonomyVersionModel(
+            namespace=self.INTERNAL_NAMESPACE,
+            version=self.INTERNAL_VERSION,
+            languages=[],
+            status="active",
+            activated_at=datetime.now(UTC),
+        )
+        self._session.add(model)
+        await self._session.flush()
+        return _to_version(model)
+
+    async def internal_concept_by_term(self, normalized_text: str) -> uuid.UUID | None:
+        """The concept a term was already promoted into, if it was.
+
+        Promotion is idempotent because of this: `external_id` is derived from
+        the normalized term, so promoting the same word twice finds the first
+        concept rather than creating a rival with the same label.
+        """
+        result = await self._session.execute(
+            select(TaxonomyConceptModel.id).where(
+                TaxonomyConceptModel.namespace == self.INTERNAL_NAMESPACE,
+                TaxonomyConceptModel.external_id == self._internal_external_id(normalized_text),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def _internal_external_id(normalized_text: str) -> str:
+        return f"internal:{normalized_text}"
+
+    async def create_internal_concept(
+        self,
+        normalized_text: str,
+        preferred_label: str,
+        forms: list[str],
+        concept_type: str = "provisional",
+    ) -> uuid.UUID:
+        """Add a concept for a term the imported taxonomy does not contain.
+
+        `concept_type` is `provisional` rather than one of ESCO's own types
+        (spec 9.4 asks for a provisional type): nobody has decided whether
+        "Terraform" is a skill or a knowledge item, and recording a guess as if
+        it were the publisher's classification would make the two
+        indistinguishable later.
+
+        Labels go under `und` — ISO 639-2 for "undetermined". The term was read
+        out of a document whose language we know, but the term itself usually
+        has no language: `Terraform` is `Terraform` in every vacancy that names
+        it, and filing it under `en` would be a claim nobody checked.
+        """
+        version = await self.ensure_internal_version()
+        existing = await self.internal_concept_by_term(normalized_text)
+        if existing is not None:
+            return existing
+
+        concept = TaxonomyConceptModel(
+            namespace=self.INTERNAL_NAMESPACE,
+            external_id=self._internal_external_id(normalized_text),
+            taxonomy_version=self.INTERNAL_VERSION,
+            concept_type=concept_type,
+            preferred_label=preferred_label,
+            labels={"und": sorted({form for form in [*forms, preferred_label] if form.strip()})},
+            status="active",
+        )
+        self._session.add(concept)
+        await self._session.flush()
+
+        # The count doubles as the linker's cache generation: every process
+        # rebuilds its alias index when this changes, which is how a promotion
+        # made in the API reaches a worker that has its own cached index.
+        model = await self._session.get(TaxonomyVersionModel, version.id)
+        if model is not None:
+            model.concept_count = model.concept_count + 1
+            await self._session.flush()
+        return concept.id
+
+    async def internal_generation(self) -> int:
+        """How many internal concepts exist — the alias index's cache key.
+
+        A number rather than a timestamp because it is the thing that actually
+        changes the index. Two processes that agree on it are looking at the
+        same taxonomy.
+        """
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(TaxonomyConceptModel)
+            .where(
+                TaxonomyConceptModel.namespace == self.INTERNAL_NAMESPACE,
+                TaxonomyConceptModel.status == "active",
+            )
+        )
+        return int(result.scalar_one())
+
+    async def internal_surface_forms(self) -> list[tuple[uuid.UUID, list[str]]]:
+        return await self.surface_forms(self.INTERNAL_NAMESPACE, self.INTERNAL_VERSION)
+
     async def count_concepts(self, namespace: str, version: str) -> int:
         result = await self._session.execute(
             select(func.count())
@@ -242,14 +353,10 @@ class TaxonomyRepository:
             TaxonomyConceptModel.taxonomy_version == version,
         )
         await self._session.execute(
-            delete(TaxonomyRelationModel).where(
-                TaxonomyRelationModel.source_concept_id.in_(ids)
-            )
+            delete(TaxonomyRelationModel).where(TaxonomyRelationModel.source_concept_id.in_(ids))
         )
         await self._session.execute(
-            delete(TaxonomyRelationModel).where(
-                TaxonomyRelationModel.target_concept_id.in_(ids)
-            )
+            delete(TaxonomyRelationModel).where(TaxonomyRelationModel.target_concept_id.in_(ids))
         )
         await self._session.execute(
             delete(TaxonomyConceptModel).where(

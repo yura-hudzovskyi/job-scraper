@@ -13,9 +13,10 @@ from typing import Any, Literal
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import (
+    get_concept_promotion_service,
     get_current_user_id,
     get_mention_repository,
     get_pipeline_config_repository,
@@ -33,6 +34,7 @@ from app.repositories.mention_repository import MentionRepository
 from app.repositories.pipeline_config_repository import PipelineConfigRepository
 from app.repositories.pipeline_run_repository import PipelineRun, PipelineRunRepository
 from app.repositories.taxonomy_repository import TaxonomyRepository
+from app.services.concept_promotion_service import ConceptPromotionService
 from app.services.system_service import SystemService
 from app.workers.celery_app import celery_app
 from app.workers.tasks import pipeline as pipeline_tasks
@@ -427,11 +429,34 @@ class UnmappedTermResponse(BaseModel):
 
 
 class ReviewUnmappedResponse(BaseModel):
-    """The decision as recorded. Not ResetResponse: nothing was deleted, and a
-    response shaped like a deletion would say otherwise."""
+    """The decision as recorded, and what it did to the taxonomy.
+
+    Not ResetResponse: nothing was deleted, and a response shaped like a
+    deletion would say otherwise. `concept_id` is null for everything except a
+    promotion, because only a promotion changes what the linker can find.
+    """
 
     normalized_text: str
     status: str
+    concept_id: str | None = None
+    created_concept: bool = False
+
+
+class BulkReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # One decision per term. Capped because the whole batch is one transaction:
+    # a person clearing a page of the queue, not a script rewriting all 11 504.
+    decisions: dict[str, Literal["ignored", "promoted", "pending"]] = Field(
+        min_length=1, max_length=200
+    )
+
+
+class BulkReviewResponse(BaseModel):
+    reviewed: int
+    promoted: int
+    concepts_created: int
+    missing: list[str]
 
 
 class ReviewUnmappedRequest(BaseModel):
@@ -476,6 +501,7 @@ async def get_taxonomy_status(
 @router.get("/taxonomy/unmapped", response_model=list[UnmappedTermResponse])
 async def list_unmapped_terms(
     limit: int = 50,
+    min_occurrences: int = 2,
     user_id: uuid.UUID = Depends(get_current_user_id),
     mention_repository: MentionRepository = Depends(get_mention_repository),
 ) -> list[UnmappedTermResponse]:
@@ -483,27 +509,68 @@ async def list_unmapped_terms(
 
     Frequency is the whole point: seen once is probably a typo, seen four
     hundred times is a gap worth a person's attention (spec 9.4).
+
+    `min_occurrences` defaults to 2 because of what the real queue turned out to
+    be. Of 11 504 pending terms, 8 162 were seen exactly once, and reading them
+    is what the default spares: `texture resolution`, `long-term technical
+    partnerships`, `domain expertise` — phrases the extractor produced once and
+    nobody would add to a taxonomy. Nothing is deleted by the filter, and a term
+    that recurs stops being filtered by recurring. Pass 1 to see everything.
     """
-    terms = await mention_repository.pending_unmapped(limit=min(limit, 500))
+    terms = await mention_repository.pending_unmapped(
+        limit=min(limit, 500), min_occurrences=max(min_occurrences, 1)
+    )
     return [
-        UnmappedTermResponse(
-            normalized_text=normalized, sample_raw_text=sample, occurrences=count
-        )
+        UnmappedTermResponse(normalized_text=normalized, sample_raw_text=sample, occurrences=count)
         for normalized, sample, count in terms
     ]
 
 
-@router.post(
-    "/taxonomy/unmapped/{normalized_text}/review", response_model=ReviewUnmappedResponse
-)
+@router.post("/taxonomy/unmapped/{normalized_text}/review", response_model=ReviewUnmappedResponse)
 async def review_unmapped_term(
     normalized_text: str,
     payload: ReviewUnmappedRequest,
     user_id: uuid.UUID = Depends(get_current_user_id),
-    mention_repository: MentionRepository = Depends(get_mention_repository),
+    promotion_service: ConceptPromotionService = Depends(get_concept_promotion_service),
 ) -> ReviewUnmappedResponse:
-    """Record a decision about one unmapped term, taking it out of the queue."""
-    reviewed = await mention_repository.review_unmapped(normalized_text, payload.status)
-    if not reviewed:
+    """Record a decision about one term, and act on it when it is a promotion.
+
+    A promotion creates an internal concept (spec 9.4) so the linker can find
+    the term next time. Until that existed, `promoted` and `ignored` differed
+    only in the word stored.
+    """
+    outcome = await promotion_service.review(normalized_text, payload.status)
+    if outcome is None:
         raise HTTPException(status_code=404, detail=f"no unmapped term {normalized_text!r}")
-    return ReviewUnmappedResponse(normalized_text=normalized_text, status=payload.status)
+    return ReviewUnmappedResponse(
+        normalized_text=outcome.normalized_text,
+        status=outcome.status,
+        concept_id=outcome.concept_id,
+        created_concept=outcome.created,
+    )
+
+
+@router.post("/taxonomy/unmapped/review", response_model=BulkReviewResponse)
+async def review_unmapped_terms(
+    payload: BulkReviewRequest,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    promotion_service: ConceptPromotionService = Depends(get_concept_promotion_service),
+) -> BulkReviewResponse:
+    """Decide a page of the queue at once.
+
+    Bulk is not a convenience here. The queue's top hundred terms are 16% of
+    occurrences and the top thousand are 47%, so there is no short prefix a
+    person can review and be done — one term per request is a workflow nobody
+    finishes.
+
+    Terms that are not in the queue are reported by name rather than failing the
+    batch: a stale page in a browser should not cost the other 199 decisions.
+    """
+    outcomes = await promotion_service.review_many(list(payload.decisions.items()))
+    reviewed = {outcome.normalized_text for outcome in outcomes}
+    return BulkReviewResponse(
+        reviewed=len(outcomes),
+        promoted=sum(1 for outcome in outcomes if outcome.concept_id),
+        concepts_created=sum(1 for outcome in outcomes if outcome.created),
+        missing=sorted(set(payload.decisions) - reviewed),
+    )

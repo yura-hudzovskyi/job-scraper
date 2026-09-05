@@ -66,16 +66,27 @@ class MentionRepository:
             )
         await self._session.flush()
 
-    async def pending_unmapped(self, limit: int = 50) -> list[tuple[str, str, int]]:
+    async def pending_unmapped(
+        self, limit: int = 50, min_occurrences: int = 1
+    ) -> list[tuple[str, str, int]]:
         """The most frequent terms awaiting review, commonest first — what a
-        person should look at when deciding whether the taxonomy has a gap."""
+        person should look at when deciding whether the taxonomy has a gap.
+
+        `min_occurrences` hides the single-sighting tail rather than deleting
+        it. Those rows are still evidence, and a term that recurs leaves the
+        tail by recurring; what the filter buys is a queue whose top is worth
+        reading (spec 9.4 — seen once is probably a typo).
+        """
         result = await self._session.execute(
             select(
                 UnmappedMentionModel.normalized_text,
                 UnmappedMentionModel.sample_raw_text,
                 UnmappedMentionModel.occurrences,
             )
-            .where(UnmappedMentionModel.status == "pending")
+            .where(
+                UnmappedMentionModel.status == "pending",
+                UnmappedMentionModel.occurrences >= min_occurrences,
+            )
             .order_by(UnmappedMentionModel.occurrences.desc())
             .limit(limit)
         )
@@ -96,8 +107,22 @@ class MentionRepository:
         )
         return int(result.scalar_one())
 
-    async def review_unmapped(self, normalized_text: str, status: str) -> bool:
+    async def get_unmapped(self, normalized_text: str) -> UnmappedMentionModel | None:
+        """One queued term, or None. What a reviewer's 404 is decided on."""
+        return await self._session.get(UnmappedMentionModel, normalized_text)
+
+    async def review_unmapped(
+        self,
+        normalized_text: str,
+        status: str,
+        concept_id: uuid.UUID | None = None,
+    ) -> bool:
         """Mark a term promoted or ignored, or put it back in the queue.
+
+        `concept_id` is the internal concept a promotion created (spec 9.4).
+        Recorded here rather than derived later, because the link between "a
+        person said this was worth adding" and "this concept exists" is the only
+        provenance an internal concept has — it was not imported from anywhere.
 
         `pending` is the undo, and it clears `reviewed_at` rather than leaving a
         timestamp behind: a row that says it was reviewed and is also waiting for
@@ -111,6 +136,10 @@ class MentionRepository:
             return False
         model.status = status
         model.reviewed_at = None if status == "pending" else datetime.now(UTC)
+        # Cleared on undo along with the timestamp. A term back in the queue
+        # that still points at a concept would say it was both promoted and
+        # awaiting a decision.
+        model.promoted_concept_id = concept_id if status == "promoted" else None
         await self._session.flush()
         return True
 

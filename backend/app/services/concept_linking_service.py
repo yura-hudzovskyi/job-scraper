@@ -36,9 +36,12 @@ from app.repositories.taxonomy_repository import TaxonomyRepository
 
 logger = logging.getLogger(__name__)
 
-# version id -> index. Keyed by the version rather than the namespace so that
-# activating a new release invalidates it by simply not matching.
-_INDEX_CACHE: dict[uuid.UUID, AliasIndex] = {}
+# (release version id, internal concept count) -> index. Keyed by the version so
+# activating a new release invalidates it by simply not matching, and by the
+# internal count so a concept promoted in the API process reaches a worker that
+# holds its own cached index. Nothing else can tell them apart: the cache is a
+# module-level dict, one per process, and there are six processes.
+_INDEX_CACHE: dict[tuple[uuid.UUID, int], AliasIndex] = {}
 
 
 def clear_index_cache() -> None:
@@ -155,12 +158,32 @@ class ConceptLinkingService:
         )
 
     async def _index_for(self, version_id: uuid.UUID, version: str) -> AliasIndex:
-        cached = _INDEX_CACHE.get(version_id)
+        """The imported release and our own concepts, in one index.
+
+        Merged rather than searched in sequence because `find_mentions` walks
+        longest-match-first over a single index: with two, "Google Cloud
+        Storage" in one and "Google" in the other could not be compared, and the
+        shorter match would win by whichever index was consulted first.
+
+        Counting internal concepts costs one indexed query per document, which
+        is nothing beside the extraction that precedes it, and is what makes a
+        promotion take effect everywhere without restarting anything.
+        """
+        generation = await self._taxonomy.internal_generation()
+        cached = _INDEX_CACHE.get((version_id, generation))
         if cached is not None:
             return cached
+
         forms = await self._taxonomy.surface_forms(self._namespace, version)
-        index = AliasIndex.build(forms)
-        _INDEX_CACHE.clear()  # only ever one release is active
-        _INDEX_CACHE[version_id] = index
-        logger.info("built alias index for %s %s: %d forms", self._namespace, version, len(index))
+        internal = await self._taxonomy.internal_surface_forms()
+        index = AliasIndex.build(forms + internal)
+        _INDEX_CACHE.clear()  # only ever one release and one generation are current
+        _INDEX_CACHE[(version_id, generation)] = index
+        logger.info(
+            "built alias index for %s %s + %d internal: %d forms",
+            self._namespace,
+            version,
+            len(internal),
+            len(index),
+        )
         return index

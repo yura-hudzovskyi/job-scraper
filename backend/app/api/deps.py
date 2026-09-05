@@ -26,6 +26,7 @@ from app.repositories.taxonomy_repository import TaxonomyRepository
 from app.repositories.user_repository import UserRepository
 from app.security.tokens import InvalidToken, decode_access_token
 from app.services.auth_service import AuthService
+from app.services.concept_promotion_service import ConceptPromotionService
 from app.services.cv_service import CvService
 from app.services.job_ingestion_service import JobIngestionService
 from app.services.job_service import JobService
@@ -117,6 +118,13 @@ def get_taxonomy_repository(session: AsyncSession = Depends(get_session)) -> Tax
 
 def get_mention_repository(session: AsyncSession = Depends(get_session)) -> MentionRepository:
     return MentionRepository(session)
+
+
+def get_concept_promotion_service(
+    taxonomy_repository: TaxonomyRepository = Depends(get_taxonomy_repository),
+    mention_repository: MentionRepository = Depends(get_mention_repository),
+) -> ConceptPromotionService:
+    return ConceptPromotionService(taxonomy_repository, mention_repository)
 
 
 def get_profile_review_service(

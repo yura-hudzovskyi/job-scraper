@@ -29,6 +29,8 @@ class _FakeTaxonomy:
     def __init__(self, active: bool = True):
         self._active = active
         self.form_loads = 0
+        self.internal_count = 0
+        self.internal_forms: list[tuple[uuid.UUID, list[str]]] = []
 
     async def active_version(self, namespace: str) -> VersionRecord | None:
         if not self._active:
@@ -49,6 +51,12 @@ class _FakeTaxonomy:
     ) -> list[tuple[uuid.UUID, list[str]]]:
         self.form_loads += 1
         return FORMS
+
+    async def internal_generation(self) -> int:
+        return self.internal_count
+
+    async def internal_surface_forms(self) -> list[tuple[uuid.UUID, list[str]]]:
+        return self.internal_forms
 
 
 class _FakeMentions:
