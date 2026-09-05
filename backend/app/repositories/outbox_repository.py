@@ -47,11 +47,20 @@ class OutboxRepository:
         )
 
     async def unpublished(self, limit: int = 100) -> list[OutboxEventModel]:
-        """The oldest events still awaiting publication.
+        """The oldest events still awaiting publication, claimed for this caller.
 
         Ordered by id, which is insertion order: events about one aggregate have
         to reach a handler in the order they happened, or a revision could be
         reported parsed before it is reported created.
+
+        `FOR UPDATE SKIP LOCKED` is what makes two relays safe to run at once,
+        and it stopped being optional when extraction started calling a model.
+        A batch used to take seven seconds and beat fires every sixty, so runs
+        never overlapped; a batch that calls GLiNER2 takes minutes, so they do.
+        Without the claim both relays read the same rows and do the same work
+        twice — harmless, because the revision's state machine refuses the
+        second extraction, but it is a whole batch of a scarce resource spent
+        on nothing.
         """
         result = await self._session.execute(
             select(OutboxEventModel)
@@ -61,6 +70,7 @@ class OutboxRepository:
             )
             .order_by(OutboxEventModel.id)
             .limit(limit)
+            .with_for_update(skip_locked=True)
         )
         return list(result.scalars())
 

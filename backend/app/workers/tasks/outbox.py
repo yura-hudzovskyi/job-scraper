@@ -88,7 +88,12 @@ HANDLERS: dict[str, EventHandler] = {
 # not grow forever.
 PUBLISHED_RETENTION_DAYS = 7
 
-BATCH_SIZE = 100
+# Sized so one relay run finishes inside beat's sixty-second tick rather than
+# piling up behind itself. Extraction now costs about 5.5 s per document
+# (17.6), so a hundred of them is nine minutes of work started every minute.
+# It does not change throughput — ml-service serialises on one model either way
+# — only how long a transaction holds its claimed rows.
+BATCH_SIZE = 10
 
 
 async def _relay() -> dict[str, int]:
