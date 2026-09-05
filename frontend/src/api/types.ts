@@ -204,7 +204,8 @@ export interface UnmappedTerm {
   occurrences: number;
 }
 
-export type UnmappedDecision = "ignored" | "promoted";
+/** `pending` is the undo — it returns a term to the queue. */
+export type UnmappedDecision = "ignored" | "promoted" | "pending";
 
 // --- telegram & auth --------------------------------------------------------
 

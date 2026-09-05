@@ -2209,7 +2209,7 @@ functionality does not exist yet and is genuinely new: `evaluation/` and
 | **1** — Storage foundation | **завершено** | — міграції прогнані на копії продакшн-даних, backfill і всі констрейнти перевірені |
 | **2** — Parsing and immutable ingestion | **завершено** | — |
 | **3** — Universal extraction | **завершено, крім нейромережевої частини** | `ml-service` + GLiNER2 не збудовані; гейт на ресурси пройдено (17.5), реалізація — наступний крок |
-| **4** — Taxonomy import and concept linker | **лексична частина завершена** | concept embeddings і cross-encoder rerank (9.3 кроки 1 і 4) чекають на `ml-service`; review-екран для `unmapped_mentions` не написаний — черга наповнюється, але переглядається лише через SQL |
+| **4** — Taxonomy import and concept linker | **лексична частина завершена** | concept embeddings і cross-encoder rerank (9.3 кроки 1 і 4) чекають на `ml-service` — це вся решта фази |
 | **5–10** | не почато | — |
 
 **Що вже працює в проді:** ingestion пише immutable revisions з блоками й

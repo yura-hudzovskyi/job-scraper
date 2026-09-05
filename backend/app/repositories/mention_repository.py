@@ -97,12 +97,20 @@ class MentionRepository:
         return int(result.scalar_one())
 
     async def review_unmapped(self, normalized_text: str, status: str) -> bool:
-        """Mark a term promoted or ignored. False when there is no such term."""
+        """Mark a term promoted or ignored, or put it back in the queue.
+
+        `pending` is the undo, and it clears `reviewed_at` rather than leaving a
+        timestamp behind: a row that says it was reviewed and is also waiting for
+        review describes two different states at once, and the next reader would
+        have to guess which one is true.
+
+        False when there is no such term.
+        """
         model = await self._session.get(UnmappedMentionModel, normalized_text)
         if model is None:
             return False
         model.status = status
-        model.reviewed_at = datetime.now(UTC)
+        model.reviewed_at = None if status == "pending" else datetime.now(UTC)
         await self._session.flush()
         return True
 

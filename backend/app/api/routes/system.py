@@ -439,7 +439,11 @@ class ReviewUnmappedRequest(BaseModel):
     # `promoted` for one worth adding to the taxonomy. Promotion records the
     # decision — creating the internal concept is a separate, deliberate step,
     # because spec 9.4 forbids an unknown mention becoming a concept on its own.
-    status: Literal["ignored", "promoted"]
+    #
+    # `pending` puts a term back in the queue. Reviewing is a long list of small
+    # irreversible-looking clicks, and a screen where the wrong one cannot be
+    # taken back is a screen people are right to be slow and nervous on.
+    status: Literal["ignored", "promoted", "pending"]
 
 
 @router.get("/taxonomy", response_model=TaxonomyStatusResponse | None)

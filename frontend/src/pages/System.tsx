@@ -280,11 +280,22 @@ function TaxonomyPanel() {
     queryFn: () => listUnmappedTerms(25),
   });
 
+  // Decisions made since the list was loaded, kept so the row can stay where it
+  // is instead of vanishing. Reviewing is a column of near-identical rows and a
+  // fast hand: a list that reorders itself between two clicks puts a different
+  // term under the second one. Rows leave the queue on the next refresh, when
+  // the user is looking at the list rather than at the button.
+  const [decided, setDecided] = useState<Record<string, UnmappedDecision>>({});
+
   const reviewMutation = useMutation({
     mutationFn: ({ term, decision }: { term: string; decision: UnmappedDecision }) =>
       reviewUnmappedTerm(term, decision),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["taxonomy-unmapped"] });
+    onSuccess: (_result, { term, decision }) => {
+      setDecided((current) => {
+        if (decision !== "pending") return { ...current, [term]: decision };
+        const { [term]: _removed, ...rest } = current;
+        return rest;
+      });
       queryClient.invalidateQueries({ queryKey: ["taxonomy"] });
     },
   });
@@ -330,7 +341,8 @@ function TaxonomyPanel() {
       <p className="mb-3 text-xs text-slate-600">
         Words the linker read as a skill but found no concept for, commonest first. Seen once is
         usually a typo; seen hundreds of times is a real gap. Nothing here affects matching — a
-        decision is recorded for a person to act on, never applied automatically.
+        decision is recorded for a person to act on, never applied automatically, and every one
+        can be taken back.
       </p>
       {unmappedQuery.isLoading ? (
         <p className="text-sm text-slate-500">Loading…</p>
@@ -338,35 +350,64 @@ function TaxonomyPanel() {
         <p className="text-sm text-slate-500">Nothing waiting for review.</p>
       ) : (
         <ul className="flex flex-col gap-1.5">
-          {unmapped.map((term) => (
-            <li
-              key={term.normalized_text}
-              className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-slate-200 px-3 py-2"
-            >
-              <span className="flex-1 text-sm" title={`seen as "${term.sample_raw_text}"`}>
-                {term.sample_raw_text}
-              </span>
-              <span className="text-xs font-medium text-slate-500 tabular-nums">
-                ×{term.occurrences}
-              </span>
-              <SecondaryButton
-                onClick={() =>
-                  reviewMutation.mutate({ term: term.normalized_text, decision: "promoted" })
-                }
-                disabled={reviewMutation.isPending}
+          {unmapped.map((term) => {
+            const decision = decided[term.normalized_text];
+            return (
+              <li
+                key={term.normalized_text}
+                className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded border px-3 py-2 ${
+                  decision ? "border-slate-100 bg-slate-50 text-slate-400" : "border-slate-200"
+                }`}
               >
-                Worth adding
-              </SecondaryButton>
-              <SecondaryButton
-                onClick={() =>
-                  reviewMutation.mutate({ term: term.normalized_text, decision: "ignored" })
-                }
-                disabled={reviewMutation.isPending}
-              >
-                Ignore
-              </SecondaryButton>
-            </li>
-          ))}
+                <span className="flex-1 text-sm" title={`seen as "${term.sample_raw_text}"`}>
+                  {term.sample_raw_text}
+                </span>
+                <span className="text-xs font-medium tabular-nums">×{term.occurrences}</span>
+                {decision ? (
+                  <>
+                    <span className="text-xs font-medium">
+                      {decision === "promoted" ? "marked worth adding" : "ignored"}
+                    </span>
+                    <SecondaryButton
+                      onClick={() =>
+                        reviewMutation.mutate({
+                          term: term.normalized_text,
+                          decision: "pending",
+                        })
+                      }
+                    >
+                      Undo
+                    </SecondaryButton>
+                  </>
+                ) : (
+                  <>
+                    {/* Ignore first and plainest: it is the answer for most of
+                        this list, and the one with no consequences. */}
+                    <SecondaryButton
+                      onClick={() =>
+                        reviewMutation.mutate({
+                          term: term.normalized_text,
+                          decision: "ignored",
+                        })
+                      }
+                    >
+                      Ignore
+                    </SecondaryButton>
+                    <Button
+                      onClick={() =>
+                        reviewMutation.mutate({
+                          term: term.normalized_text,
+                          decision: "promoted",
+                        })
+                      }
+                    >
+                      Worth adding
+                    </Button>
+                  </>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
       {reviewMutation.isError && (

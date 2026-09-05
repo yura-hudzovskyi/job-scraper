@@ -164,7 +164,24 @@ async def test_reviewing_a_term_nobody_reported_is_a_404() -> None:
     assert mentions.reviewed == []
 
 
-def test_a_decision_must_be_one_of_the_two_the_workflow_defines() -> None:
+@pytest.mark.asyncio
+async def test_a_decision_can_be_taken_back() -> None:
+    """Reviewing is a long column of near-identical rows and a fast hand. A
+    screen where the wrong click cannot be undone is one people are right to be
+    slow and nervous on."""
+    mentions = _FakeMentions([("kubernetes", "Kubernetes", 412)])
+
+    await review_unmapped_term(
+        "kubernetes",
+        ReviewUnmappedRequest(status="pending"),
+        USER,
+        mentions,  # type: ignore[arg-type]
+    )
+
+    assert mentions.reviewed == [("kubernetes", "pending")]
+
+
+def test_a_decision_must_be_one_of_the_three_the_workflow_defines() -> None:
     """`deleted`, `merged`, anything else — a status the review flow does not
     understand would leave the term neither queued nor acted on."""
     with pytest.raises(ValueError):
