@@ -18,6 +18,17 @@ enough to delay a scrape.
 Not on the beat schedule. The backlog is finite and shrinks to nothing, and a
 periodic task whose steady state is "found nothing to do" is a periodic task
 nobody will remember the purpose of.
+
+Known limitation, worth stating rather than discovering later. What Phase 1
+copied was `job_source_records.description` — already flattened by `html_to_text`,
+which drops the blank lines between sections — so these documents parse into a
+single paragraph where a freshly scraped one yields twenty-odd headings and list
+items. Nothing that runs today reads that structure (StructuralExtractor works
+from the adapter's fields, and linking scans the whole text), so the profiles and
+concept links these produce are the same ones they would produce either way. It
+starts to matter when GLiNER2 lands and necessity is read from section headings.
+The fix then is a re-parse from `raw_jobs.payload["html"]`, which still holds the
+original detail page for all 1959 of them — not more work here now.
 """
 
 import asyncio
