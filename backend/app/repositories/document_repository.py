@@ -203,6 +203,26 @@ class DocumentRepository:
         fields = model.raw_payload.get(self.NORMALIZED_FIELDS_KEY, {})
         return dict(fields) if isinstance(fields, dict) else {}
 
+    async def set_normalized_fields(
+        self, revision_id: uuid.UUID, fields: dict[str, Any]
+    ) -> None:
+        """Attach adapter-parsed fields to a revision that was stored without them.
+
+        Only for revisions that predate the snapshot being taken at ingest — see
+        app/workers/tasks/backfill.py. Ingestion writes these with the revision
+        itself, and overwriting them afterwards would replace the fields that
+        went with this text by whatever the source record says today.
+        """
+        model = await self._session.get(DocumentRevisionModel, revision_id)
+        if model is None:
+            raise LookupError(f"no document revision {revision_id}")
+        payload = dict(model.raw_payload or {})
+        if self.NORMALIZED_FIELDS_KEY in payload:
+            return
+        payload[self.NORMALIZED_FIELDS_KEY] = fields
+        model.raw_payload = payload
+        await self._session.flush()
+
     async def transitions(
         self, revision_id: uuid.UUID
     ) -> list[tuple[str | None, str, str | None]]:
