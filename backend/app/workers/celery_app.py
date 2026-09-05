@@ -23,6 +23,7 @@ celery_app = Celery(
         "app.workers.tasks.outbox",
         "app.workers.tasks.taxonomy",
         "app.workers.tasks.backfill",
+        "app.workers.tasks.evaluation",
     ],
 )
 
