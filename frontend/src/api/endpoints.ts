@@ -1,6 +1,7 @@
 import { apiClient } from "./client";
 import type {
   ActiveCv,
+  BulkReviewResult,
   ConnectTelegramResponse,
   CvDocument,
   JobDetail,
@@ -12,6 +13,7 @@ import type {
   Preferences,
   ProfileSummary,
   ResetResponse,
+  ReviewResult,
   ScrapeRun,
   SourceHealth,
   SystemStatus,
@@ -110,10 +112,15 @@ export const flushRedis = () => apiClient.post<ResetResponse>("/api/system/redis
 /** null when no release has been imported yet — a state to render, not an error. */
 export const getTaxonomyStatus = () =>
   apiClient.get<TaxonomyStatus | null>("/api/system/taxonomy");
-export const listUnmappedTerms = (limit = 50) =>
-  apiClient.get<UnmappedTerm[]>(`/api/system/taxonomy/unmapped?limit=${limit}`);
+/** `minOccurrences` hides the seen-once tail; pass 1 to see everything. */
+export const listUnmappedTerms = (limit = 50, minOccurrences = 2) =>
+  apiClient.get<UnmappedTerm[]>(
+    `/api/system/taxonomy/unmapped?limit=${limit}&min_occurrences=${minOccurrences}`,
+  );
 export const reviewUnmappedTerm = (normalizedText: string, status: UnmappedDecision) =>
-  apiClient.post<{ normalized_text: string; status: string }>(
+  apiClient.post<ReviewResult>(
     `/api/system/taxonomy/unmapped/${encodeURIComponent(normalizedText)}/review`,
     { status },
   );
+export const reviewUnmappedTerms = (decisions: Record<string, UnmappedDecision>) =>
+  apiClient.post<BulkReviewResult>("/api/system/taxonomy/unmapped/review", { decisions });

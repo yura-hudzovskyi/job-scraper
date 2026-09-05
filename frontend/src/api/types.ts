@@ -207,6 +207,22 @@ export interface UnmappedTerm {
 /** `pending` is the undo — it returns a term to the queue. */
 export type UnmappedDecision = "ignored" | "promoted" | "pending";
 
+export interface ReviewResult {
+  normalized_text: string;
+  status: string;
+  /** Set only by a promotion — the internal concept it created or found. */
+  concept_id: string | null;
+  created_concept: boolean;
+}
+
+export interface BulkReviewResult {
+  reviewed: number;
+  promoted: number;
+  concepts_created: number;
+  /** Terms the queue no longer had — a stale page, not an error. */
+  missing: string[];
+}
+
 // --- telegram & auth --------------------------------------------------------
 
 export interface ConnectTelegramResponse {

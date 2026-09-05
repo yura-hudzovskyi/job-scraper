@@ -11,6 +11,7 @@ import {
   resetData,
   resetPipelineConfig,
   reviewUnmappedTerm,
+  reviewUnmappedTerms,
   runPipeline,
   testVoyage,
   updatePipelineConfig,
@@ -274,34 +275,51 @@ function PipelineDiagram({ status }: { status: SystemStatus }) {
  */
 function TaxonomyPanel() {
   const queryClient = useQueryClient();
+  // Seen-once terms are 8 162 of the 11 504 pending: "texture resolution",
+  // "domain expertise". Hidden by default rather than deleted — a term that
+  // recurs leaves the tail by recurring.
+  const [includeRare, setIncludeRare] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
   const taxonomyQuery = useQuery({ queryKey: ["taxonomy"], queryFn: getTaxonomyStatus });
   const unmappedQuery = useQuery({
-    queryKey: ["taxonomy-unmapped"],
-    queryFn: () => listUnmappedTerms(25),
+    queryKey: ["taxonomy-unmapped", includeRare],
+    queryFn: () => listUnmappedTerms(50, includeRare ? 1 : 2),
   });
 
-  // Decisions made since the list was loaded, kept so the row can stay where it
-  // is instead of vanishing. Reviewing is a column of near-identical rows and a
-  // fast hand: a list that reorders itself between two clicks puts a different
-  // term under the second one. Rows leave the queue on the next refresh, when
-  // the user is looking at the list rather than at the button.
-  const [decided, setDecided] = useState<Record<string, UnmappedDecision>>({});
+  const afterReview = () => {
+    setSelected(new Set());
+    queryClient.invalidateQueries({ queryKey: ["taxonomy-unmapped"] });
+    queryClient.invalidateQueries({ queryKey: ["taxonomy"] });
+  };
 
-  const reviewMutation = useMutation({
+  const bulkMutation = useMutation({
+    mutationFn: (decision: UnmappedDecision) =>
+      reviewUnmappedTerms(
+        Object.fromEntries([...selected].map((term) => [term, decision])) as Record<
+          string,
+          UnmappedDecision
+        >,
+      ),
+    onSuccess: afterReview,
+  });
+
+  const singleMutation = useMutation({
     mutationFn: ({ term, decision }: { term: string; decision: UnmappedDecision }) =>
       reviewUnmappedTerm(term, decision),
-    onSuccess: (_result, { term, decision }) => {
-      setDecided((current) => {
-        if (decision !== "pending") return { ...current, [term]: decision };
-        const { [term]: _removed, ...rest } = current;
-        return rest;
-      });
-      queryClient.invalidateQueries({ queryKey: ["taxonomy"] });
-    },
+    onSuccess: afterReview,
   });
 
   const taxonomy = taxonomyQuery.data;
   const unmapped = unmappedQuery.data ?? [];
+  const busy = bulkMutation.isPending || singleMutation.isPending;
+
+  const toggle = (term: string) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (!next.delete(term)) next.add(term);
+      return next;
+    });
 
   return (
     <Card>
@@ -339,78 +357,101 @@ function TaxonomyPanel() {
 
       <h3 className="mt-6 mb-1 text-sm font-medium text-slate-800">Terms the taxonomy missed</h3>
       <p className="mb-3 text-xs text-slate-600">
-        Words the linker read as a skill but found no concept for, commonest first. Seen once is
-        usually a typo; seen hundreds of times is a real gap. Nothing here affects matching — a
-        decision is recorded for a person to act on, never applied automatically, and every one
-        can be taken back.
+        Skills the model found in a vacancy that ESCO has no concept for — <code>Terraform</code>,{" "}
+        <code>Grafana</code>, <code>CI/CD</code>. Marking one <strong>Worth adding</strong> creates
+        an internal concept, so the next vacancy that names it links instead of coming back here.
+        Run <code>backfill.relink_profiles</code> afterwards to apply it to vacancies already
+        stored. <strong>Ignore</strong> is for words that are not skills.
       </p>
+
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-xs text-slate-600">
+          <input
+            type="checkbox"
+            checked={includeRare}
+            onChange={(event) => setIncludeRare(event.target.checked)}
+          />
+          Include terms seen only once
+        </label>
+        {selected.size > 0 && (
+          <>
+            <span className="text-xs font-medium text-slate-700">{selected.size} selected</span>
+            <Button onClick={() => bulkMutation.mutate("promoted")} disabled={busy}>
+              Worth adding
+            </Button>
+            <SecondaryButton onClick={() => bulkMutation.mutate("ignored")} disabled={busy}>
+              Ignore
+            </SecondaryButton>
+            <SecondaryButton onClick={() => setSelected(new Set())} disabled={busy}>
+              Clear
+            </SecondaryButton>
+          </>
+        )}
+      </div>
+
       {unmappedQuery.isLoading ? (
         <p className="text-sm text-slate-500">Loading…</p>
       ) : unmapped.length === 0 ? (
         <p className="text-sm text-slate-500">Nothing waiting for review.</p>
       ) : (
         <ul className="flex flex-col gap-1.5">
-          {unmapped.map((term) => {
-            const decision = decided[term.normalized_text];
-            return (
-              <li
-                key={term.normalized_text}
-                className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded border px-3 py-2 ${
-                  decision ? "border-slate-100 bg-slate-50 text-slate-400" : "border-slate-200"
-                }`}
+          {unmapped.map((term) => (
+            <li
+              key={term.normalized_text}
+              className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded border px-3 py-2 ${
+                selected.has(term.normalized_text)
+                  ? "border-slate-400 bg-slate-50"
+                  : "border-slate-200"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(term.normalized_text)}
+                onChange={() => toggle(term.normalized_text)}
+                aria-label={`Select ${term.sample_raw_text}`}
+              />
+              <span className="flex-1 text-sm">{term.sample_raw_text}</span>
+              <span className="text-xs font-medium text-slate-500 tabular-nums">
+                ×{term.occurrences}
+              </span>
+              <SecondaryButton
+                onClick={() =>
+                  singleMutation.mutate({
+                    term: term.normalized_text,
+                    decision: "ignored",
+                  })
+                }
+                disabled={busy}
               >
-                <span className="flex-1 text-sm" title={`seen as "${term.sample_raw_text}"`}>
-                  {term.sample_raw_text}
-                </span>
-                <span className="text-xs font-medium tabular-nums">×{term.occurrences}</span>
-                {decision ? (
-                  <>
-                    <span className="text-xs font-medium">
-                      {decision === "promoted" ? "marked worth adding" : "ignored"}
-                    </span>
-                    <SecondaryButton
-                      onClick={() =>
-                        reviewMutation.mutate({
-                          term: term.normalized_text,
-                          decision: "pending",
-                        })
-                      }
-                    >
-                      Undo
-                    </SecondaryButton>
-                  </>
-                ) : (
-                  <>
-                    {/* Ignore first and plainest: it is the answer for most of
-                        this list, and the one with no consequences. */}
-                    <SecondaryButton
-                      onClick={() =>
-                        reviewMutation.mutate({
-                          term: term.normalized_text,
-                          decision: "ignored",
-                        })
-                      }
-                    >
-                      Ignore
-                    </SecondaryButton>
-                    <Button
-                      onClick={() =>
-                        reviewMutation.mutate({
-                          term: term.normalized_text,
-                          decision: "promoted",
-                        })
-                      }
-                    >
-                      Worth adding
-                    </Button>
-                  </>
-                )}
-              </li>
-            );
-          })}
+                Ignore
+              </SecondaryButton>
+              <Button
+                onClick={() =>
+                  singleMutation.mutate({
+                    term: term.normalized_text,
+                    decision: "promoted",
+                  })
+                }
+                disabled={busy}
+              >
+                Worth adding
+              </Button>
+            </li>
+          ))}
         </ul>
       )}
-      {reviewMutation.isError && (
+
+      {bulkMutation.isSuccess && (
+        <div className="mt-3">
+          <InfoBanner tone="ok">
+            Reviewed {bulkMutation.data.reviewed} term(s); {bulkMutation.data.concepts_created} new
+            concept(s) created.
+            {bulkMutation.data.missing.length > 0 &&
+              ` ${bulkMutation.data.missing.length} were already reviewed elsewhere.`}
+          </InfoBanner>
+        </div>
+      )}
+      {(bulkMutation.isError || singleMutation.isError) && (
         <div className="mt-2">
           <ErrorBanner message="Could not record that decision — see the server logs" />
         </div>
