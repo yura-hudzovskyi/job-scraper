@@ -314,6 +314,25 @@ class TaxonomyRepository:
             await self._session.flush()
         return concept.id
 
+    async def retire_internal_concept(self, concept_id: uuid.UUID) -> bool:
+        """Take an internal concept out of the index without deleting it.
+
+        `retired` rather than a DELETE because mentions already link to it by
+        foreign key, and those rows are the record of what the linker answered
+        at the time. `surface_forms` only reads `active`, so a retired concept
+        stops being matched on the next index build — which the generation count
+        triggers, since it counts active ones.
+
+        Only internal concepts. An imported release is not ours to edit; a
+        wrong ESCO concept is a reason to import a different release.
+        """
+        concept = await self._session.get(TaxonomyConceptModel, concept_id)
+        if concept is None or concept.namespace != self.INTERNAL_NAMESPACE:
+            return False
+        concept.status = "retired"
+        await self._session.flush()
+        return True
+
     async def internal_generation(self) -> int:
         """How many internal concepts exist — the alias index's cache key.
 

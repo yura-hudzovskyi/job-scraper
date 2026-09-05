@@ -41,6 +41,7 @@ class _FakeMentions:
     def __init__(self, pending: list[tuple[str, str, int]] | None = None):
         self._pending = pending or []
         self.reviewed: list[tuple[str, str, uuid.UUID | None]] = []
+        self.concept_of: dict[str, uuid.UUID] = {}
 
     async def count_pending_unmapped(self) -> int:
         return len(self._pending)
@@ -54,7 +55,11 @@ class _FakeMentions:
     async def get_unmapped(self, normalized_text: str) -> object | None:
         for normalized, sample, _ in self._pending:
             if normalized == normalized_text:
-                return SimpleNamespace(normalized_text=normalized, sample_raw_text=sample)
+                return SimpleNamespace(
+                    normalized_text=normalized,
+                    sample_raw_text=sample,
+                    promoted_concept_id=self.concept_of.get(normalized),
+                )
         return None
 
     async def review_unmapped(
@@ -63,6 +68,10 @@ class _FakeMentions:
         if not any(row[0] == normalized_text for row in self._pending):
             return False
         self.reviewed.append((normalized_text, status, concept_id))
+        if concept_id is None:
+            self.concept_of.pop(normalized_text, None)
+        else:
+            self.concept_of[normalized_text] = concept_id
         return True
 
 
@@ -72,9 +81,14 @@ class _FakeTaxonomyWrites:
     def __init__(self, existing: dict[str, uuid.UUID] | None = None):
         self.concepts: dict[str, uuid.UUID] = existing or {}
         self.created: list[tuple[str, str, list[str]]] = []
+        self.retired: list[uuid.UUID] = []
 
     async def internal_concept_by_term(self, normalized_text: str) -> uuid.UUID | None:
         return self.concepts.get(normalized_text)
+
+    async def retire_internal_concept(self, concept_id: uuid.UUID) -> bool:
+        self.retired.append(concept_id)
+        return True
 
     async def create_internal_concept(
         self,
@@ -363,3 +377,33 @@ async def test_terms_seen_once_are_hidden_by_default_not_deleted() -> None:
 
     assert [t.normalized_text for t in filtered] == ["terraform"]
     assert len(everything) == 2
+
+
+@pytest.mark.asyncio
+async def test_undo_retires_the_concept_the_promotion_created() -> None:
+    """Clearing the column alone would leave the concept in the alias index, so
+    the term would keep linking to something the reviewer just said should not
+    exist — the one state a review screen must not be able to produce."""
+    mentions = _FakeMentions([("sports", "sports", 168)])
+    taxonomy = _FakeTaxonomyWrites()
+    service = _promotion(mentions, taxonomy)
+
+    promoted = await service.review("sports", "promoted")
+    await service.review("sports", "pending")
+
+    assert promoted is not None
+    assert taxonomy.retired == [uuid.UUID(promoted.concept_id or "")]
+
+
+@pytest.mark.asyncio
+async def test_ignoring_a_promoted_term_also_retires_its_concept() -> None:
+    """Undo and "actually, this is not a skill" are the same correction; only
+    the label recorded differs."""
+    mentions = _FakeMentions([("clean", "clean", 231)])
+    taxonomy = _FakeTaxonomyWrites()
+    service = _promotion(mentions, taxonomy)
+
+    await service.review("clean", "promoted")
+    await service.review("clean", "ignored")
+
+    assert len(taxonomy.retired) == 1

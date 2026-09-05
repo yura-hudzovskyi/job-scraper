@@ -57,6 +57,12 @@ class ConceptPromotionService:
         created = False
         if status == PROMOTED:
             concept_id, created = await self._promote(normalized_text, term.sample_raw_text)
+        elif term.promoted_concept_id is not None:
+            # Undoing a promotion has to undo what the promotion did. Clearing
+            # the column alone would leave the concept in the alias index, so
+            # the term would keep linking to something the reviewer just said
+            # should not exist — the one state a review screen must not produce.
+            await self._taxonomy.retire_internal_concept(term.promoted_concept_id)
 
         await self._mentions.review_unmapped(normalized_text, status, concept_id=concept_id)
         return ReviewOutcome(

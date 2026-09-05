@@ -57,6 +57,7 @@ from app.repositories.mention_repository import MentionRepository
 from app.repositories.outbox_repository import OutboxRepository
 from app.repositories.taxonomy_repository import TaxonomyRepository
 from app.services.concept_linking_service import ConceptLinkingService
+from app.services.concept_promotion_service import ConceptPromotionService
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -449,3 +450,51 @@ def relink_profiles(batch: int = 200) -> dict[str, Any]:
     time and changes nothing.
     """
     return asyncio.run(_run_relink(batch))
+
+
+# --- promotions made before promotion did anything ---------------------------
+
+
+async def _run_promote_legacy() -> dict[str, Any]:
+    async with session_scope() as session:
+        pending = (
+            (
+                await session.execute(
+                    text(
+                        "SELECT normalized_text FROM unmapped_mentions "
+                        "WHERE status = 'promoted' AND promoted_concept_id IS NULL "
+                        "ORDER BY occurrences DESC"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    if not pending:
+        return {"status": "done", "promoted": 0, "created": 0}
+
+    async with session_scope() as session:
+        service = ConceptPromotionService(TaxonomyRepository(session), MentionRepository(session))
+        outcomes = await service.review_many([(term, "promoted") for term in pending])
+
+    return {
+        "status": "done",
+        "promoted": len(outcomes),
+        "created": sum(1 for outcome in outcomes if outcome.created),
+    }
+
+
+@celery_app.task(name="backfill.promote_legacy_reviews")
+def promote_legacy_reviews() -> dict[str, Any]:
+    """Create concepts for terms marked `promoted` before promotion did anything.
+
+    For the window between the review screen shipping and 9.4's second half
+    landing, "Worth adding" wrote a status and nothing else. Those decisions are
+    real and were made by a person; this is what carries them out.
+
+    Re-runnable: it selects only promotions with no concept, so a finished run
+    selects nothing. Reversible one term at a time from the review screen, which
+    now retires the concept as well as clearing the mark.
+    """
+    return asyncio.run(_run_promote_legacy())
