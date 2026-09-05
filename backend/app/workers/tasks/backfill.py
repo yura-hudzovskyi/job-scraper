@@ -36,8 +36,9 @@ import logging
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
+from app.config.settings import get_settings
 from app.db.models.document import DocumentRevisionModel
 from app.db.models.job import JobSourceRecordModel
 from app.db.session import session_scope
@@ -48,6 +49,7 @@ from app.domain.documents.events import (
 from app.domain.documents.language import detect_language
 from app.domain.documents.models import EntityKind, RevisionStatus
 from app.domain.documents.parsing import ParsedDocument, parse_plain_text
+from app.integrations.ml_service import MlServiceClient
 from app.integrations.parsers.html import parse_html
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.outbox_repository import OutboxRepository
@@ -245,3 +247,109 @@ def parse_revisions(limit: int = BATCH) -> dict[str, Any]:
     `status` comes back `done`.
     """
     return asyncio.run(_run(limit))
+
+
+# --- re-extracting under a new model -----------------------------------------
+
+# Revisions already `extracted`, whose newest profile was not produced by the
+# extractor named here. DISTINCT ON gives the newest profile per revision, which
+# is the only one that decides whether the revision is up to date — an older one
+# from a previous model is history, not a reason to skip.
+_STALE_PROFILES = """
+    SELECT r.id, r.entity_kind, p.extractor_model_id
+    FROM document_revisions r
+    JOIN (
+        SELECT DISTINCT ON (document_revision_id)
+               document_revision_id, extractor_model_id, created_at
+        FROM profile_revisions
+        ORDER BY document_revision_id, created_at DESC
+    ) p ON p.document_revision_id = r.id
+    WHERE r.status = 'extracted'
+      AND r.parsed_text IS NOT NULL
+      AND p.extractor_model_id IS DISTINCT FROM :fingerprint
+    ORDER BY r.created_at
+    LIMIT :limit
+"""
+
+
+async def _current_fingerprint() -> str:
+    """What the running ml-service would stamp on a profile it produced.
+
+    Asked of the container rather than read from settings, for the same reason
+    /info exists: the configuration says what should be running, and only the
+    process knows what is.
+    """
+    url = get_settings().ml_service_url
+    if not url:
+        raise RuntimeError("ML_SERVICE_URL is not set; there is no model to re-extract with")
+    info = await MlServiceClient(url).info()
+    if not info.get("loaded"):
+        raise RuntimeError("ml-service is up but has not finished loading its weights")
+    return f"{info['extractor_model_id']}@{info['extractor_revision'][:12]}"
+
+
+async def _run_reextract(limit: int) -> dict[str, Any]:
+    fingerprint = await _current_fingerprint()
+
+    async with session_scope() as session:
+        rows = (
+            await session.execute(
+                text(_STALE_PROFILES), {"fingerprint": fingerprint, "limit": limit}
+            )
+        ).all()
+
+    queued = failed = 0
+    for revision_id, entity_kind, _previous in rows:
+        try:
+            async with session_scope() as session:
+                documents = DocumentRepository(session)
+                # `extracted -> parsed` is the reprocess edge (models.py): the
+                # raw text has not changed, so this rewinds rather than making a
+                # new revision. The profile it had is left in place until the new
+                # one is written, so nothing is ever without a profile.
+                await documents.transition(
+                    revision_id, RevisionStatus.PARSED, reason=f"re-extract for {fingerprint}"
+                )
+                OutboxRepository(session).append(
+                    aggregate_type=DOCUMENT_REVISION_AGGREGATE,
+                    aggregate_id=str(revision_id),
+                    event_type=DOCUMENT_REVISION_CREATED,
+                    payload={"entity_kind": entity_kind, "reextraction": True},
+                )
+            queued += 1
+        except Exception:
+            failed += 1
+            logger.warning(
+                "could not queue revision %s for re-extraction", revision_id, exc_info=True
+            )
+
+    async with session_scope() as session:
+        remaining = len(
+            (
+                await session.execute(
+                    text(_STALE_PROFILES), {"fingerprint": fingerprint, "limit": 1}
+                )
+            ).all()
+        )
+
+    return {
+        "status": "ok" if remaining else "done",
+        "model": fingerprint,
+        "queued": queued,
+        "failed": failed,
+        "more_pending": bool(remaining),
+    }
+
+
+@celery_app.task(name="backfill.reextract_revisions")
+def reextract_revisions(limit: int = BATCH) -> dict[str, Any]:
+    """Queue documents whose profile predates the current model.
+
+    Re-runnable and self-limiting: what it selects is "the newest profile was
+    not made by the extractor that is running now", so a finished corpus selects
+    nothing and a model upgrade selects everything again without a flag to set.
+
+    It only queues. The outbox relay does the extraction, at its own rate, which
+    is what keeps a few thousand re-extractions from monopolising the worker.
+    """
+    return asyncio.run(_run_reextract(limit))

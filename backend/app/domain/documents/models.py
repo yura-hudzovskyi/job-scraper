@@ -79,9 +79,13 @@ class BlockType(StrEnum):
 # ones a reader would otherwise assume are missing:
 #
 #   SEARCHABLE -> PARSED   a reprocess. The raw text has not changed, so there is
-#                          no new revision to create; re-extracting under a new
+#   EXTRACTED  -> PARSED   no new revision to create; re-extracting under a new
 #                          model version rewinds to the parsed text and runs
-#                          forward again.
+#                          forward again. Both source states mean the same thing
+#                          here — the difference between them is only how far the
+#                          revision got last time, and a revision that stopped at
+#                          `extracted` is no less re-extractable than one that
+#                          reached `searchable`.
 #   FAILED -> {RECEIVED, PARSED, EXTRACTED}
 #                          a retry rewinds to the *input* state of whichever stage
 #                          failed, rather than resuming mid-stage. Parsing consumes
@@ -91,7 +95,9 @@ ALLOWED_TRANSITIONS: dict[RevisionStatus, frozenset[RevisionStatus]] = {
     RevisionStatus.RECEIVED: frozenset({RevisionStatus.PARSED, RevisionStatus.FAILED}),
     RevisionStatus.PARSED: frozenset({RevisionStatus.EXTRACTING, RevisionStatus.FAILED}),
     RevisionStatus.EXTRACTING: frozenset({RevisionStatus.EXTRACTED, RevisionStatus.FAILED}),
-    RevisionStatus.EXTRACTED: frozenset({RevisionStatus.INDEXING, RevisionStatus.FAILED}),
+    RevisionStatus.EXTRACTED: frozenset(
+        {RevisionStatus.INDEXING, RevisionStatus.PARSED, RevisionStatus.FAILED}
+    ),
     RevisionStatus.INDEXING: frozenset({RevisionStatus.SEARCHABLE, RevisionStatus.FAILED}),
     RevisionStatus.SEARCHABLE: frozenset({RevisionStatus.PARSED, RevisionStatus.FAILED}),
     RevisionStatus.FAILED: frozenset(
