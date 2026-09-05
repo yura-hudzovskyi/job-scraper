@@ -154,6 +154,7 @@ class NeuralExtractor:
             discarded=base.discarded + discarded,
             warnings=base.warnings + warnings,
             extractor_model_id=fingerprint or base.extractor_model_id,
+            neural=bool(fingerprint),
         )
 
     async def extract_candidate(self, document: ExtractionInput) -> ExtractionResult:
@@ -179,6 +180,7 @@ class NeuralExtractor:
             discarded=base.discarded + discarded,
             warnings=base.warnings + warnings,
             extractor_model_id=fingerprint or base.extractor_model_id,
+            neural=bool(fingerprint),
         )
 
     def _degraded(self, base: ExtractionResult) -> ExtractionResult:

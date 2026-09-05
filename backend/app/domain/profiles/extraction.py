@@ -80,6 +80,12 @@ class ExtractionResult:
     # deterministic extractor this is a ruleset version rather than a model id;
     # the column is named for the common case.
     extractor_model_id: str = ""
+    # Which kind of extraction this was, said by the extractor rather than
+    # inferred by the caller from the model id. The two origins fail
+    # differently (see ProfileOrigin), so a reader deciding how much to trust a
+    # field has to be told which one ran — including when a neural extractor
+    # degraded to structural output and must not claim otherwise.
+    neural: bool = False
 
     def discarded_records(self) -> list[dict[str, Any]]:
         return [item.as_record() for item in self.discarded]

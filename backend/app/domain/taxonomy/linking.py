@@ -236,6 +236,82 @@ def find_mentions(text: str, index: AliasIndex) -> list[MentionCandidate]:
     return mentions
 
 
+@dataclass(frozen=True)
+class ExtractedSpan:
+    """A competency a model found, before the taxonomy has had a look at it.
+
+    Deliberately not `ConceptMention` from the profile schema: this module knows
+    about taxonomies and offsets, and importing the profile shape here would tie
+    the linker to the extractor's vocabulary.
+    """
+
+    raw_text: str
+    start_char: int
+    end_char: int
+    confidence: float = 1.0
+
+
+def link_spans(spans: Sequence[ExtractedSpan], index: AliasIndex) -> list[MentionCandidate]:
+    """Match phrases a model already identified as competencies, not every n-gram.
+
+    This is spec 9.3 read literally — "for every extracted mention" — and the
+    difference from `find_mentions` is what it does *not* look at. Scanning a
+    whole vacancy asks the taxonomy about every word in it, so "skills",
+    "environment" and "communication" arrive as candidate terms because ESCO
+    happens to contain labels using those words. The model has already decided
+    which phrases are competencies; the taxonomy's job is only to say which
+    concept each one is.
+
+    Two attempts per span, and no third. The whole phrase first, because
+    "Google Sheets" is a better answer than "Google". Failing that, the known
+    forms inside it, with offsets shifted back into the document so the evidence
+    still points where the phrase actually is. If neither matches it is
+    `unmapped` — never forced onto a nearby concept (9.3).
+    """
+    linked: list[MentionCandidate] = []
+    for span in spans:
+        normalized = normalize_label(span.raw_text)
+        concept_ids = index.lookup(normalized)
+        if concept_ids:
+            linked.append(
+                MentionCandidate(
+                    raw_text=span.raw_text,
+                    normalized_text=normalized,
+                    start_char=span.start_char,
+                    end_char=span.end_char,
+                    concept_ids=list(concept_ids),
+                    specificity=index.specificity_of(normalized),
+                )
+            )
+            continue
+
+        inner = find_mentions(span.raw_text, index)
+        if inner:
+            linked.extend(
+                MentionCandidate(
+                    raw_text=found.raw_text,
+                    normalized_text=found.normalized_text,
+                    start_char=span.start_char + found.start_char,
+                    end_char=span.start_char + found.end_char,
+                    concept_ids=found.concept_ids,
+                    specificity=found.specificity,
+                )
+                for found in inner
+            )
+            continue
+
+        linked.append(
+            MentionCandidate(
+                raw_text=span.raw_text,
+                normalized_text=normalized,
+                start_char=span.start_char,
+                end_char=span.end_char,
+                concept_ids=[],
+            )
+        )
+    return linked
+
+
 def deduplicate(mentions: Sequence[MentionCandidate]) -> list[MentionCandidate]:
     """One mention per distinct term, keeping its first occurrence.
 

@@ -22,7 +22,14 @@ import logging
 import uuid
 from dataclasses import dataclass
 
-from app.domain.taxonomy.linking import AliasIndex, LinkStatus, deduplicate, find_mentions
+from app.domain.taxonomy.linking import (
+    AliasIndex,
+    ExtractedSpan,
+    LinkStatus,
+    deduplicate,
+    find_mentions,
+    link_spans,
+)
 from app.integrations.taxonomy import esco
 from app.repositories.mention_repository import MentionRepository
 from app.repositories.taxonomy_repository import TaxonomyRepository
@@ -63,8 +70,25 @@ class ConceptLinkingService:
         self._mentions = mention_repository
         self._namespace = namespace
 
-    async def link(self, profile_revision_id: uuid.UUID, text: str) -> LinkingResult:
-        """Find and store every taxonomy term in this document's text."""
+    async def link(
+        self,
+        profile_revision_id: uuid.UUID,
+        text: str,
+        spans: list[ExtractedSpan] | None = None,
+    ) -> LinkingResult:
+        """Link this document's competencies, or its whole text if none were found.
+
+        `spans` is what the extraction model identified as competencies, and
+        passing them is the difference between asking the taxonomy about a
+        vacancy's skills and asking it about every word in the vacancy. Spec 9.3
+        says "for every extracted mention"; scanning the text was the honest
+        approximation of that while there was no model to extract mentions.
+
+        The scan stays as the fallback rather than being deleted. Without
+        `ml-service` there are no extracted mentions, and a lexical channel that
+        finds "PostgreSQL" among some noise is better than one that finds
+        nothing — the noise is visible in the review queue either way (9.4).
+        """
         if not text.strip():
             return LinkingResult(skipped_reason="the document has no text")
 
@@ -76,9 +100,16 @@ class ConceptLinkingService:
             return LinkingResult(skipped_reason=f"no active {self._namespace} taxonomy")
 
         index = await self._index_for(version.id, version.version)
-        mentions = deduplicate(find_mentions(text, index))
+        found = link_spans(spans, index) if spans else find_mentions(text, index)
+        mentions = deduplicate(found)
         if not mentions:
             return LinkingResult()
+
+        # The model's score for the phrase it found, kept per span so the row
+        # can carry it. A mention the linker found by scanning has no model
+        # behind it, and says 1.0 for the same reason the structural extractor
+        # does: the phrase is certainly present, whatever it turns out to mean.
+        confidences = {(span.start_char, span.end_char): span.confidence for span in (spans or [])}
 
         rows = []
         unmapped_terms = []
@@ -93,14 +124,14 @@ class ConceptLinkingService:
                     # Only a single unambiguous match sets the foreign key; the
                     # alternatives of an ambiguous mention are kept in metadata
                     # rather than one of them being promoted to the truth.
-                    "concept_id": mention.concept_id
-                    if status == LinkStatus.LINKED
-                    else None,
+                    "concept_id": mention.concept_id if status == LinkStatus.LINKED else None,
                     "raw_text": mention.raw_text,
                     "normalized_text": mention.normalized_text,
                     "role": "required",
                     "link_status": status,
-                    "extraction_confidence": 1.0,
+                    "extraction_confidence": confidences.get(
+                        (mention.start_char, mention.end_char), 1.0
+                    ),
                     "link_score": mention.specificity,
                     "start_char": mention.start_char,
                     "end_char": mention.end_char,
@@ -131,7 +162,5 @@ class ConceptLinkingService:
         index = AliasIndex.build(forms)
         _INDEX_CACHE.clear()  # only ever one release is active
         _INDEX_CACHE[version_id] = index
-        logger.info(
-            "built alias index for %s %s: %d forms", self._namespace, version, len(index)
-        )
+        logger.info("built alias index for %s %s: %d forms", self._namespace, version, len(index))
         return index

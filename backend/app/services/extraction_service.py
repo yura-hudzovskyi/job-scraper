@@ -27,6 +27,7 @@ from app.domain.documents.models import EntityKind, RevisionStatus
 from app.domain.profiles.extraction import ExtractionInput, ProfileExtractor
 from app.domain.profiles.models import ProfileKind, ProfileOrigin
 from app.domain.profiles.schemas import spans_of
+from app.domain.taxonomy.linking import ExtractedSpan
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.profile_repository import ProfileRepository
 from app.services.concept_linking_service import ConceptLinkingService
@@ -134,7 +135,11 @@ class ExtractionService:
                 ProfileKind.JOB if revision.entity_kind is EntityKind.JOB else ProfileKind.CANDIDATE
             ),
             schema_version=result.profile.schema_version,
-            origin=ProfileOrigin.STRUCTURAL_EXTRACTION,
+            origin=(
+                ProfileOrigin.NEURAL_EXTRACTION
+                if result.neural
+                else ProfileOrigin.STRUCTURAL_EXTRACTION
+            ),
             extracted_profile=result.profile.model_dump(mode="json"),
             extractor_model_id=result.extractor_model_id,
             overall_confidence=result.profile.quality.overall_confidence,
@@ -148,7 +153,21 @@ class ExtractionService:
         linked = 0
         if self._linker is not None:
             try:
-                linking = await self._linker.link(uuid.UUID(profile_revision.id), parsed_text)
+                linking = await self._linker.link(
+                    uuid.UUID(profile_revision.id),
+                    parsed_text,
+                    spans=[
+                        ExtractedSpan(
+                            raw_text=competency.raw_text,
+                            start_char=competency.evidence.start_char,
+                            end_char=competency.evidence.end_char,
+                            confidence=competency.confidence,
+                        )
+                        for competency in result.profile.competencies
+                        if competency.evidence is not None
+                    ]
+                    or None,
+                )
                 linked = linking.linked
                 if linking.skipped_reason:
                     logger.info("revision %s not linked: %s", revision_id, linking.skipped_reason)
