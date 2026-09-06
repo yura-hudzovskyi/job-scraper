@@ -58,15 +58,31 @@ class EvaluationRepository:
         await self._session.flush()
         return inserted
 
-    async def judge(self, pair_id: uuid.UUID, label: int, annotator: str) -> bool:
-        """Record one judgement. False when there is no such pair.
+    async def judge(
+        self,
+        pair_id: uuid.UUID,
+        label: int,
+        annotator: str,
+        candidate_revision_id: uuid.UUID | None = None,
+    ) -> bool:
+        """Record one judgement. False when there is no such pair for this candidate.
 
         The timestamp is written with the label because the table's check
         constraint requires them to agree — a row that says it was judged but
         not when, or when but not what, cannot answer either question.
+
+        `candidate_revision_id` is how a caller says which set it is allowed to
+        write to. Without it, an id from anywhere is enough to label somebody
+        else's pair, which is the same hole that had one person judging another
+        person's queue.
         """
         pair = await self._session.get(EvaluationPairModel, pair_id)
         if pair is None:
+            return False
+        if (
+            candidate_revision_id is not None
+            and pair.candidate_revision_id != candidate_revision_id
+        ):
             return False
         pair.label = label
         pair.annotator = annotator
@@ -74,7 +90,9 @@ class EvaluationRepository:
         await self._session.flush()
         return True
 
-    async def clear_judgement(self, pair_id: uuid.UUID) -> bool:
+    async def clear_judgement(
+        self, pair_id: uuid.UUID, candidate_revision_id: uuid.UUID | None = None
+    ) -> bool:
         """Undo a judgement, returning the pair to the queue.
 
         Both columns clear together, for the same reason they are written
@@ -84,20 +102,32 @@ class EvaluationRepository:
         pair = await self._session.get(EvaluationPairModel, pair_id)
         if pair is None:
             return False
+        if (
+            candidate_revision_id is not None
+            and pair.candidate_revision_id != candidate_revision_id
+        ):
+            return False
         pair.label = None
         pair.annotator = None
         pair.annotated_at = None
         await self._session.flush()
         return True
 
-    async def next_to_judge(self, limit: int = 1) -> list[PairToJudge]:
-        """The next unjudged pairs, with the vacancy text a person has to read.
+    async def next_to_judge(
+        self, candidate_revision_id: uuid.UUID, limit: int = 1
+    ) -> list[PairToJudge]:
+        """The next unjudged pairs for one candidate, with the text to read.
 
         Ordered by the score the ranker gave, highest first. Judging top-down
         means the pairs that decide nDCG@5 and MRR get labelled first, so a set
         abandoned half-way still answers the metrics that matter most — rather
         than holding three hundred judgements spread evenly over pairs nobody
         will ever see.
+
+        The candidate filter is load-bearing rather than tidy. Without it this
+        served whatever was unjudged across every candidate in the install, so
+        one person's queue was another person's vacancies — the failure that
+        cost 600 real judgements.
         """
         result = await self._session.execute(
             text(
@@ -108,12 +138,12 @@ class EvaluationRepository:
                 FROM evaluation_pairs p
                 JOIN canonical_jobs c ON c.id = p.canonical_job_id
                 LEFT JOIN document_revisions r ON r.id = p.job_revision_id
-                WHERE p.label IS NULL
+                WHERE p.label IS NULL AND p.candidate_revision_id = :candidate
                 ORDER BY p.system_score DESC NULLS LAST, p.id
                 LIMIT :limit
                 """
             ),
-            {"limit": limit},
+            {"limit": limit, "candidate": candidate_revision_id},
         )
         return [
             PairToJudge(
@@ -138,7 +168,7 @@ class EvaluationRepository:
         )
         return set(result.scalars())
 
-    async def progress(self) -> dict[str, int]:
+    async def progress(self, candidate_revision_id: uuid.UUID) -> dict[str, int]:
         """How much of the set is judged, per tier — what the System page shows.
 
         20.1's tiers are sizes with gates attached, so "how far along" is a real
@@ -150,7 +180,9 @@ class EvaluationRepository:
                 EvaluationPairModel.tier,
                 func.count().label("total"),
                 func.count(EvaluationPairModel.label).label("judged"),
-            ).group_by(EvaluationPairModel.tier)
+            )
+            .where(EvaluationPairModel.candidate_revision_id == candidate_revision_id)
+            .group_by(EvaluationPairModel.tier)
         )
         counts: dict[str, int] = {}
         for tier, total, judged in result.all():
@@ -158,7 +190,7 @@ class EvaluationRepository:
             counts[f"{tier}_judged"] = int(judged)
         return counts
 
-    async def label_distribution(self) -> dict[int, int]:
+    async def label_distribution(self, candidate_revision_id: uuid.UUID) -> dict[int, int]:
         """How many pairs got each label.
 
         Worth looking at before trusting any metric: a set where everything is
@@ -167,7 +199,10 @@ class EvaluationRepository:
         """
         result = await self._session.execute(
             select(EvaluationPairModel.label, func.count())
-            .where(EvaluationPairModel.label.is_not(None))
+            .where(
+                EvaluationPairModel.label.is_not(None),
+                EvaluationPairModel.candidate_revision_id == candidate_revision_id,
+            )
             .group_by(EvaluationPairModel.label)
         )
         return {int(label): int(count) for label, count in result.all()}

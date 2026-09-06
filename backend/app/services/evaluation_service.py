@@ -49,12 +49,20 @@ _SCORED_PAIRS = """
     ORDER BY m.score DESC, m.canonical_job_id
 """
 
-# The candidate's own CV revision and the user it belongs to.
+# This user's own newest parsed CV revision.
+#
+# Scoped by user, and that is not a detail. Without the filter this picked
+# whichever CV was uploaded last across the whole install, so a second person
+# uploading a CV silently moved everyone's evaluation onto it — which is exactly
+# what happened: 600 pairs were judged against a 3D artist's CV by a software
+# engineer, and every one of them was correctly marked irrelevant.
 _CANDIDATE = """
-    SELECT r.id::text, c.user_id::text
+    SELECT r.id::text
     FROM document_revisions r
     JOIN cv_documents c ON c.id = r.cv_document_id
-    WHERE r.entity_kind = 'candidate' AND r.parsed_text IS NOT NULL
+    WHERE r.entity_kind = 'candidate'
+      AND r.parsed_text IS NOT NULL
+      AND c.user_id = :user_id
     ORDER BY r.created_at DESC
     LIMIT 1
 """
@@ -90,13 +98,14 @@ class EvaluationService:
         self._session = session
         self._repository = EvaluationRepository(session)
 
-    async def _default_candidate(self) -> tuple[uuid.UUID, uuid.UUID] | None:
-        row = (await self._session.execute(text(_CANDIDATE))).first()
-        if row is None:
-            return None
-        return uuid.UUID(row[0]), uuid.UUID(row[1])
+    async def candidate_revision(self, user_id: uuid.UUID) -> uuid.UUID | None:
+        """The CV this user is evaluated against, or None if they have not uploaded one."""
+        row = (await self._session.execute(text(_CANDIDATE), {"user_id": user_id})).first()
+        return uuid.UUID(row[0]) if row is not None else None
 
-    async def sample(self, size: int = 300, tier: str = "seed") -> SampleResult | None:
+    async def sample(
+        self, user_id: uuid.UUID, size: int = 300, tier: str = "seed"
+    ) -> SampleResult | None:
         """Add pairs worth judging to the set, from what the ranker has scored.
 
         20.1 calls sampling from what the system retrieved a legitimate
@@ -105,10 +114,9 @@ class EvaluationService:
         strategy and the score it had at sampling time, so a later reader can
         see that this set cannot answer questions about what was never scored.
         """
-        candidate = await self._default_candidate()
-        if candidate is None:
+        candidate_revision_id = await self.candidate_revision(user_id)
+        if candidate_revision_id is None:
             return None
-        candidate_revision_id, user_id = candidate
 
         rows = (await self._session.execute(text(_SCORED_PAIRS), {"user_id": user_id})).all()
         already = await self._repository.existing_job_ids(candidate_revision_id)
@@ -151,7 +159,7 @@ class EvaluationService:
             coverage=coverage(chosen),
         )
 
-    async def report(self) -> EvaluationReport | None:
+    async def report(self, user_id: uuid.UUID) -> EvaluationReport | None:
         """Score the current ranking against the judgements that exist.
 
         Ranks come from the live `job_matches` ordering rather than from
@@ -159,10 +167,9 @@ class EvaluationService:
         ranking is what changes, so re-running this after a model change is the
         whole point.
         """
-        candidate = await self._default_candidate()
-        if candidate is None:
+        candidate_revision_id = await self.candidate_revision(user_id)
+        if candidate_revision_id is None:
             return None
-        candidate_revision_id, user_id = candidate
 
         rows = (
             await self._session.execute(
@@ -188,6 +195,6 @@ class EvaluationService:
         return EvaluationReport(
             candidate_revision_id=str(candidate_revision_id),
             metrics=evaluate(judged),
-            label_distribution=await self._repository.label_distribution(),
-            progress=await self._repository.progress(),
+            label_distribution=await self._repository.label_distribution(candidate_revision_id),
+            progress=await self._repository.progress(candidate_revision_id),
         )

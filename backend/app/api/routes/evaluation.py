@@ -78,7 +78,10 @@ async def next_pair(
     error: an exhausted queue means either the set is fully judged or nobody has
     sampled one yet, and both are normal.
     """
-    pairs = await EvaluationRepository(session).next_to_judge(limit=1)
+    candidate = await EvaluationService(session).candidate_revision(user_id)
+    if candidate is None:
+        return None
+    pairs = await EvaluationRepository(session).next_to_judge(candidate, limit=1)
     if not pairs:
         return None
     pair = pairs[0]
@@ -101,10 +104,13 @@ async def judge_pair(
     session: AsyncSession = Depends(get_session),
 ) -> ProgressResponse:
     """Record one judgement and hand back the progress, so the UI needs one call."""
+    candidate = await EvaluationService(session).candidate_revision(user_id)
     repository = EvaluationRepository(session)
-    if not await repository.judge(pair_id, payload.label, annotator=str(user_id)):
+    if not await repository.judge(
+        pair_id, payload.label, annotator=str(user_id), candidate_revision_id=candidate
+    ):
         raise HTTPException(status_code=404, detail="no such evaluation pair")
-    return await _progress(repository)
+    return await _progress(session, repository, user_id)
 
 
 @router.post("/{pair_id}/unjudge", response_model=ProgressResponse)
@@ -119,10 +125,11 @@ async def unjudge_pair(
     by leaving it wrong, and a wrong label is worse than a missing one — the
     metric reports it with full confidence.
     """
+    candidate = await EvaluationService(session).candidate_revision(user_id)
     repository = EvaluationRepository(session)
-    if not await repository.clear_judgement(pair_id):
+    if not await repository.clear_judgement(pair_id, candidate_revision_id=candidate):
         raise HTTPException(status_code=404, detail="no such evaluation pair")
-    return await _progress(repository)
+    return await _progress(session, repository, user_id)
 
 
 @router.get("/progress", response_model=ProgressResponse)
@@ -130,7 +137,7 @@ async def progress(
     user_id: uuid.UUID = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_session),
 ) -> ProgressResponse:
-    return await _progress(EvaluationRepository(session))
+    return await _progress(session, EvaluationRepository(session), user_id)
 
 
 @router.post("/sample", response_model=dict)
@@ -140,7 +147,7 @@ async def sample(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Add pairs to the queue, stratified across score bands and languages."""
-    result = await EvaluationService(session).sample(size=payload.size, tier=payload.tier)
+    result = await EvaluationService(session).sample(user_id, size=payload.size, tier=payload.tier)
     if result is None:
         raise HTTPException(status_code=409, detail="no parsed CV to evaluate against")
     return {
@@ -162,17 +169,27 @@ async def report(
     number over forty judgements is a weak claim, and the report says how many
     it rests on, which is what makes it readable rather than misleading.
     """
-    result = await EvaluationService(session).report()
+    result = await EvaluationService(session).report(user_id)
     if result is None:
         raise HTTPException(status_code=409, detail="no parsed CV to evaluate against")
     return result.as_record()
 
 
-async def _progress(repository: EvaluationRepository) -> ProgressResponse:
+async def _progress(
+    session: AsyncSession, repository: EvaluationRepository, user_id: uuid.UUID
+) -> ProgressResponse:
+    candidate = await EvaluationService(session).candidate_revision(user_id)
+    if candidate is None:
+        return ProgressResponse(
+            counts={},
+            label_distribution={},
+            labels={str(value): meaning for value, meaning in LABEL_MEANINGS.items()},
+        )
     return ProgressResponse(
-        counts=await repository.progress(),
+        counts=await repository.progress(candidate),
         label_distribution={
-            str(label): count for label, count in (await repository.label_distribution()).items()
+            str(label): count
+            for label, count in (await repository.label_distribution(candidate)).items()
         },
         labels={str(value): meaning for value, meaning in LABEL_MEANINGS.items()},
     )
