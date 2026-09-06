@@ -50,6 +50,8 @@ class MatchRepository:
                 "similarity": match.similarity,
                 "relevance": match.relevance,
                 "rerank_position": match.rerank_position,
+                "rerank_query_hash": match.rerank_query_hash,
+                "rerank_document_hash": match.rerank_document_hash,
                 "recommendation": match.recommendation.value,
                 "embedding_model": match.embedding_model,
                 "rerank_model": match.rerank_model,
@@ -78,6 +80,32 @@ class MatchRepository:
             await self._session.execute(stmt)
         await self._session.flush()
         return len(matches)
+
+    async def stored_relevance(
+        self, user_id: uuid.UUID, model: str
+    ) -> dict[uuid.UUID, tuple[float, str, str]]:
+        """Rerank scores already computed for this user under this model.
+
+        Returned with the hashes they were computed from, so the caller can tell
+        a score that still applies from one whose vacancy or CV has moved on.
+        Only rows that actually carry all three are returned — a relevance with
+        no hashes predates the cache and cannot be shown to be current.
+        """
+        result = await self._session.execute(
+            select(
+                JobMatchModel.canonical_job_id,
+                JobMatchModel.relevance,
+                JobMatchModel.rerank_query_hash,
+                JobMatchModel.rerank_document_hash,
+            ).where(
+                JobMatchModel.user_id == user_id,
+                JobMatchModel.rerank_model == model,
+                JobMatchModel.relevance.is_not(None),
+                JobMatchModel.rerank_query_hash.is_not(None),
+                JobMatchModel.rerank_document_hash.is_not(None),
+            )
+        )
+        return {row[0]: (float(row[1]), str(row[2]), str(row[3])) for row in result.all()}
 
     async def list_skipped_canonical_job_ids(self, user_id: uuid.UUID) -> set[uuid.UUID]:
         """Job ids hidden from the default jobs list — the pipeline scored them

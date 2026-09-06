@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 from app.domain.candidates.models import UserPreference
 from app.domain.jobs.models import NormalizedJob
-from app.domain.matching.documents import job_document, rerank_query
+from app.domain.matching.documents import job_document, rerank_query, text_hash
 from app.domain.matching.filters import HardFilterService
 from app.domain.matching.models import JobMatch, Recommendation
 from app.domain.matching.scoring import combine, recommend
@@ -52,6 +52,11 @@ class MatchingResult:
     eligible: int = 0
     filtered_out: int = 0
     reranked: int = 0
+    # How many of those scores came back from the cache rather than the
+    # provider. The two together are what say whether a run cost anything: after
+    # the first full pass over a settled corpus, `reranked` is the whole eligible
+    # set and `rerank_reused` is nearly all of it.
+    rerank_reused: int = 0
     rerank_failed: bool = False
     written: int = 0
     notify: list[str] = field(default_factory=list)
@@ -80,9 +85,7 @@ class MatchingService:
         self._embeddings = embedding_repository
         self._matches = match_repository
         self._filters = filters or HardFilterService()
-        self._embedding_service = EmbeddingService(
-            embedding_repository, job_repository, voyage
-        )
+        self._embedding_service = EmbeddingService(embedding_repository, job_repository, voyage)
 
     async def run_for_user(self, user_id: uuid.UUID) -> MatchingResult:
         cv = await self._candidates.get_active_cv(user_id)
@@ -99,7 +102,9 @@ class MatchingService:
         )
         query_vector = await self._embedding_service.get_profile_vector(user_id)
         if query_vector is None:
-            return MatchingResult(user_id=str(user_id), skipped_reason="the CV could not be embedded")
+            return MatchingResult(
+                user_id=str(user_id), skipped_reason="the CV could not be embedded"
+            )
 
         candidates = await self._embeddings.search(
             self._voyage.embedding_model, query_vector, self._config.retrieval_limit
@@ -137,13 +142,14 @@ class MatchingService:
                     )
                 )
 
-        relevance, positions, rerank_failed = await self._rerank(profile_text, eligible, jobs)
+        relevance, positions, rerank_failed, reused = await self._rerank(
+            user_id, profile_text, eligible, jobs
+        )
+        query_hash = text_hash(rerank_query(profile_text))
 
         for canonical_job_id in eligible:
             job_relevance = relevance.get(canonical_job_id)
-            score = combine(
-                similarity[canonical_job_id], job_relevance, self._config.rerank_weight
-            )
+            score = combine(similarity[canonical_job_id], job_relevance, self._config.rerank_weight)
             matches.append(
                 JobMatch(
                     user_id=str(user_id),
@@ -159,6 +165,12 @@ class MatchingService:
                     embedding_model=self._voyage.embedding_model,
                     rerank_model=self._voyage.rerank_model if job_relevance is not None else None,
                     rerank_weight=self._config.rerank_weight if job_relevance is not None else None,
+                    rerank_query_hash=query_hash if job_relevance is not None else None,
+                    rerank_document_hash=(
+                        text_hash(job_document(jobs[canonical_job_id]))
+                        if job_relevance is not None
+                        else None
+                    ),
                 )
             )
 
@@ -176,6 +188,7 @@ class MatchingService:
             eligible=len(eligible),
             filtered_out=len(matches) - len(eligible),
             reranked=len(relevance),
+            rerank_reused=reused,
             rerank_failed=rerank_failed,
             written=written,
             # Only APPLY matches are worth interrupting someone for; the
@@ -190,36 +203,68 @@ class MatchingService:
 
     async def _rerank(
         self,
+        user_id: uuid.UUID,
         profile_text: str,
         eligible: list[uuid.UUID],
         jobs: dict[uuid.UUID, NormalizedJob],
-    ) -> tuple[dict[uuid.UUID, float], dict[uuid.UUID, int], bool]:
-        """Relevance for the top K by similarity, plus each one's rank. A failure
-        is reported, not hidden: everything keeps its embedding-only score and the
-        run says the reranker didn't contribute."""
-        top_k = min(self._config.rerank_top_k, len(eligible))
-        if top_k <= 0:
-            return {}, {}, False
+    ) -> tuple[dict[uuid.UUID, float], dict[uuid.UUID, int], bool, int]:
+        """Relevance for every eligible vacancy, plus each one's rank.
 
-        batch = eligible[:top_k]
-        documents = [job_document(jobs[canonical_job_id]) for canonical_job_id in batch]
-        try:
-            scores = await self._voyage.rerank(rerank_query(profile_text), documents)
-        except Exception:
-            logger.warning("rerank failed for a batch of %d vacancies", len(batch), exc_info=True)
-            return {}, {}, True
-        if len(scores) != len(batch):
-            logger.warning(
-                "rerank returned %d scores for %d vacancies — ignoring them",
-                len(scores),
-                len(batch),
-            )
-            return {}, {}, True
+        Everything, not a top slice: the reranker is the only stage that reads a
+        CV and a vacancy together, so a cap on it caps the quality of the
+        ranking rather than only its cost. `rerank_top_k` survives as a safety
+        valve, with 0 meaning no limit.
 
-        relevance = dict(zip(batch, scores, strict=True))
+        What keeps that affordable is the cache, not the cap. A score depends on
+        the CV, the vacancy text and the model, and none of those move between
+        most runs — so a settled corpus pays for almost nothing, and 24.0
+        invariant 4 is satisfied where it belongs.
+
+        A failure is reported, not hidden: everything keeps its embedding-only
+        score and the run says the reranker did not contribute. That mattered
+        more than it should have — a batch too large for the provider's token
+        limit failed on every run for weeks, and the only visible symptom was a
+        ranking quietly worse than the configuration described.
+        """
+        limit = self._config.rerank_top_k or len(eligible)
+        batch = eligible[: min(limit, len(eligible))]
+        if not batch:
+            return {}, {}, False, 0
+
+        query = rerank_query(profile_text)
+        query_hash = text_hash(query)
+        cached = await self._matches.stored_relevance(user_id, self._voyage.rerank_model)
+
+        relevance: dict[uuid.UUID, float] = {}
+        pending: list[uuid.UUID] = []
+        for canonical_job_id in batch:
+            document_hash = text_hash(job_document(jobs[canonical_job_id]))
+            known = cached.get(canonical_job_id)
+            if known is not None and known[1] == query_hash and known[2] == document_hash:
+                relevance[canonical_job_id] = known[0]
+            else:
+                pending.append(canonical_job_id)
+
+        reused = len(relevance)
+        if pending:
+            documents = [job_document(jobs[canonical_job_id]) for canonical_job_id in pending]
+            try:
+                scores = await self._voyage.rerank(query, documents)
+            except Exception:
+                logger.warning("rerank failed for %d vacancies", len(pending), exc_info=True)
+                return {}, {}, True, 0
+            if len(scores) != len(pending):
+                logger.warning(
+                    "rerank returned %d scores for %d vacancies — ignoring them",
+                    len(scores),
+                    len(pending),
+                )
+                return {}, {}, True, 0
+            relevance.update(zip(pending, scores, strict=True))
+        logger.info("reranked %d vacancies (%d reused from cache)", len(pending), reused)
         ranked = sorted(relevance.items(), key=lambda item: (-item[1], str(item[0])))
         positions = {
             canonical_job_id: position
             for position, (canonical_job_id, _) in enumerate(ranked, start=1)
         }
-        return relevance, positions, False
+        return relevance, positions, False, reused

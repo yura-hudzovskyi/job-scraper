@@ -42,6 +42,10 @@ class JobMatch:
     similarity: float = 0.0
     relevance: float | None = None
     rerank_position: int | None = None
+    # What `relevance` was computed from, so the next run can tell whether it
+    # still applies instead of paying for the same answer again.
+    rerank_query_hash: str | None = None
+    rerank_document_hash: str | None = None
 
     recommendation: Recommendation = Recommendation.SKIP
     embedding_model: str | None = None

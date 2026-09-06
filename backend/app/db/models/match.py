@@ -34,6 +34,12 @@ class JobMatchModel(UUIDPrimaryKeyMixin, Base):
     relevance: Mapped[float | None] = mapped_column(default=None)
     rerank_position: Mapped[int | None] = mapped_column(default=None)
 
+    # What the stored `relevance` was computed from. A rerank costs money and
+    # its answer does not change while the CV, the vacancy and the model are the
+    # same, so these two are what let a later run skip it (24.0 invariant 4).
+    rerank_query_hash: Mapped[str | None] = mapped_column(default=None)
+    rerank_document_hash: Mapped[str | None] = mapped_column(default=None)
+
     recommendation: Mapped[str]
     # Which models produced this result. Read back from the row, so an old match
     # keeps naming the models that really ran after the config changes.

@@ -102,12 +102,18 @@ class _FakeJobs:
 
 
 class _FakeMatches:
-    def __init__(self) -> None:
+    def __init__(self, cached: dict | None = None) -> None:
         self.written: list = []
+        # (canonical_job_id) -> (relevance, query_hash, document_hash), as the
+        # repository returns rerank scores already paid for.
+        self._cached = cached or {}
 
     async def upsert_many(self, matches):
         self.written = matches
         return len(matches)
+
+    async def stored_relevance(self, user_id, model):
+        return self._cached
 
 
 def _service(
@@ -117,8 +123,9 @@ def _service(
     cv_text: str | None = "15 years of Python.",
     preferences: UserPreference | None = None,
     config=DEFAULTS,
+    cached: dict | None = None,
 ) -> tuple[MatchingService, _FakeMatches]:
-    matches = _FakeMatches()
+    matches = _FakeMatches(cached)
     service = MatchingService(
         config,
         voyage,  # type: ignore[arg-type]
@@ -283,3 +290,93 @@ async def test_rerank_position_records_where_the_reranker_put_each_job() -> None
     by_id = {match.canonical_job_id: match for match in matches.written}
     assert by_id[str(second)].rerank_position == 1
     assert by_id[str(first)].rerank_position == 2
+
+
+# --- reranking everything, and paying for it once ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_every_eligible_vacancy_is_reranked_by_default() -> None:
+    """The reranker is the only stage that reads a CV and a vacancy together, so
+    a cap on it caps the quality of the ranking rather than only its cost. The
+    default is now no cap; the cache is what keeps that affordable."""
+    jobs = {uuid.UUID(int=i): _job(f"Job {i}") for i in range(1, 6)}
+    candidates = [Candidate(document_id=i, similarity=0.9) for i in jobs]
+    voyage = _FakeVoyage()
+
+    service, _ = _service(jobs, candidates, voyage, config=replace(DEFAULTS, rerank_top_k=0))
+    result = await service.run_for_user(uuid.uuid4())
+
+    assert result.reranked == 5
+    assert len(voyage.rerank_calls[0]) == 5
+
+
+@pytest.mark.asyncio
+async def test_a_score_already_paid_for_is_not_bought_again() -> None:
+    """Spec 24.0 invariant 4. A rerank costs money and its answer does not move
+    while the CV, the vacancy and the model are unchanged — which, for a settled
+    corpus polled every half hour, is almost every pair on almost every run."""
+    job_id = uuid.UUID(int=1)
+    jobs = {job_id: _job("Job 1")}
+    candidates = [Candidate(document_id=job_id, similarity=0.9)]
+    voyage = _FakeVoyage()
+
+    # First pass with an empty cache: the provider is asked.
+    service, matches = _service(jobs, candidates, voyage)
+    await service.run_for_user(uuid.uuid4())
+    written = matches.written[0]
+    assert voyage.rerank_calls
+
+    # Second pass, with what the first pass stored.
+    warm = _FakeVoyage()
+    service, _ = _service(
+        jobs,
+        candidates,
+        warm,
+        cached={job_id: (0.5, written.rerank_query_hash, written.rerank_document_hash)},
+    )
+    result = await service.run_for_user(uuid.uuid4())
+
+    assert warm.rerank_calls == []
+    assert result.rerank_reused == 1
+    assert result.reranked == 1
+
+
+@pytest.mark.asyncio
+async def test_a_changed_vacancy_is_reranked_again() -> None:
+    """The cache is keyed on what the score was computed from, not on the pair.
+    A vacancy that was edited is a different document and a stale score would be
+    reported with full confidence."""
+    job_id = uuid.UUID(int=1)
+    jobs = {job_id: _job("Job 1")}
+    candidates = [Candidate(document_id=job_id, similarity=0.9)]
+    voyage = _FakeVoyage()
+
+    service, _ = _service(
+        jobs, candidates, voyage, cached={job_id: (0.5, "some-query-hash", "stale-document-hash")}
+    )
+    result = await service.run_for_user(uuid.uuid4())
+
+    assert voyage.rerank_calls
+    assert result.rerank_reused == 0
+
+
+@pytest.mark.asyncio
+async def test_a_changed_cv_reranks_the_whole_corpus_again() -> None:
+    """Relevance is a property of the pair. A new CV invalidates every score,
+    and reusing them would rank a new candidate on an old one's answers."""
+    jobs = {uuid.UUID(int=i): _job(f"Job {i}") for i in range(1, 4)}
+    candidates = [Candidate(document_id=i, similarity=0.9) for i in jobs]
+    voyage = _FakeVoyage()
+
+    service, _ = _service(
+        jobs,
+        candidates,
+        voyage,
+        cv_text="A completely different CV.",
+        cached={i: (0.5, "hash-from-the-old-cv", "doc") for i in jobs},
+    )
+    result = await service.run_for_user(uuid.uuid4())
+
+    assert result.rerank_reused == 0
+    assert len(voyage.rerank_calls[0]) == 3

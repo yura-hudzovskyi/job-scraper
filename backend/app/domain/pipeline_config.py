@@ -32,7 +32,10 @@ class PipelineConfig:
     retrieval_limit: int = 400
     # How many of those the reranker reads in full. This is the one part of a run
     # that costs real money per document, so it is deliberately much smaller.
-    rerank_top_k: int = 60
+    # 0 means every eligible vacancy. The reranker is the only thing that
+    # reads a vacancy and a CV together, so limiting it limits the quality of
+    # the ranking, not just its cost.
+    rerank_top_k: int = 0
     # How much the reranker's opinion counts against raw embedding similarity,
     # 0-1. Only applies to jobs that were actually reranked.
     rerank_weight: float = 0.7
@@ -75,11 +78,14 @@ DESCRIPTIONS: dict[str, str] = {
     ),
     "retrieval_limit": (
         "How many vacancies the embedding search keeps for you, best first. "
-        "Anything ranked below this gets no match at all."
+        "Anything ranked below this gets no match at all. Set it above the size "
+        "of your corpus to keep everything."
     ),
     "rerank_top_k": (
-        "How many of those top results the reranker reads in full. The rest keep "
-        "their embedding-only score and are labelled as not reranked."
+        "How many of those top results the reranker reads in full. 0 means all "
+        "of them. The rest keep their embedding-only score and are labelled as "
+        "not reranked. Reranking is cached per vacancy and CV, so a full pass "
+        "costs once and later runs only pay for what changed."
     ),
     "rerank_weight": (
         "0 = ignore the reranker and score purely on embedding similarity. "
@@ -100,8 +106,13 @@ DESCRIPTIONS: dict[str, str] = {
 # input bounds by the UI.
 BOUNDS: dict[str, tuple[float, float]] = {
     "scrape_max_jobs_per_run": (1, 1000),
-    "retrieval_limit": (1, 5000),
-    "rerank_top_k": (0, 500),
+    # Both ceilings are "the whole corpus, with room to grow" rather than a
+    # cost control. Embedding is skipped when a document's text has not changed
+    # and reranking is cached per (CV, vacancy, model), so the thing these used
+    # to protect against — paying repeatedly for the same answer — is handled
+    # where it belongs instead of by refusing to look at most of the corpus.
+    "retrieval_limit": (1, 100_000),
+    "rerank_top_k": (0, 100_000),
     "rerank_weight": (0.0, 1.0),
     "apply_threshold": (0.0, 100.0),
     "consider_threshold": (0.0, 100.0),
