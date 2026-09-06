@@ -15,9 +15,13 @@ document (a CV) against another (a posting), so tagging either side as a "query"
 would skew the comparison.
 """
 
+import asyncio
+import logging
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.voyageai.com/v1"
 _TIMEOUT_SECONDS = 60.0
@@ -37,9 +41,32 @@ DEFAULT_RERANK_MODEL = "rerank-3"
 # by more than the headroom anyone would leave.
 MAX_RERANK_BATCH_BYTES = 500_000
 
+# Voyage also caps tokens per minute, separately from tokens per batch: 2 000 000
+# for rerank-3. A first full pass over this corpus is about 2.9 million, so it
+# hits the ceiling however neatly the batches are split — the limit is a rate,
+# and no batch size makes a rate go away. Waiting is the whole remedy, and it is
+# cheap: this is background work behind a queue, and after the first pass the
+# cache means later runs rerank only what changed.
+RATE_LIMIT_STATUS = 429
+MAX_RATE_LIMIT_RETRIES = 6
+# A TPM window is a minute, so a shorter wake-up just spends another request
+# discovering the same thing.
+RATE_LIMIT_WAIT_SECONDS = 65.0
+
 
 class VoyageError(httpx.HTTPStatusError):
     """A Voyage error that carries what Voyage said about it."""
+
+
+def _retry_after(response: httpx.Response, default: float) -> float:
+    """How long the provider asked us to wait, if it said."""
+    header = response.headers.get("retry-after")
+    if header:
+        try:
+            return max(1.0, float(header))
+        except ValueError:
+            pass
+    return default
 
 
 def _byte_size(text: str) -> int:
@@ -89,13 +116,35 @@ class VoyageClient:
         self.rerank_model = rerank_model
         self._client = client
 
-    async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _send(self, path: str, payload: dict[str, Any]) -> httpx.Response:
         headers = {"Authorization": f"Bearer {self._api_key}"}
         if self._client is not None:
-            response = await self._client.post(f"{_BASE_URL}{path}", json=payload, headers=headers)
-        else:
-            async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-                response = await client.post(f"{_BASE_URL}{path}", json=payload, headers=headers)
+            return await self._client.post(f"{_BASE_URL}{path}", json=payload, headers=headers)
+        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+            return await client.post(f"{_BASE_URL}{path}", json=payload, headers=headers)
+
+    async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """One call, waiting out a rate limit rather than failing on it.
+
+        Only 429 is retried. Every other error is a fact about the request —
+        a batch over the token limit, a bad model name, an expired key — and
+        retrying it just asks the same question again more expensively.
+        """
+        response = await self._send(path, payload)
+        for attempt in range(MAX_RATE_LIMIT_RETRIES):
+            if response.status_code != RATE_LIMIT_STATUS:
+                break
+            wait = _retry_after(response, RATE_LIMIT_WAIT_SECONDS)
+            logger.info(
+                "rate limited by %s, waiting %.0fs (attempt %d of %d)",
+                path,
+                wait,
+                attempt + 1,
+                MAX_RATE_LIMIT_RETRIES,
+            )
+            await asyncio.sleep(wait)
+            response = await self._send(path, payload)
+
         if response.is_error:
             # The body is where Voyage says which limit was hit and by how much
             # — "max allowed tokens per submitted batch is 600000, your batch has
@@ -119,7 +168,7 @@ class VoyageClient:
         ordered = sorted(body.get("data", []), key=lambda item: item.get("index", 0))
         return [item["embedding"] for item in ordered]
 
-    async def rerank(self, query: str, documents: list[str]) -> list[float]:
+    async def rerank(self, query: str, documents: list[str]) -> dict[int, float]:
         """Relevance of each document to `query`, in the order the documents were given.
 
         Split into batches that fit the provider's token limit. Splitting is safe
@@ -128,13 +177,18 @@ class VoyageClient:
         documents travelled with it. Batching changes the number of requests, not
         the answer.
 
+        Returns a score per document *index* rather than a list, so a caller can
+        tell "scored 0.0" from "not scored". A partial answer is a real outcome
+        here: the batches after a failure are missing, and treating them as
+        zeroes would rank them below every vacancy the reranker disliked.
+
         Voyage returns each batch ranked rather than in input order — the echoed
         index is what puts it back.
         """
         if not documents:
-            return []
+            return {}
 
-        scores = [0.0] * len(documents)
+        scores: dict[int, float] = {}
         for batch in _batches(documents, query):
             body = await self._post(
                 "/rerank",

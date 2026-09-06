@@ -67,6 +67,15 @@ class MatchingResult:
         return self.skipped_reason is None
 
 
+def _positions(relevance: dict[uuid.UUID, float]) -> dict[uuid.UUID, int]:
+    """Where the reranker put each vacancy, best first. Ties break on id so a
+    re-run of the same inputs produces the same positions."""
+    ranked = sorted(relevance.items(), key=lambda item: (-item[1], str(item[0])))
+    return {
+        canonical_job_id: position for position, (canonical_job_id, _) in enumerate(ranked, start=1)
+    }
+
+
 class MatchingService:
     def __init__(
         self,
@@ -249,22 +258,22 @@ class MatchingService:
         if pending:
             documents = [job_document(jobs[canonical_job_id]) for canonical_job_id in pending]
             try:
-                scores = await self._voyage.rerank(query, documents)
+                scored = await self._voyage.rerank(query, documents)
             except Exception:
                 logger.warning("rerank failed for %d vacancies", len(pending), exc_info=True)
-                return {}, {}, True, 0
-            if len(scores) != len(pending):
-                logger.warning(
-                    "rerank returned %d scores for %d vacancies — ignoring them",
-                    len(scores),
-                    len(pending),
-                )
-                return {}, {}, True, 0
-            relevance.update(zip(pending, scores, strict=True))
+                # Keep what earlier batches returned: it was paid for and it is
+                # correct, and discarding it turns a partial outage into a total
+                # one. The run still reports that the reranker failed.
+                return relevance, _positions(relevance), True, reused
+
+            # Scores come back keyed by position in `documents`, so a batch that
+            # never ran is simply absent. Those vacancies keep their
+            # embedding-only score instead of a fabricated zero, which would
+            # rank them below everything the reranker actively disliked.
+            relevance.update({pending[index]: score for index, score in scored.items()})
+            if len(scored) != len(pending):
+                logger.warning("rerank scored %d of %d vacancies", len(scored), len(pending))
+                return relevance, _positions(relevance), True, reused
+
         logger.info("reranked %d vacancies (%d reused from cache)", len(pending), reused)
-        ranked = sorted(relevance.items(), key=lambda item: (-item[1], str(item[0])))
-        positions = {
-            canonical_job_id: position
-            for position, (canonical_job_id, _) in enumerate(ranked, start=1)
-        }
-        return relevance, positions, False, reused
+        return relevance, _positions(relevance), False, reused

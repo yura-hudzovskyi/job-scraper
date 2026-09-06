@@ -39,11 +39,16 @@ class _FakeVoyage:
     async def embed(self, texts: list[str]) -> list[list[float]]:
         return [[1.0, 0.0] for _ in texts]
 
-    async def rerank(self, query: str, documents: list[str]) -> list[float]:
+    async def rerank(self, query: str, documents: list[str]) -> dict[int, float]:
+        # A score per index, not a list: the real client returns a partial map
+        # when a batch fails, so "not scored" and "scored 0.0" stay distinct.
         self.rerank_calls.append(documents)
         if self._rerank_fails:
             raise RuntimeError("voyage down")
-        return [self._relevance.get(_title_of(document), 0.5) for document in documents]
+        return {
+            index: self._relevance.get(_title_of(document), 0.5)
+            for index, document in enumerate(documents)
+        }
 
 
 def _title_of(document: str) -> str:
@@ -380,3 +385,46 @@ async def test_a_changed_cv_reranks_the_whole_corpus_again() -> None:
 
     assert result.rerank_reused == 0
     assert len(voyage.rerank_calls[0]) == 3
+
+
+@pytest.mark.asyncio
+async def test_scores_from_batches_that_succeeded_survive_a_later_failure() -> None:
+    """A full pass is several requests. When a later one fails — a rate limit is
+    the realistic case — the vacancies already scored keep their scores, because
+    they were paid for and they are correct. Throwing them away turns a partial
+    outage into a total one."""
+    jobs = {uuid.UUID(int=i): _job(f"Job {i}") for i in range(1, 4)}
+    candidates = [Candidate(document_id=i, similarity=0.9) for i in jobs]
+
+    class _PartialVoyage(_FakeVoyage):
+        async def rerank(self, query: str, documents: list[str]) -> dict[int, float]:
+            self.rerank_calls.append(documents)
+            # Only the first batch came back.
+            return {0: 0.8}
+
+    voyage = _PartialVoyage()
+    service, _ = _service(jobs, candidates, voyage)
+    result = await service.run_for_user(uuid.uuid4())
+
+    assert result.reranked == 1
+    assert result.rerank_failed is True
+
+
+@pytest.mark.asyncio
+async def test_an_unscored_vacancy_is_not_given_a_zero() -> None:
+    """A missing score means the reranker never saw it. Recording 0.0 would rank
+    it below every vacancy the reranker looked at and rejected."""
+    jobs = {uuid.UUID(int=i): _job(f"Job {i}") for i in range(1, 4)}
+    candidates = [Candidate(document_id=i, similarity=0.9) for i in jobs]
+
+    class _PartialVoyage(_FakeVoyage):
+        async def rerank(self, query: str, documents: list[str]) -> dict[int, float]:
+            self.rerank_calls.append(documents)
+            return {0: 0.8}
+
+    service, matches = _service(jobs, candidates, _PartialVoyage())
+    await service.run_for_user(uuid.uuid4())
+
+    unscored = [m for m in matches.written if m.relevance is None]
+    assert len(unscored) == 2
+    assert all(m.rerank_model is None for m in unscored)
