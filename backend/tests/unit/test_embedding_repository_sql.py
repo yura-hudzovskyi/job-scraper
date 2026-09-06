@@ -32,7 +32,7 @@ def test_search_binds_every_parameter_it_passes() -> None:
     for statement in statements:
         bound |= set(text(statement)._bindparams)
 
-    assert bound == {"query", "document_type", "model", "limit"}
+    assert bound == {"query", "document_type", "model", "field", "limit"}
 
 
 def test_no_hand_written_sql_uses_the_double_colon_cast() -> None:

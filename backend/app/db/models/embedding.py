@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import UniqueConstraint, func
+from sqlalchemy import Index, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, UUIDPrimaryKeyMixin
@@ -26,7 +26,12 @@ from app.db.base import Base, UUIDPrimaryKeyMixin
 
 class DocumentEmbeddingModel(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "document_embeddings"
-    __table_args__ = (UniqueConstraint("document_type", "document_id", "model"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "document_type", "document_id", "model", "field", name="uq_document_embeddings_identity"
+        ),
+        Index("ix_document_embeddings_lookup", "document_type", "model", "field"),
+    )
 
     # "job" (document_id = canonical job id) or "profile" (document_id = user id).
     # Deliberately not a foreign key: the two live in different tables, and a
@@ -37,5 +42,16 @@ class DocumentEmbeddingModel(UUIDPrimaryKeyMixin, Base):
     # Hash of the exact text this vector was computed from, so a re-scrape that
     # changed nothing material costs no API call.
     content_hash: Mapped[str]
+    # Which projection of the document this is (spec 10.2). `full_profile` is
+    # the whole-document vector the pipeline started with and still ranks on.
+    field: Mapped[str] = mapped_column(default="full_profile", server_default="full_profile")
+    # Which template rendered the text. Part of the vector's identity alongside
+    # `model`: the same document under two templates gives two vectors, and
+    # comparing them is comparing different questions. NULL for rows written
+    # before templates existed.
+    template_version: Mapped[str | None] = mapped_column(default=None)
+    # Kept so a mismatch fails on write with both sizes named, rather than at
+    # query time as pgvector's error from inside a cosine operator.
+    dimensions: Mapped[int | None] = mapped_column(default=None)
     vector: Mapped[list[float]] = mapped_column(Vector())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
